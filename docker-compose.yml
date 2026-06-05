@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  # Local Metadata Store (MongoDB) to isolate development configs from production
+  mongo:
+    image: mongo:6.0
+    container_name: rh-dashboard-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - rh-network
+
+  # Python FastAPI server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rh-dashboard-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Point to local mongo container for application metadata store
+      - MONGODB_URI=mongodb://mongo:27017
+      - MONGODB_DB_NAME=recoveryhub_dashboard_dev
+    depends_on:
+      - mongo
+    networks:
+      - rh-network
+
+  # React Web application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: rh-dashboard-frontend
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - VITE_AZURE_TENANT_ID=${AZURE_TENANT_ID}
+    depends_on:
+      - backend
+    networks:
+      - rh-network
+
+volumes:
+  mongo-data:
+
+networks:
+  rh-network:
+    driver: bridge

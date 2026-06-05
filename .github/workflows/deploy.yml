@@ -1,0 +1,118 @@
+name: Build & Deploy to Azure Container Apps
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # Job 1: Run Full Test Suites (Fail Loudly if any test fails)
+  test:
+    name: Run Unit & Regression Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Backend Testing
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Backend Dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+      - name: Run Pytest
+        run: |
+          cd backend
+          pytest -v
+
+      # Frontend Testing
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Frontend Dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run Vitest
+        run: |
+          cd frontend
+          npm run test
+
+  # Job 2: Build Images, Push to ACR, and Deploy via Terraform
+  deploy:
+    name: Build, Push, and Deploy
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Login to Azure using Service Principal
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Login to Azure Container Registry (ACR)
+      - name: Login to Azure Container Registry
+        run: |
+          az acr login --name ${{ secrets.ACR_NAME }}
+
+      # Build and Push Backend Docker Image
+      - name: Build & Push Backend Image
+        run: |
+          docker build \
+            -t ${{ secrets.ACR_NAME }}.azurecr.io/rh-dashboard-backend:${{ github.sha }} \
+            ./backend
+          docker push ${{ secrets.ACR_NAME }}.azurecr.io/rh-dashboard-backend:${{ github.sha }}
+
+      # Build and Push Frontend Docker Image (injecting Entra client IDs)
+      - name: Build & Push Frontend Image
+        run: |
+          docker build \
+            --build-arg VITE_AZURE_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }} \
+            --build-arg VITE_AZURE_TENANT_ID=${{ secrets.AZURE_TENANT_ID }} \
+            -t ${{ secrets.ACR_NAME }}.azurecr.io/rh-dashboard-frontend:${{ github.sha }} \
+            ./frontend
+          docker push ${{ secrets.ACR_NAME }}.azurecr.io/rh-dashboard-frontend:${{ github.sha }}
+
+      # Setup Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      # Initialize and Apply Infrastructure via Terraform
+      - name: Terraform Init & Apply
+        run: |
+          cd terraform
+          terraform init
+          terraform apply -auto-approve
+        env:
+          # Inject secrets as Terraform variables (TF_VAR_ prefix)
+          TF_VAR_resource_group_name: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          TF_VAR_acr_name: ${{ secrets.ACR_NAME }}
+          TF_VAR_backend_image_tag: ${{ github.sha }}
+          TF_VAR_frontend_image_tag: ${{ github.sha }}
+          TF_VAR_mongodb_uri: ${{ secrets.MONGODB_URI }}
+          TF_VAR_azure_sql_host: ${{ secrets.AZURE_SQL_HOST }}
+          TF_VAR_azure_sql_db: ${{ secrets.AZURE_SQL_DB }}
+          TF_VAR_azure_sql_user: ${{ secrets.AZURE_SQL_USER }}
+          TF_VAR_azure_sql_password: ${{ secrets.AZURE_SQL_PASSWORD }}
+          TF_VAR_azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
+          TF_VAR_azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
