@@ -55,7 +55,8 @@ class SQLConnection:
         
         for pattern in destructive_patterns:
             if re.search(pattern, query_stripped, re.IGNORECASE):
-                raise QueryValidationError(f"Query Security Breach: Prohibited keyword detected: '{pattern.strip(r' \b')}'")
+                cleaned_pattern = pattern.strip(r' \b')
+                raise QueryValidationError(f"Query Security Breach: Prohibited keyword detected: '{cleaned_pattern}'")
 
     def execute_read(self, query: str, filters: DashboardFilters = None) -> Dict[str, Any]:
         """Executes a SQL query with parameter bindings, returning columns and row values.

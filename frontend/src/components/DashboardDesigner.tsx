@@ -15,7 +15,8 @@ import {
   Info,
   Database,
   Eye,
-  Settings
+  Settings,
+  AlertCircle
 } from 'lucide-react';
 
 interface DashboardDesignerProps {
