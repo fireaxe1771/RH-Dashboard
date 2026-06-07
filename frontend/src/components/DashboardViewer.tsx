@@ -14,13 +14,24 @@ interface DrillDownState {
   sourceWidget: string;
 }
 
+const getCurrentWeekRange = () => {
+  const today = new Date();
+  const dayOfWeek = today.getDay();
+  const start = new Date(today);
+  start.setDate(today.getDate() - dayOfWeek);
+  const format = (date: Date) => date.toISOString().slice(0, 10);
+  return {
+    start_date: format(start),
+    end_date: format(today),
+  };
+};
+
 export const DashboardViewer: React.FC<DashboardViewerProps> = ({ dashboard }) => {
-  const [filters, setFilters] = useState<DashboardFilters>({
+  const [filters, setFilters] = useState<DashboardFilters>(() => ({
     department_id: undefined,
     processor_id: undefined,
-    start_date: undefined,
-    end_date: undefined,
-  });
+    ...getCurrentWeekRange(),
+  }));
 
   const [drillDown, setDrillDown] = useState<DrillDownState | null>(null);
   const [drillDownData, setDrillDownData] = useState<QueryResult | null>(null);
