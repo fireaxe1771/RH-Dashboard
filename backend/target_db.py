@@ -1,9 +1,16 @@
 import pymssql
 import logging
 import re
+import struct
 from typing import List, Dict, Any, Tuple
+from azure.identity import ClientSecretCredential
 from config import settings
 from models import DashboardFilters
+
+try:
+    import pyodbc
+except ImportError:  # pragma: no cover - runtime dependency may not be installed in tests
+    pyodbc = None
 
 logger = logging.getLogger(__name__)
 
@@ -18,18 +25,87 @@ class QueryValidationError(TargetDatabaseError):
 class SQLConnection:
     """Manages raw connections and query execution against the target Azure SQL Database."""
 
-    def _get_connection(self) -> pymssql.Connection:
+    def _get_odbc_connection(self, access_token: str):
+        """Connect to Azure SQL using an Azure AD access token via pyodbc."""
+        if pyodbc is None:
+            raise TargetDatabaseError(
+                "pyodbc is required for Azure AD SQL authentication. Install it and ensure an ODBC Driver for SQL Server is available."
+            )
+
+        driver = "ODBC Driver 18 for SQL Server"
+        connection_string = (
+            f"DRIVER={{{driver}}};"
+            f"SERVER=tcp:{settings.AZURE_SQL_HOST},{settings.AZURE_SQL_PORT};"
+            f"DATABASE={settings.AZURE_SQL_DB};"
+            "Encrypt=yes;"
+            "TrustServerCertificate=no;"
+            "Connection Timeout=15;"
+        )
+
+        access_token_bytes = access_token.encode("utf-16-le")
+        token_struct = struct.pack(f"=I{len(access_token_bytes)}s", len(access_token_bytes), access_token_bytes)
+        return pyodbc.connect(connection_string, attrs_before={1256: token_struct})
+
+    @staticmethod
+    def _rows_to_dicts(cursor, rows):
+        columns = [desc[0] for desc in cursor.description]
+        cleaned_rows = []
+        for row in rows:
+            cleaned_row = {}
+            for idx, col in enumerate(columns):
+                val = row[idx]
+                if hasattr(val, 'isoformat'):
+                    cleaned_row[col] = val.isoformat()
+                elif val.__class__.__name__ == 'Decimal':
+                    cleaned_row[col] = float(val)
+                else:
+                    cleaned_row[col] = val
+            cleaned_rows.append(cleaned_row)
+        return columns, cleaned_rows
+
+    @staticmethod
+    def _execute_query(cursor, query: str, params: Dict[str, Any]):
+        """Execute a query with either pymssql named parameters or pyodbc positional parameters."""
+        if pyodbc is not None and isinstance(cursor, pyodbc.Cursor):
+            named_pattern = re.compile(r"%\(([^)]+)\)s")
+            param_names = named_pattern.findall(query)
+            if param_names:
+                positional_query = named_pattern.sub("?", query)
+                values = [params[name] for name in param_names]
+                return cursor.execute(positional_query, values)
+            return cursor.execute(query)
+
+        return cursor.execute(query, params)
+
+    def _get_connection(self):
         """Establishes a connection using parameters from configuration settings."""
         try:
-            return pymssql.connect(
-                server=settings.AZURE_SQL_HOST,
-                port=settings.AZURE_SQL_PORT,
-                database=settings.AZURE_SQL_DB,
-                user=settings.AZURE_SQL_USER,
-                password=settings.AZURE_SQL_PASSWORD,
-                login_timeout=5,  # Fail quickly if database is offline (fail loudly)
-                timeout=15
-            )
+            if settings.AZURE_SQL_AUTHENTICATION == "azure-ad":
+                # Azure AD Service Principal authentication using token
+                # Get Azure AD token using Service Principal credentials
+                credential = ClientSecretCredential(
+                    tenant_id=settings.AZURE_SQL_TENANT_ID,
+                    client_id=settings.AZURE_SQL_USER,
+                    client_secret=settings.AZURE_SQL_PASSWORD
+                )
+                
+                # Get access token for Azure SQL Database
+                token = credential.get_token("https://database.windows.net/.default")
+                access_token = token.token
+                
+                # Connect using the access token through ODBC
+                return self._get_odbc_connection(access_token)
+            else:
+                # Basic authentication using username/password
+                return pymssql.connect(
+                    server=settings.AZURE_SQL_HOST,
+                    port=settings.AZURE_SQL_PORT,
+                    database=settings.AZURE_SQL_DB,
+                    user=settings.AZURE_SQL_USER,
+                    password=settings.AZURE_SQL_PASSWORD,
+                    login_timeout=5,  # Fail quickly if database is offline (fail loudly)
+                    timeout=15
+                )
         except Exception as e:
             logger.error(f"Failed to connect to Azure SQL Database at {settings.AZURE_SQL_HOST}: {e}")
             raise TargetDatabaseError(f"Azure SQL Connection Failure: {e}")
@@ -76,32 +152,15 @@ class SQLConnection:
 
         conn = self._get_connection()
         try:
-            with conn.cursor(as_dict=True) as cursor:
-                # pymssql expects dict-based parameters in query string as %(name)s
-                cursor.execute(query, params)
+            with conn.cursor() as cursor:
+                self._execute_query(cursor, query, params)
                 rows = cursor.fetchall()
                 
                 # If query returned nothing (e.g. valid select with empty results)
                 if cursor.description is None:
                     return {"columns": [], "rows": []}
-                
-                columns = [desc[0] for desc in cursor.description]
-                
-                # Format dates and decimal fields to standard types for JSON serialization
-                cleaned_rows = []
-                for row in rows:
-                    cleaned_row = {}
-                    for col in columns:
-                        val = row[col]
-                        # Handle datetime conversions
-                        if hasattr(val, 'isoformat'):
-                            cleaned_row[col] = val.isoformat()
-                        # Convert Decimals to float
-                        elif val.__class__.__name__ == 'Decimal':
-                            cleaned_row[col] = float(val)
-                        else:
-                            cleaned_row[col] = val
-                    cleaned_rows.append(cleaned_row)
+
+                columns, cleaned_rows = self._rows_to_dicts(cursor, rows)
 
                 return {
                     "columns": columns,
@@ -126,16 +185,16 @@ class SQLConnection:
         """
         conn = self._get_connection()
         try:
-            with conn.cursor(as_dict=True) as cursor:
+            with conn.cursor() as cursor:
                 cursor.execute(schema_query)
                 rows = cursor.fetchall()
                 
                 # Group columns by table names
                 tables_map: Dict[str, List[Dict[str, str]]] = {}
                 for row in rows:
-                    tbl = row['TABLE_NAME']
-                    col = row['COLUMN_NAME']
-                    dtype = row['DATA_TYPE']
+                    tbl = row[0]
+                    col = row[1]
+                    dtype = row[2]
                     
                     if tbl not in tables_map:
                         tables_map[tbl] = []
@@ -158,7 +217,7 @@ class SQLConnection:
         processors = []
         
         try:
-            with conn.cursor(as_dict=True) as cursor:
+            with conn.cursor() as cursor:
                 # 1. Fetch departments. Try master table first, fallback to transactions
                 try:
                     cursor.execute("SELECT ID as id, Name as name FROM Departments ORDER BY Name")
@@ -185,8 +244,8 @@ class SQLConnection:
                         processors = []
 
                 return {
-                    "departments": [{"id": str(d['id']), "name": d['name']} for d in departments if d['id'] is not None],
-                    "processors": [{"id": str(p['id']), "name": p['name']} for p in processors if p['id'] is not None],
+                    "departments": [{"id": str(d[0]), "name": d[1]} for d in departments if d[0] is not None],
+                    "processors": [{"id": str(p[0]), "name": p[1]} for p in processors if p[0] is not None],
                     "claimTypes": []
                 }
         except Exception as e:
@@ -242,27 +301,14 @@ class SQLConnection:
 
         conn = self._get_connection()
         try:
-            with conn.cursor(as_dict=True) as cursor:
-                cursor.execute(query, params)
+            with conn.cursor() as cursor:
+                self._execute_query(cursor, query, params)
                 rows = cursor.fetchall()
                 
                 if cursor.description is None:
                     return {"columns": [], "rows": []}
-                
-                columns = [desc[0] for desc in cursor.description]
-                
-                cleaned_rows = []
-                for row in rows:
-                    cleaned_row = {}
-                    for col in columns:
-                        val = row[col]
-                        if hasattr(val, 'isoformat'):
-                            cleaned_row[col] = val.isoformat()
-                        elif val.__class__.__name__ == 'Decimal':
-                            cleaned_row[col] = float(val)
-                        else:
-                            cleaned_row[col] = val
-                    cleaned_rows.append(cleaned_row)
+
+                columns, cleaned_rows = self._rows_to_dicts(cursor, rows)
 
                 return {
                     "columns": columns,

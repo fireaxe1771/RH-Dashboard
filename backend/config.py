@@ -24,6 +24,8 @@ class Settings:
     AZURE_SQL_DB: str = os.getenv("AZURE_SQL_DB", "")
     AZURE_SQL_USER: str = os.getenv("AZURE_SQL_USER", "")
     AZURE_SQL_PASSWORD: str = os.getenv("AZURE_SQL_PASSWORD", "")
+    AZURE_SQL_AUTHENTICATION: str = os.getenv("AZURE_SQL_AUTHENTICATION", "basic")  # 'basic' or 'azure-ad'
+    AZURE_SQL_TENANT_ID: str = os.getenv("AZURE_SQL_TENANT_ID", "")
     
     # Entra ID Authentication configuration
     AZURE_CLIENT_ID: str = os.getenv("AZURE_CLIENT_ID", "")
@@ -42,10 +44,21 @@ class Settings:
             missing.append("AZURE_SQL_HOST")
         if not self.AZURE_SQL_DB:
             missing.append("AZURE_SQL_DB")
-        if not self.AZURE_SQL_USER:
-            missing.append("AZURE_SQL_USER")
-        if not self.AZURE_SQL_PASSWORD:
-            missing.append("AZURE_SQL_PASSWORD")
+        
+        # For basic auth, check username/password
+        if self.AZURE_SQL_AUTHENTICATION == "basic":
+            if not self.AZURE_SQL_USER:
+                missing.append("AZURE_SQL_USER")
+            if not self.AZURE_SQL_PASSWORD:
+                missing.append("AZURE_SQL_PASSWORD")
+        # For Azure AD auth, username/password are the Service Principal credentials
+        elif self.AZURE_SQL_AUTHENTICATION == "azure-ad":
+            if not self.AZURE_SQL_USER:
+                missing.append("AZURE_SQL_USER")
+            if not self.AZURE_SQL_PASSWORD:
+                missing.append("AZURE_SQL_PASSWORD")
+            if not self.AZURE_SQL_TENANT_ID:
+                missing.append("AZURE_SQL_TENANT_ID")
             
         # Check Authentication configuration
         if not self.AZURE_CLIENT_ID:

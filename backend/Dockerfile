@@ -1,7 +1,8 @@
 # Python 3.11 base image with minimal OS footprint
 FROM python:3.11-slim
 
-# Install system dependencies required for FreeTDS (needed for pymssql Azure SQL driver)
+# Install system dependencies required for SQL Server connectivity
+# Using FreeTDS for both basic and Azure AD authentication
 RUN apt-get update && apt-get install -y \
     libsybdb5 \
     freetds-dev \
