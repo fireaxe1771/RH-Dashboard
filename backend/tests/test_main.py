@@ -1,5 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
+from main import _build_default_claims_dashboard
 
 def test_unauthorized_access(test_client: TestClient):
     """Asserts that requests lacking header tokens return 401 Unauthorized."""
@@ -72,3 +73,37 @@ def test_dashboard_crud_flow(test_client: TestClient):
     # 6. Read after delete returns 404
     response = test_client.get(f"/api/dashboards/{dash_id}", headers=headers)
     assert response.status_code == 404
+
+def test_default_status_widget_uses_ytd_distinct_runs():
+    """Ensures the default status widget stays aligned to the YTD submitted-run metric."""
+    dashboard = _build_default_claims_dashboard()
+    status_widget = next(widget for widget in dashboard["widgets"] if widget["id"] == "claims-new-runs-by-status")
+
+    assert "COUNT(DISTINCT c.original_run_id)" in status_widget["sql_query"]
+    assert "c.DateCreated >=" in status_widget["sql_query"]
+    assert "StatusLabel" in status_widget["sql_query"]
+    assert status_widget["config"]["xAxisKey"] == "StatusLabel"
+
+def test_default_draft_summary_widgets_are_aligned():
+    """Ensures the default draft summary cards follow the intended current-vs-YTD split."""
+    dashboard = _build_default_claims_dashboard()
+    total_widget = next(widget for widget in dashboard["widgets"] if widget["id"] == "claims-total-drafts")
+    created_widget = next(widget for widget in dashboard["widgets"] if widget["id"] == "claims-draft-intake-ytd")
+    submitted_widget = next(widget for widget in dashboard["widgets"] if widget["id"] == "claims-draft-submitted-ytd")
+    remaining_widget = next(widget for widget in dashboard["widgets"] if widget["id"] == "claims-draft-open-ytd")
+
+    assert "COUNT(DISTINCT c.ClaimID)" in total_widget["sql_query"]
+    assert "c.submitted = 0" in total_widget["sql_query"]
+    assert "c.original_run_id IS NULL" in total_widget["sql_query"]
+    assert "c.archived = 0" in total_widget["sql_query"]
+    assert "FOR SYSTEM_TIME ALL" in created_widget["sql_query"]
+    assert "ROW_NUMBER() OVER (PARTITION BY c.ClaimID" in created_widget["sql_query"]
+    assert "FOR SYSTEM_TIME ALL" in submitted_widget["sql_query"]
+    assert "ROW_NUMBER() OVER (PARTITION BY c.original_run_id" in submitted_widget["sql_query"]
+    assert "c.submitted = 0" in remaining_widget["sql_query"]
+    assert "c.archived = 0" in remaining_widget["sql_query"]
+    assert "c.DateCreated >= " in remaining_widget["sql_query"]
+    assert total_widget["layout"]["w"] == 3
+    assert created_widget["layout"]["w"] == 3
+    assert submitted_widget["layout"]["w"] == 3
+    assert remaining_widget["layout"]["w"] == 3
