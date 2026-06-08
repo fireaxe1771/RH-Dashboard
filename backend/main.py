@@ -204,26 +204,25 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
 
             # ── Row 3: temporal status charts (runs processed during period) ──
             {
-                "id": "claims-new-runs-by-status",
-                "title": "New Runs Processed During Period",
+                "id": "claims-new-runs-by-type",
+                "title": "New Runs – Submitted vs Recycled",
                 "type": "bar",
                 "sql_query": """
                 WITH new_runs AS (
                     SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
                     WHERE ClaimCurrentTypeId = 1
-                      AND submitted = 1
-                      AND archived = 0
-                      AND original_run_id IS NOT NULL
                       AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 )
-                SELECT status, COUNT(*) AS Count
+                SELECT
+                    CASE WHEN submitted = 1 THEN 'Submitted' ELSE 'Recycled' END AS RunType,
+                    COUNT(*) AS Count
                 FROM new_runs WHERE rn = 1
-                GROUP BY status
-                ORDER BY Count DESC, status
+                GROUP BY CASE WHEN submitted = 1 THEN 'Submitted' ELSE 'Recycled' END
+                ORDER BY Count DESC
                 """,
                 "layout": {"x": 6, "y": 3, "w": 6, "h": 3},
-                "config": {"xAxisKey": "status", "yAxisKeys": ["Count"], "colors": ["#8b5cf6"]},
+                "config": {"xAxisKey": "RunType", "yAxisKeys": ["Count"], "colors": ["#8b5cf6"]},
             },
             {
                 "id": "claims-active-by-status",
