@@ -162,6 +162,8 @@ export const api = {
       processor_id?: string;
       start_date?: string;
       end_date?: string;
+      range_type?: string;
+      periods_back?: number;
     } = {}
   ): Promise<QueryResult> => {
     return fetchJson<QueryResult>('/api/query/sql', {
@@ -198,6 +200,8 @@ export const api = {
       processor_id?: string;
       start_date?: string;
       end_date?: string;
+      range_type?: string;
+      periods_back?: number;
     } = {}
   ): Promise<QueryResult> => {
     return fetchJson<QueryResult>('/api/query/drilldown', {
