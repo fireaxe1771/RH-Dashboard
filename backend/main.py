@@ -518,10 +518,12 @@ async def delete_dashboard(dashboard_id: str, db = Depends(get_db)):
     "/api/query/sql",
     dependencies=[Depends(get_current_user)]
 )
-async def run_query(request: SQLQueryRequest):
+def run_query(request: SQLQueryRequest):
     """Runs a read-only parameterized query against the target database.
-    
-    Throws 400 Bad Request with driver stack details on compilation or safety failures.
+
+    Declared as a sync ``def`` so FastAPI dispatches it to the thread-pool,
+    allowing multiple widget queries to execute concurrently instead of
+    blocking the async event loop one-by-one.
     """
     try:
         result = target_db.execute_read(request.sql_query, request.filters)
@@ -537,7 +539,7 @@ async def run_query(request: SQLQueryRequest):
     "/api/schema/sql",
     dependencies=[Depends(get_current_user)]
 )
-async def get_schema():
+def get_schema():
     """Returns database structures and metadata tables representing Azure SQL tables."""
     try:
         return target_db.get_db_schema()
@@ -552,7 +554,7 @@ async def get_schema():
     "/api/filters/options",
     dependencies=[Depends(get_current_user)]
 )
-async def get_filters():
+def get_filters():
     """Loads active filter options from database tables."""
     try:
         return target_db.get_filter_dropdown_options()
@@ -567,7 +569,7 @@ async def get_filters():
     "/api/server-date",
     dependencies=[Depends(get_current_user)]
 )
-async def get_server_date():
+def get_server_date():
     """Returns the database server's current date via GETDATE().
 
     The frontend uses this to display accurate date ranges aligned with the
@@ -587,7 +589,7 @@ async def get_server_date():
     "/api/query/drilldown",
     dependencies=[Depends(get_current_user)]
 )
-async def run_drilldown(request: DrillDownRequest):
+def run_drilldown(request: DrillDownRequest):
     """Executes a secure claims search mapping clicked visualization elements."""
     try:
         return target_db.execute_drilldown(
