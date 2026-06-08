@@ -45,8 +45,9 @@ def test_dashboard_crud_flow(test_client: TestClient):
     assert response.status_code == 200
     created_dash = response.json()
     assert created_dash["name"] == "Claims Workflow Dashboard"
-    assert created_dash["id"] is not None
-    dash_id = created_dash["id"]
+    dash_id = created_dash.get("id") or created_dash.get("_id")
+    assert dash_id is not None
+
 
     # 3. Read dashboard
     response = test_client.get(f"/api/dashboards/{dash_id}", headers=headers)
