@@ -85,8 +85,8 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
 
     # NULL-safe date filter clause fragment (reused across date-filtered widgets)
     _date_filter = (
-        "(%(start_date)s IS NULL OR c.DateCreated >= %(start_date)s)\n"
-        "                  AND (%(end_date)s IS NULL OR c.DateCreated <= %(end_date)s)"
+        "(%(start_date)s IS NULL OR c.created >= %(start_date)s)\n"
+        "                  AND (%(end_date)s IS NULL OR c.created <= %(end_date)s)"
     )
 
     return {
@@ -123,20 +123,20 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "type": "stat",
                 "sql_query": f"""
                 WITH DraftRoots AS (
-                    SELECT DISTINCT ClaimID
+                    SELECT DISTINCT id
                     FROM Claims FOR SYSTEM_TIME ALL
                     WHERE submitted = 0
                       AND original_run_id IS NULL
-                      AND DateCreated >= {current_year}
+                      AND created >= {current_year}
                 ),
                 CurrentClaims AS (
-                    SELECT DISTINCT ClaimID
+                    SELECT DISTINCT id
                     FROM Claims
                 )
                 SELECT COUNT(*) AS Count
                 FROM DraftRoots d
-                LEFT JOIN CurrentClaims c ON c.ClaimID = d.ClaimID
-                WHERE c.ClaimID IS NULL
+                LEFT JOIN CurrentClaims c ON c.id = d.id
+                WHERE c.id IS NULL
                 """,
                 "layout": {"x": 3, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#ef4444"]},
@@ -151,7 +151,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 WHERE c.submitted = 1
                   AND c.archived = 0
                   AND c.original_run_id IS NOT NULL
-                  AND c.DateCreated >= {current_year}
+                  AND c.created >= {current_year}
                 """,
                 "layout": {"x": 6, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#22c55e"]},
@@ -161,7 +161,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "Drafts Still Open",
                 "type": "stat",
                 "sql_query": """
-                SELECT COUNT(DISTINCT c.ClaimID) AS Count
+                SELECT COUNT(DISTINCT c.id) AS Count
                 FROM Claims c
                 WHERE c.submitted = 0
                   AND c.original_run_id IS NULL
@@ -176,36 +176,36 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "New Runs by Status",
                 "type": "bar",
                 "sql_query": f"""
-                SELECT c.Status, COUNT(DISTINCT c.ClaimID) AS Count
+                SELECT c.status, COUNT(DISTINCT c.id) AS Count
                 FROM Claims c
                 WHERE c.submitted = 1
                   AND c.archived = 0
                   AND c.original_run_id IS NOT NULL
                   AND {_date_filter}
-                GROUP BY c.Status
-                ORDER BY Count DESC, c.Status
+                GROUP BY c.status
+                ORDER BY Count DESC, c.status
                 """,
                 "layout": {"x": 0, "y": 3, "w": 6, "h": 5},
-                "config": {"xAxisKey": "Status", "yAxisKeys": ["Count"], "colors": ["#8b5cf6"]},
+                "config": {"xAxisKey": "status", "yAxisKeys": ["Count"], "colors": ["#8b5cf6"]},
             },
             {
                 "id": "claims-active-by-status",
                 "title": "Active Runs by Status",
                 "type": "bar",
                 "sql_query": f"""
-                SELECT c.Status, COUNT(DISTINCT c.ClaimID) AS Count
+                SELECT c.status, COUNT(DISTINCT c.id) AS Count
                 FROM Claims c
                 WHERE c.submitted = 1
                   AND c.archived = 0
                   AND c.original_run_id IS NOT NULL
-                  AND c.user_id <> '0'
-                  AND c.Status <> 'Unassigned'
+                  AND c.user_id <> 0
+                  AND c.status <> 'Unassigned'
                   AND {_date_filter}
-                GROUP BY c.Status
-                ORDER BY Count DESC, c.Status
+                GROUP BY c.status
+                ORDER BY Count DESC, c.status
                 """,
                 "layout": {"x": 6, "y": 3, "w": 6, "h": 5},
-                "config": {"xAxisKey": "Status", "yAxisKeys": ["Count"], "colors": ["#0ea5e9"]},
+                "config": {"xAxisKey": "status", "yAxisKeys": ["Count"], "colors": ["#0ea5e9"]},
             },
 
             # ── Row 3: financial YTD stat cards ──────────────────────
@@ -214,11 +214,11 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "Total Claims Amount YTD",
                 "type": "stat",
                 "sql_query": f"""
-                SELECT COALESCE(SUM(c.Amount), 0) AS Amount
+                SELECT COALESCE(SUM(c.amount_invoiced), 0) AS Amount
                 FROM Claims c
                 WHERE c.submitted = 1
                   AND c.archived = 0
-                  AND c.DateCreated >= {current_year}
+                  AND c.created >= {current_year}
                 """,
                 "layout": {"x": 0, "y": 8, "w": 4, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#14b8a6"], "format": "currency"},
@@ -228,7 +228,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "Avg Claim Amount (Period)",
                 "type": "stat",
                 "sql_query": f"""
-                SELECT COALESCE(AVG(c.Amount), 0) AS Amount
+                SELECT COALESCE(AVG(c.amount_invoiced), 0) AS Amount
                 FROM Claims c
                 WHERE c.submitted = 1
                   AND c.archived = 0
@@ -242,16 +242,16 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "Amount by Status (Period)",
                 "type": "bar",
                 "sql_query": f"""
-                SELECT c.Status, COALESCE(SUM(c.Amount), 0) AS Amount
+                SELECT c.status, COALESCE(SUM(c.amount_invoiced), 0) AS Amount
                 FROM Claims c
                 WHERE c.submitted = 1
                   AND c.archived = 0
                   AND {_date_filter}
-                GROUP BY c.Status
+                GROUP BY c.status
                 ORDER BY Amount DESC
                 """,
                 "layout": {"x": 8, "y": 8, "w": 4, "h": 3},
-                "config": {"xAxisKey": "Status", "yAxisKeys": ["Amount"], "colors": ["#f97316"], "format": "currency"},
+                "config": {"xAxisKey": "status", "yAxisKeys": ["Amount"], "colors": ["#f97316"], "format": "currency"},
             },
 
             # ── Row 4: period comparison + monthly trend ─────────────
@@ -297,7 +297,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                     WHERE submitted = 1
                       AND archived = 0
                       AND original_run_id IS NOT NULL
-                      AND DateSubmitted BETWEEN %(start_date)s AND %(end_date)s
+                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 ),
                 prior_submitted AS (
                     SELECT *,
@@ -306,7 +306,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                     WHERE submitted = 1
                       AND archived = 0
                       AND original_run_id IS NOT NULL
-                      AND DateSubmitted BETWEEN %(prior_start_date)s AND %(prior_end_date)s
+                      AND date_of_submitted BETWEEN %(prior_start_date)s AND %(prior_end_date)s
                 )
                 SELECT 'Selected Period' AS Period, COUNT(*) AS DraftsSubmitted
                 FROM selected_submitted WHERE rn = 1
@@ -325,14 +325,14 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "type": "line",
                 "sql_query": f"""
                 SELECT
-                    FORMAT(c.DateCreated, 'MMM') AS Month,
-                    COUNT(DISTINCT c.ClaimID) AS Claims
+                    FORMAT(c.created, 'MMM') AS Month,
+                    COUNT(DISTINCT c.id) AS Claims
                 FROM Claims c
                 WHERE c.submitted = 1
                   AND c.archived = 0
-                  AND c.DateCreated >= {current_year}
-                GROUP BY FORMAT(c.DateCreated, 'MMM'), MONTH(c.DateCreated)
-                ORDER BY MONTH(c.DateCreated)
+                  AND c.created >= {current_year}
+                GROUP BY FORMAT(c.created, 'MMM'), MONTH(c.created)
+                ORDER BY MONTH(c.created)
                 """,
                 "layout": {"x": 0, "y": 15, "w": 12, "h": 4},
                 "config": {"xAxisKey": "Month", "yAxisKeys": ["Claims"], "colors": ["#6366f1"]},
