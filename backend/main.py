@@ -108,7 +108,10 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                       AND original_run_id IS NULL
                       AND created BETWEEN %(ytd_start)s AND %(end_date)s
                 )
-                SELECT COUNT(*) AS Count
+                SELECT
+                    FORMAT(COUNT(*), '#,0') + ' / '
+                    + FORMAT(CAST(ROUND(COUNT(*) * 1.0 / DATEPART(WEEK, CAST(%(end_date)s AS DATE)), 0) AS INT), '#,0')
+                    + ' per week' AS Count
                 FROM draft
                 WHERE rn = 1
                 """,
@@ -131,7 +134,10 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                     SELECT DISTINCT id
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(ytd_start)s AND %(end_date)s
                 )
-                SELECT COUNT(*) AS Count
+                SELECT
+                    FORMAT(COUNT(*), '#,0') + ' / '
+                    + FORMAT(CAST(ROUND(COUNT(*) * 1.0 / DATEPART(WEEK, CAST(%(end_date)s AS DATE)), 0) AS INT), '#,0')
+                    + ' per week' AS Count
                 FROM DraftRoots d
                 LEFT JOIN CurrentClaims c ON c.id = d.id
                 WHERE c.id IS NULL
@@ -144,7 +150,10 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "Drafts Submitted YTD",
                 "type": "stat",
                 "sql_query": f"""
-                SELECT COUNT(DISTINCT c.original_run_id) AS Count
+                SELECT
+                    FORMAT(COUNT(DISTINCT c.original_run_id), '#,0') + ' / '
+                    + FORMAT(CAST(ROUND(COUNT(DISTINCT c.original_run_id) * 1.0 / DATEPART(WEEK, CAST(%(end_date)s AS DATE)), 0) AS INT), '#,0')
+                    + ' per week' AS Count
                 FROM Claims c
                 WHERE c.submitted = 1
                   AND c.archived = 0
