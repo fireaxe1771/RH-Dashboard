@@ -42,6 +42,8 @@ services:
     environment:
       - VITE_AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
       - VITE_AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      # nginx proxies /api/* to the backend container on the shared network
+      - BACKEND_URL=http://backend:8000
     depends_on:
       - backend
     networks:
