@@ -68,26 +68,45 @@ def serialize_mongo_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
     return doc
 
 def _build_default_claims_dashboard() -> Dict[str, Any]:
-    """Builds the first claims dashboard template for a current-year claim flow overview."""
+    """Builds the first claims dashboard template for a current-year claim flow overview.
+
+    Widget categories
+    -----------------
+    * **YTD stat cards** – always scoped Jan-1-to-now; department / processor
+      filters are auto-injected by the backend.
+    * **Date-filtered charts** – honour the filter-bar date range via explicit
+      ``%(start_date)s`` / ``%(end_date)s`` parameters (NULL-safe so they
+      degrade gracefully when no dates are set).
+    * **Period comparison** – compares the selected date range to an
+      equally-long prior period.
+    * **Monthly trend** – always YTD for context.
+    """
     current_year = "DATEFROMPARTS(YEAR(GETDATE()), 1, 1)"
+
+    # NULL-safe date filter clause fragment (reused across date-filtered widgets)
+    _date_filter = (
+        "(%(start_date)s IS NULL OR c.DateCreated >= %(start_date)s)\n"
+        "                  AND (%(end_date)s IS NULL OR c.DateCreated <= %(end_date)s)"
+    )
 
     return {
         "name": "Claims Calendar-Year Overview",
         "description": (
-            "System-versioned claims dashboard limited to the current calendar year, "
-            "with current-week defaults and current/previous week comparisons for claim flow."
+            "Year-to-date claims dashboard with dynamic date-range filtering "
+            "and automatic prior-period comparison."
         ),
         "widgets": [
+            # ── Row 1: YTD stat cards ────────────────────────────────
             {
                 "id": "claims-draft-intake-ytd",
-                "title": "Draft Claims Created YTD",
+                "title": "Drafts Created YTD",
                 "type": "stat",
                 "sql_query": f"""
-                SELECT COUNT(DISTINCT c.ClaimID) AS Count
-                FROM Claims c
-                WHERE c.submitted = 0
-                  AND c.original_run_id IS NULL
-                  AND c.DateCreated >= {current_year}
+                SELECT COUNT(DISTINCT ClaimID) AS Count
+                FROM Claims FOR SYSTEM_TIME ALL
+                WHERE submitted = 0
+                  AND original_run_id IS NULL
+                  AND DateCreated >= {current_year}
                 """,
                 "layout": {"x": 0, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#6366f1"]},
@@ -132,19 +151,20 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#22c55e"]},
             },
             {
-                "id": "claims-draft-open-ytd",
-                "title": "Drafts Remaining YTD",
+                "id": "claims-draft-open",
+                "title": "Drafts Still Open",
                 "type": "stat",
-                "sql_query": f"""
+                "sql_query": """
                 SELECT COUNT(DISTINCT c.ClaimID) AS Count
                 FROM Claims c
                 WHERE c.submitted = 0
                   AND c.original_run_id IS NULL
-                  AND c.DateCreated >= {current_year}
                 """,
                 "layout": {"x": 9, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#f59e0b"]},
             },
+
+            # ── Row 2: date-filtered status charts ───────────────────
             {
                 "id": "claims-new-runs-by-status",
                 "title": "New Runs by Status",
@@ -155,7 +175,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 WHERE c.submitted = 1
                   AND c.archived = 0
                   AND c.original_run_id IS NOT NULL
-                  AND c.DateCreated >= {current_year}
+                  AND {_date_filter}
                 GROUP BY c.Status
                 ORDER BY Count DESC, c.Status
                 """,
@@ -174,72 +194,106 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                   AND c.original_run_id IS NOT NULL
                   AND c.user_id <> '0'
                   AND c.Status <> 'Unassigned'
-                  AND c.DateCreated >= {current_year}
+                  AND {_date_filter}
                 GROUP BY c.Status
                 ORDER BY Count DESC, c.Status
                 """,
                 "layout": {"x": 6, "y": 3, "w": 6, "h": 5},
                 "config": {"xAxisKey": "Status", "yAxisKeys": ["Count"], "colors": ["#0ea5e9"]},
             },
+
+            # ── Row 3: financial YTD stat cards ──────────────────────
             {
-                "id": "claims-weekly-comparison",
-                "title": "Current Week vs Previous Week",
-                "type": "table",
+                "id": "claims-total-amount-ytd",
+                "title": "Total Claims Amount YTD",
+                "type": "stat",
                 "sql_query": f"""
-                WITH WeekBounds AS (
-                    SELECT
-                        DATEADD(WEEK, DATEDIFF(WEEK, 0, CAST(GETDATE() AS date)), 0) AS CurrentWeekStart,
-                        DATEADD(DAY, 7, DATEADD(WEEK, DATEDIFF(WEEK, 0, CAST(GETDATE() AS date)), 0)) AS NextWeekStart,
-                        DATEADD(DAY, -7, DATEADD(WEEK, DATEDIFF(WEEK, 0, CAST(GETDATE() AS date)), 0)) AS PreviousWeekStart
-                )
-                SELECT
-                    Bucket,
-                    COUNT(DISTINCT ClaimID) AS Count
-                FROM (
-                    SELECT
-                        c.ClaimID,
-                        CASE
-                            WHEN c.DateCreated >= wb.CurrentWeekStart AND c.DateCreated < wb.NextWeekStart THEN 'Current Week'
-                            WHEN c.DateCreated >= wb.PreviousWeekStart AND c.DateCreated < wb.CurrentWeekStart THEN 'Previous Week'
-                        END AS Bucket
-                    FROM Claims c
-                    CROSS JOIN WeekBounds wb
-                    WHERE c.DateCreated >= wb.PreviousWeekStart
-                      AND c.DateCreated < wb.NextWeekStart
-                      AND c.DateCreated >= {current_year}
-                ) x
-                WHERE Bucket IS NOT NULL
-                GROUP BY Bucket
-                ORDER BY CASE Bucket WHEN 'Current Week' THEN 1 ELSE 2 END
+                SELECT COALESCE(SUM(c.Amount), 0) AS Amount
+                FROM Claims c
+                WHERE c.submitted = 1
+                  AND c.archived = 0
+                  AND c.DateCreated >= {current_year}
                 """,
-                "layout": {"x": 0, "y": 8, "w": 6, "h": 4},
-                "config": {"xAxisKey": "Bucket", "yAxisKeys": ["Count"], "colors": ["#14b8a6"]},
+                "layout": {"x": 0, "y": 8, "w": 4, "h": 3},
+                "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#14b8a6"], "format": "currency"},
             },
             {
-                "id": "claims-ai-indicators",
-                "title": "Potential AI / Automation Indicators",
+                "id": "claims-avg-amount",
+                "title": "Avg Claim Amount (Period)",
+                "type": "stat",
+                "sql_query": f"""
+                SELECT COALESCE(AVG(c.Amount), 0) AS Amount
+                FROM Claims c
+                WHERE c.submitted = 1
+                  AND c.archived = 0
+                  AND {_date_filter}
+                """,
+                "layout": {"x": 4, "y": 8, "w": 4, "h": 3},
+                "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#0ea5e9"], "format": "currency"},
+            },
+            {
+                "id": "claims-amount-by-status",
+                "title": "Amount by Status (Period)",
+                "type": "bar",
+                "sql_query": f"""
+                SELECT c.Status, COALESCE(SUM(c.Amount), 0) AS Amount
+                FROM Claims c
+                WHERE c.submitted = 1
+                  AND c.archived = 0
+                  AND {_date_filter}
+                GROUP BY c.Status
+                ORDER BY Amount DESC
+                """,
+                "layout": {"x": 8, "y": 8, "w": 4, "h": 3},
+                "config": {"xAxisKey": "Status", "yAxisKeys": ["Amount"], "colors": ["#f97316"], "format": "currency"},
+            },
+
+            # ── Row 4: period comparison + monthly trend ─────────────
+            {
+                "id": "claims-period-comparison",
+                "title": "Selected Period vs Prior Period",
                 "type": "table",
                 "sql_query": """
                 SELECT
-                    t.name AS TableName,
-                    c.name AS ColumnName,
-                    ty.name AS DataType
-                FROM sys.tables t
-                INNER JOIN sys.columns c ON c.object_id = t.object_id
-                INNER JOIN sys.types ty ON c.user_type_id = ty.user_type_id
-                WHERE t.name IN ('Claims', 'Invoices')
-                  AND (
-                    c.name LIKE '%AI%'
-                    OR c.name LIKE '%ML%'
-                    OR c.name LIKE '%OCR%'
-                    OR c.name LIKE '%AUTO%'
-                    OR c.name LIKE '%INTELL%'
-                    OR c.name LIKE '%PROCESS%'
-                  )
-                ORDER BY t.name, c.name
+                    'Selected Period' AS Period,
+                    COUNT(DISTINCT c.ClaimID) AS Claims,
+                    COALESCE(SUM(c.Amount), 0) AS TotalAmount
+                FROM Claims c
+                WHERE c.DateCreated >= %(start_date)s
+                  AND c.DateCreated <= %(end_date)s
+                  AND (%(department_id)s IS NULL OR c.DepartmentID = %(department_id)s)
+                  AND (%(processor_id)s IS NULL OR c.ProcessorID = %(processor_id)s)
+                UNION ALL
+                SELECT
+                    'Prior Period' AS Period,
+                    COUNT(DISTINCT c2.ClaimID) AS Claims,
+                    COALESCE(SUM(c2.Amount), 0) AS TotalAmount
+                FROM Claims c2
+                WHERE c2.DateCreated >= %(prior_start_date)s
+                  AND c2.DateCreated <= %(prior_end_date)s
+                  AND (%(department_id)s IS NULL OR c2.DepartmentID = %(department_id)s)
+                  AND (%(processor_id)s IS NULL OR c2.ProcessorID = %(processor_id)s)
                 """,
-                "layout": {"x": 6, "y": 8, "w": 6, "h": 4},
-                "config": {"xAxisKey": "TableName", "yAxisKeys": ["ColumnName"], "colors": ["#f97316"]},
+                "layout": {"x": 0, "y": 11, "w": 6, "h": 4},
+                "config": {"xAxisKey": "Period", "yAxisKeys": ["Claims", "TotalAmount"], "colors": ["#14b8a6"]},
+            },
+            {
+                "id": "claims-monthly-trend",
+                "title": "Monthly Claims Trend (YTD)",
+                "type": "line",
+                "sql_query": f"""
+                SELECT
+                    FORMAT(c.DateCreated, 'MMM') AS Month,
+                    COUNT(DISTINCT c.ClaimID) AS Claims
+                FROM Claims c
+                WHERE c.submitted = 1
+                  AND c.archived = 0
+                  AND c.DateCreated >= {current_year}
+                GROUP BY FORMAT(c.DateCreated, 'MMM'), MONTH(c.DateCreated)
+                ORDER BY MONTH(c.DateCreated)
+                """,
+                "layout": {"x": 6, "y": 11, "w": 6, "h": 4},
+                "config": {"xAxisKey": "Month", "yAxisKeys": ["Claims"], "colors": ["#6366f1"]},
             },
         ],
     }

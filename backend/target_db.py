@@ -2,6 +2,7 @@ import pymssql
 import logging
 import re
 import struct
+from datetime import date, timedelta
 from typing import List, Dict, Any, Tuple
 from azure.identity import ClientSecretCredential
 from config import settings
@@ -126,7 +127,85 @@ class SQLConnection:
 
         return re.sub(r"\bDateCreated\b", date_column, query)
 
-    def _prepare_claims_query(self, query: str, conn) -> str:
+    # SQL keywords excluded when detecting table aliases after FROM Claims
+    _ALIAS_EXCLUDE = frozenset({
+        'WHERE', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'ON',
+        'GROUP', 'ORDER', 'HAVING', 'UNION', 'EXCEPT', 'INTERSECT', 'AND',
+        'OR', 'NOT', 'SET', 'INTO', 'VALUES', 'FROM', 'SELECT', 'WITH',
+        'WHEN', 'THEN', 'ELSE', 'END', 'AS', 'CASE', 'TOP', 'DISTINCT',
+        'ALL', 'EXISTS', 'IN', 'BETWEEN', 'LIKE', 'IS', 'NULL', 'DESC',
+        'ASC', 'LIMIT', 'OFFSET', 'FETCH', 'FOR', 'INSERT', 'UPDATE',
+        'DELETE', 'DROP', 'ALTER', 'CREATE', 'TRUNCATE', 'EXEC', 'EXECUTE',
+    })
+
+    def _inject_claim_filters(self, query: str, filters: DashboardFilters,
+                               column_map: Dict[str, str]) -> str:
+        """Auto-inject department/processor filter conditions into Claims queries.
+
+        Wraps ``FROM Claims`` references with a filtered subquery so that
+        department and processor filters are applied even when the widget SQL
+        does not explicitly include filter parameters.
+
+        Date filters (start_date / end_date) are NOT auto-injected — widgets
+        that need date filtering include %(start_date)s / %(end_date)s
+        explicitly so YTD widgets are not unintentionally narrowed.
+        """
+        if not filters:
+            return query
+        if not re.search(r'\bClaims\b', query, re.IGNORECASE):
+            return query
+
+        dept_col = column_map.get('DepartmentID', 'DepartmentID')
+        proc_col = column_map.get('ProcessorID', 'ProcessorID')
+
+        conditions: list[str] = []
+        if filters.department_id and '%(department_id)s' not in query:
+            conditions.append(f"{dept_col} = %(department_id)s")
+        if filters.processor_id and '%(processor_id)s' not in query:
+            conditions.append(f"{proc_col} = %(processor_id)s")
+
+        if not conditions:
+            return query
+
+        where_clause = ' AND '.join(conditions)
+
+        # Pattern: FROM Claims [FOR SYSTEM_TIME ALL] [alias]
+        pattern = (
+            r'\bFROM\s+Claims\b'
+            r'(\s+FOR\s+SYSTEM_TIME\s+ALL\b)?'
+            r'(?:\s+(?!'
+            + '|'.join(rf'{kw}\b' for kw in sorted(self._ALIAS_EXCLUDE))
+            + r')([a-zA-Z_]\w*))?'
+        )
+
+        def _replace(match: re.Match) -> str:
+            temporal = (match.group(1) or '').strip()
+            alias = match.group(2) or '_fc'
+            temporal_str = f' {temporal}' if temporal else ''
+            inner = f'SELECT * FROM Claims{temporal_str} WHERE {where_clause}'
+            return f'FROM ({inner}) {alias}'
+
+        return re.sub(pattern, _replace, query, flags=re.IGNORECASE)
+
+    @staticmethod
+    def compute_prior_period(start_str: str | None, end_str: str | None):
+        """Compute an equally-long prior period ending the day before *start_str*."""
+        if not start_str or not end_str:
+            return None, None
+        try:
+            start = date.fromisoformat(start_str)
+            end = date.fromisoformat(end_str)
+        except (ValueError, TypeError):
+            return None, None
+        period_days = (end - start).days
+        if period_days < 0:
+            return None, None
+        prior_end = start - timedelta(days=1)
+        prior_start = prior_end - timedelta(days=period_days)
+        return prior_start.isoformat(), prior_end.isoformat()
+
+    def _prepare_claims_query(self, query: str, conn,
+                               filters: DashboardFilters | None = None) -> str:
         """Normalizes legacy dashboard SQL before validation/execution."""
         if not re.search(r"\bClaims\b", query, re.IGNORECASE):
             return query
@@ -138,7 +217,13 @@ class SQLConnection:
             query = re.sub(rf"\b{re.escape(legacy_name)}\b", actual_name, query)
 
         claims_date_column = self._resolve_claims_date_column(conn)
-        return self._rewrite_claims_date_column(query, claims_date_column)
+        query = self._rewrite_claims_date_column(query, claims_date_column)
+
+        # Auto-inject department / processor filters
+        if filters:
+            query = self._inject_claim_filters(query, filters, claims_column_map)
+
+        return query
 
     def _resolve_claims_column_map(self, conn) -> Dict[str, str]:
         """Builds a legacy-to-actual column map for the Claims table from live metadata."""
@@ -254,7 +339,8 @@ class SQLConnection:
         destructive_patterns = [
             r"\bINSERT\b", r"\bUPDATE\b", r"\bDELETE\b", r"\bDROP\b",
             r"\bALTER\b", r"\bCREATE\b", r"\bTRUNCATE\b", r"\bEXEC\b",
-            r"\bEXECUTE\b", r"\bGRANT\b", r"\bREVOKE\b"
+            r"\bEXECUTE\b", r"\bGRANT\b", r"\bREVOKE\b",
+            r"\bSELECT\b[^;]*?\bINTO\b",  # SELECT ... INTO (table creation)
         ]
         
         for pattern in destructive_patterns:
@@ -268,16 +354,27 @@ class SQLConnection:
         Fails loudly by raising TargetDatabaseError if SQL syntax is incorrect or connections fail.
         """
         # Prepare parameters dictionary
+        start_date = filters.start_date if filters else None
+        end_date = filters.end_date if filters else None
+        prior_start, prior_end = self.compute_prior_period(start_date, end_date)
+
         params = {
             "department_id": filters.department_id if filters else None,
             "processor_id": filters.processor_id if filters else None,
-            "start_date": filters.start_date if filters else None,
-            "end_date": filters.end_date if filters else None
+            "start_date": start_date,
+            "end_date": end_date,
+            "prior_start_date": prior_start,
+            "prior_end_date": prior_end,
         }
 
-        conn = self._get_connection()
         try:
-            query = self._prepare_claims_query(query, conn)
+            conn = self._get_connection()
+        except Exception as e:
+            logger.error(f"Azure SQL connection error: {e}")
+            raise TargetDatabaseError(f"Azure SQL Connection Failure: {e}")
+
+        try:
+            query = self._prepare_claims_query(query, conn, filters)
             self.validate_query(query)
 
             with conn.cursor() as cursor:
@@ -294,6 +391,8 @@ class SQLConnection:
                     "columns": columns,
                     "rows": cleaned_rows
                 }
+        except TargetDatabaseError:
+            raise
         except Exception as e:
             logger.error(f"SQL execution error on query: '{query}': {e}")
             raise TargetDatabaseError(f"Database Query Execution Failed: {e}")
@@ -429,7 +528,7 @@ class SQLConnection:
 
         conn = self._get_connection()
         try:
-            query = self._prepare_claims_query(query, conn)
+            query = self._prepare_claims_query(query, conn, filters)
             self.validate_query(query)
 
             with conn.cursor() as cursor:
