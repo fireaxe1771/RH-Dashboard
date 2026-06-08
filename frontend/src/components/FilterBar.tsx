@@ -18,7 +18,7 @@ interface FilterBarProps {
   onChange: (filters: DashboardFilters) => void;
 }
 
-// ── Date helpers (Monday-based weeks, consistent with SQL Server) ────────
+// ── Date helpers (Sunday-based rolling weeks) ────────────────────────────
 
 const fmt = (d: Date): string => d.toISOString().slice(0, 10);
 
@@ -30,15 +30,24 @@ export function computeDateRange(
   today.setHours(0, 0, 0, 0);
 
   if (rangeType === 'week') {
-    const day = today.getDay();
-    const diffToMonday = day === 0 ? 6 : day - 1;
-    const monday = new Date(today);
-    monday.setDate(today.getDate() - diffToMonday - periodsBack * 7);
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
+    const currentWeekStart = new Date(today);
+    currentWeekStart.setDate(today.getDate() - today.getDay());
+
+    if (periodsBack === 0) {
+      return {
+        start_date: fmt(currentWeekStart),
+        end_date: fmt(today),
+      };
+    }
+
+    const start = new Date(currentWeekStart);
+    start.setDate(currentWeekStart.getDate() - periodsBack * 7);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+
     return {
-      start_date: fmt(monday),
-      end_date: periodsBack === 0 ? fmt(today) : fmt(sunday),
+      start_date: fmt(start),
+      end_date: fmt(end),
     };
   }
 
