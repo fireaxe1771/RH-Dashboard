@@ -211,8 +211,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 WITH new_runs AS (
                     SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
-                    WHERE ClaimCurrentTypeId = 1
-                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
+                    WHERE COALESCE(date_of_submitted, created) BETWEEN %(start_date)s AND %(end_date)s
                 )
                 SELECT
                     CASE WHEN submitted = 1 THEN 'Submitted' ELSE 'Recycled' END AS RunType,
