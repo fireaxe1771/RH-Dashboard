@@ -170,45 +170,85 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#f59e0b"]},
             },
 
-            # ── Row 2: date-filtered status charts ───────────────────
+            # ── Row 2: current totals for new & active runs ──────────
             {
-                "id": "claims-new-runs-by-status",
-                "title": "New Runs by Status",
-                "type": "bar",
-                "sql_query": f"""
-                SELECT c.status, COUNT(DISTINCT c.id) AS Count
+                "id": "claims-current-new-runs",
+                "title": "Current New Runs",
+                "type": "stat",
+                "sql_query": """
+                SELECT COUNT(DISTINCT c.id) AS Count
                 FROM Claims c
                 WHERE c.submitted = 1
                   AND c.archived = 0
                   AND c.original_run_id IS NOT NULL
                   AND c.ClaimCurrentTypeId = 1
-                  AND {_date_filter}
-                GROUP BY c.status
-                ORDER BY Count DESC, c.status
                 """,
-                "layout": {"x": 0, "y": 3, "w": 6, "h": 5},
-                "config": {"xAxisKey": "status", "yAxisKeys": ["Count"], "colors": ["#8b5cf6"]},
+                "layout": {"x": 0, "y": 3, "w": 3, "h": 3},
+                "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#8b5cf6"]},
             },
             {
-                "id": "claims-active-by-status",
-                "title": "Active Runs by Status",
-                "type": "bar",
-                "sql_query": f"""
-                SELECT c.status, COUNT(DISTINCT c.id) AS Count
+                "id": "claims-current-active-runs",
+                "title": "Current Active Runs",
+                "type": "stat",
+                "sql_query": """
+                SELECT COUNT(DISTINCT c.id) AS Count
                 FROM Claims c
                 WHERE c.submitted = 1
                   AND c.archived = 0
                   AND c.original_run_id IS NOT NULL
                   AND c.ClaimCurrentTypeId = 4
-                  AND {_date_filter}
-                GROUP BY c.status
-                ORDER BY Count DESC, c.status
                 """,
-                "layout": {"x": 6, "y": 3, "w": 6, "h": 5},
+                "layout": {"x": 3, "y": 3, "w": 3, "h": 3},
+                "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#0ea5e9"]},
+            },
+
+            # ── Row 3: temporal status charts (runs processed during period) ──
+            {
+                "id": "claims-new-runs-by-status",
+                "title": "New Runs Processed During Period",
+                "type": "bar",
+                "sql_query": """
+                WITH new_runs AS (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
+                    FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
+                    WHERE ClaimCurrentTypeId = 1
+                      AND submitted = 1
+                      AND archived = 0
+                      AND original_run_id IS NOT NULL
+                      AND created BETWEEN %(start_date)s AND %(end_date)s
+                )
+                SELECT status, COUNT(*) AS Count
+                FROM new_runs WHERE rn = 1
+                GROUP BY status
+                ORDER BY Count DESC, status
+                """,
+                "layout": {"x": 6, "y": 3, "w": 6, "h": 3},
+                "config": {"xAxisKey": "status", "yAxisKeys": ["Count"], "colors": ["#8b5cf6"]},
+            },
+            {
+                "id": "claims-active-by-status",
+                "title": "Active Runs Processed During Period",
+                "type": "bar",
+                "sql_query": """
+                WITH active_runs AS (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
+                    FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
+                    WHERE ClaimCurrentTypeId = 4
+                      AND submitted = 1
+                      AND archived = 0
+                      AND original_run_id IS NOT NULL
+                      AND created BETWEEN %(start_date)s AND %(end_date)s
+                )
+                SELECT status, COUNT(*) AS Count
+                FROM active_runs WHERE rn = 1
+                GROUP BY status
+                ORDER BY Count DESC, status
+                """,
+                "layout": {"x": 0, "y": 6, "w": 12, "h": 5},
                 "config": {"xAxisKey": "status", "yAxisKeys": ["Count"], "colors": ["#0ea5e9"]},
             },
 
-            # ── Row 3: financial YTD stat cards ──────────────────────
+            # ── Row 4: financial YTD stat cards ──────────────────────
             {
                 "id": "claims-total-amount-ytd",
                 "title": "Total Claims Amount YTD",
@@ -220,7 +260,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                   AND c.archived = 0
                   AND c.created >= {current_year}
                 """,
-                "layout": {"x": 0, "y": 8, "w": 4, "h": 3},
+                "layout": {"x": 0, "y": 11, "w": 4, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#14b8a6"], "format": "currency"},
             },
             {
@@ -234,7 +274,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                   AND c.archived = 0
                   AND {_date_filter}
                 """,
-                "layout": {"x": 4, "y": 8, "w": 4, "h": 3},
+                "layout": {"x": 4, "y": 11, "w": 4, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#0ea5e9"], "format": "currency"},
             },
             {
@@ -250,11 +290,11 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 GROUP BY c.status
                 ORDER BY Amount DESC
                 """,
-                "layout": {"x": 8, "y": 8, "w": 4, "h": 3},
+                "layout": {"x": 8, "y": 11, "w": 4, "h": 3},
                 "config": {"xAxisKey": "status", "yAxisKeys": ["Amount"], "colors": ["#f97316"], "format": "currency"},
             },
 
-            # ── Row 4: period comparison + monthly trend ─────────────
+            # ── Row 5: period comparison + monthly trend ─────────────
             {
                 "id": "claims-period-comparison",
                 "title": "Drafts Created – Selected vs Prior Period",
@@ -282,7 +322,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 SELECT 'Prior Period' AS Period, COUNT(*) AS DraftsCreated
                 FROM prior_draft WHERE rn = 1
                 """,
-                "layout": {"x": 0, "y": 11, "w": 6, "h": 4},
+                "layout": {"x": 0, "y": 14, "w": 6, "h": 4},
                 "config": {"xAxisKey": "Period", "yAxisKeys": ["DraftsCreated"], "colors": ["#14b8a6"]},
             },
             {
@@ -314,11 +354,11 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 SELECT 'Prior Period' AS Period, COUNT(*) AS DraftsSubmitted
                 FROM prior_submitted WHERE rn = 1
                 """,
-                "layout": {"x": 6, "y": 11, "w": 6, "h": 4},
+                "layout": {"x": 6, "y": 14, "w": 6, "h": 4},
                 "config": {"xAxisKey": "Period", "yAxisKeys": ["DraftsSubmitted"], "colors": ["#22c55e"]},
             },
 
-            # ── Row 5: monthly trend ──────────────────────────────────
+            # ── Row 6: monthly trend ──────────────────────────────────
             {
                 "id": "claims-monthly-trend",
                 "title": "Monthly Claims Trend (YTD)",
@@ -334,7 +374,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 GROUP BY FORMAT(c.created, 'MMM'), MONTH(c.created)
                 ORDER BY MONTH(c.created)
                 """,
-                "layout": {"x": 0, "y": 15, "w": 12, "h": 4},
+                "layout": {"x": 0, "y": 18, "w": 12, "h": 4},
                 "config": {"xAxisKey": "Month", "yAxisKeys": ["Claims"], "colors": ["#6366f1"]},
             },
         ],
