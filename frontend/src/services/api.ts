@@ -183,6 +183,14 @@ export const api = {
   },
 
   /**
+   * Get the database server's current date (from SQL Server GETDATE()).
+   */
+  getServerDate: async (): Promise<string> => {
+    const result = await fetchJson<{ date: string }>('/api/server-date');
+    return result.date;
+  },
+
+  /**
    * Get dropdown filter options (departments, processors, claim types).
    */
   getFilterOptions: async (): Promise<FilterOptions> => {
