@@ -88,10 +88,10 @@ def test_default_dashboard_uses_correct_columns():
     assert "FOR SYSTEM_TIME BETWEEN" in ytd["sql_query"]
     assert "%(end_date)s" in ytd["sql_query"]
 
-    # Period comparison uses id/created
+    # Period comparison uses id/date_of_submitted
     period = widgets["claims-period-comparison"]
     assert "PARTITION BY id ORDER BY id" in period["sql_query"]
-    assert "created BETWEEN" in period["sql_query"]
+    assert "date_of_submitted BETWEEN" in period["sql_query"]
     assert "%(start_date)s" in period["sql_query"]
     assert "%(prior_start_date)s" in period["sql_query"]
 

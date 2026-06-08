@@ -215,7 +215,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                       AND submitted = 1
                       AND archived = 0
                       AND original_run_id IS NOT NULL
-                      AND created BETWEEN %(start_date)s AND %(end_date)s
+                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 )
                 SELECT status, COUNT(*) AS Count
                 FROM new_runs WHERE rn = 1
@@ -237,7 +237,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                       AND submitted = 1
                       AND archived = 0
                       AND original_run_id IS NOT NULL
-                      AND created BETWEEN %(start_date)s AND %(end_date)s
+                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 )
                 SELECT status, COUNT(*) AS Count
                 FROM active_runs WHERE rn = 1
@@ -307,7 +307,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
                     WHERE submitted = 0
                       AND original_run_id IS NULL
-                      AND created BETWEEN %(start_date)s AND %(end_date)s
+                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 ),
                 prior_draft AS (
                     SELECT *,
@@ -315,7 +315,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(prior_start_date)s AND %(prior_end_date)s
                     WHERE submitted = 0
                       AND original_run_id IS NULL
-                      AND created BETWEEN %(prior_start_date)s AND %(prior_end_date)s
+                      AND date_of_submitted BETWEEN %(prior_start_date)s AND %(prior_end_date)s
                 )
                 SELECT 'Selected Period' AS Period, COUNT(*) AS DraftsCreated
                 FROM selected_draft WHERE rn = 1
