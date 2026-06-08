@@ -11,3 +11,7 @@ backend/__pycache__/
 # Virtual environments
 .venv/
 venv/
+
+# Frontend build artifacts & dependencies
+frontend/dist/
+frontend/node_modules/

@@ -187,6 +187,68 @@ class SQLConnection:
 
         return re.sub(pattern, _replace, query, flags=re.IGNORECASE)
 
+    def get_server_date(self) -> date:
+        """Return the current date from SQL Server via ``CAST(GETDATE() AS DATE)``."""
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT CAST(GETDATE() AS DATE)")
+                row = cursor.fetchone()
+                if row and row[0]:
+                    val = row[0]
+                    if isinstance(val, date):
+                        return val
+                    return date.fromisoformat(str(val))
+        except Exception as e:
+            logger.warning(f"Failed to fetch server date, falling back to UTC: {e}")
+        finally:
+            conn.close()
+        return date.today()
+
+    @staticmethod
+    def compute_date_range(server_today: date, range_type: str, periods_back: int
+                           ) -> tuple[str, str]:
+        """Compute a (start, end) date range based on *server_today*.
+
+        Week boundaries are **Sunday → Saturday**.
+        For the current period (periods_back == 0), end_date is today.
+        """
+        if range_type == 'week':
+            dow = server_today.weekday()  # Mon=0 … Sun=6
+            # days since last Sunday: Sunday weekday()=6 → 0, Mon=0 → 1, … Sat=5 → 6
+            days_since_sunday = (dow + 1) % 7
+            sunday = server_today - timedelta(days=days_since_sunday + periods_back * 7)
+            saturday = sunday + timedelta(days=6)
+            end = server_today if periods_back == 0 else saturday
+            return sunday.isoformat(), end.isoformat()
+
+        if range_type == 'month':
+            # Walk back *periods_back* months from the 1st of the current month
+            ref_year = server_today.year
+            ref_month = server_today.month - periods_back
+            while ref_month < 1:
+                ref_month += 12
+                ref_year -= 1
+            start = date(ref_year, ref_month, 1)
+            # Last day of the month
+            next_month = ref_month + 1
+            next_year = ref_year
+            if next_month > 12:
+                next_month = 1
+                next_year += 1
+            last_day = date(next_year, next_month, 1) - timedelta(days=1)
+            end = server_today if periods_back == 0 else last_day
+            return start.isoformat(), end.isoformat()
+
+        if range_type == 'year':
+            yr = server_today.year - periods_back
+            start = date(yr, 1, 1)
+            end = server_today if periods_back == 0 else date(yr, 12, 31)
+            return start.isoformat(), end.isoformat()
+
+        # 'day' or unknown — return today
+        return server_today.isoformat(), server_today.isoformat()
+
     @staticmethod
     def compute_prior_period(start_str: str | None, end_str: str | None):
         """Compute an equally-long prior period ending the day before *start_str*."""
@@ -351,11 +413,23 @@ class SQLConnection:
     def execute_read(self, query: str, filters: DashboardFilters = None) -> Dict[str, Any]:
         """Executes a SQL query with parameter bindings, returning columns and row values.
         
-        Fails loudly by raising TargetDatabaseError if SQL syntax is incorrect or connections fail.
+        When *filters* carries ``range_type`` and ``periods_back``, the date
+        range is recomputed from SQL Server’s ``GETDATE()`` so every widget
+        uses the **database server clock** instead of the browser’s local time.
         """
-        # Prepare parameters dictionary
+        # --- resolve dates from the database server when range_type is set ---
         start_date = filters.start_date if filters else None
         end_date = filters.end_date if filters else None
+
+        if filters and filters.range_type and filters.periods_back is not None:
+            try:
+                server_today = self.get_server_date()
+                start_date, end_date = self.compute_date_range(
+                    server_today, filters.range_type, filters.periods_back,
+                )
+            except Exception as e:
+                logger.warning(f"Server-date resolution failed, using filter dates: {e}")
+
         prior_start, prior_end = self.compute_prior_period(start_date, end_date)
 
         params = {

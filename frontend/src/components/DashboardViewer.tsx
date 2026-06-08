@@ -15,16 +15,44 @@ interface DrillDownState {
 }
 
 export const DashboardViewer: React.FC<DashboardViewerProps> = ({ dashboard }) => {
+  // Server date fetched from SQL Server's GETDATE() – used for all date
+  // range calculations so the dashboard aligns with the database clock.
+  const [serverDate, setServerDate] = useState<string | undefined>(undefined);
+
   const [filters, setFilters] = useState<DashboardFilters>(() => {
-    const dates = computeDateRange('week', 0);
+    // Initialise with browser dates; will be recalculated once the server
+    // date arrives (see useEffect below).
+    const dates = computeDateRange('week', 1);
     return {
       department_id: undefined,
       processor_id: undefined,
       range_type: 'week',
-      periods_back: 0,
+      periods_back: 1,
       ...dates,
     };
   });
+
+  // Fetch the database server date once on mount, then recompute filters.
+  useEffect(() => {
+    let active = true;
+    api.getServerDate()
+      .then((dateStr) => {
+        if (!active) return;
+        setServerDate(dateStr);
+        // Recompute date range using the server date
+        setFilters((prev) => {
+          const rt = prev.range_type || 'week';
+          const pb = prev.periods_back ?? 1;
+          if (rt === 'day') return prev; // manual dates, don't override
+          const dates = computeDateRange(rt, pb, dateStr);
+          return { ...prev, ...dates };
+        });
+      })
+      .catch((err) => {
+        console.warn('Failed to fetch server date, using browser time:', err);
+      });
+    return () => { active = false; };
+  }, []);
 
   const [drillDown, setDrillDown] = useState<DrillDownState | null>(null);
   const [drillDownData, setDrillDownData] = useState<QueryResult | null>(null);
@@ -100,7 +128,7 @@ export const DashboardViewer: React.FC<DashboardViewerProps> = ({ dashboard }) =
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }} data-testid="dashboard-viewer">
       {/* Dynamic Filter Bar */}
-      <FilterBar filters={filters} onChange={handleFilterChange} />
+      <FilterBar filters={filters} onChange={handleFilterChange} serverDate={serverDate} />
 
       {/* Grid of Visualization Widgets */}
       <div className="dashboard-grid">
