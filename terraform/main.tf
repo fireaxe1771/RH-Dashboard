@@ -142,6 +142,14 @@ resource "azurerm_container_app" "frontend" {
       image  = "${data.azurerm_container_registry.acr.login_server}/rh-dashboard-frontend:${var.frontend_image_tag}"
       cpu    = "0.25"
       memory = "0.5Gi"
+
+      # nginx proxies /api/* to the backend container app. Without this the SPA
+      # fallback returns index.html for API calls and the client fails to parse
+      # the HTML as JSON.
+      env {
+        name  = "BACKEND_URL"
+        value = "https://${azurerm_container_app.backend.ingress[0].fqdn}"
+      }
     }
 
     # SCALE TO ZERO RULES
