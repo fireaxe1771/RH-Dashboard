@@ -286,6 +286,40 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "config": {"xAxisKey": "Period", "yAxisKeys": ["DraftsCreated"], "colors": ["#14b8a6"]},
             },
             {
+                "id": "claims-submitted-period-comparison",
+                "title": "Drafts Submitted During This Period",
+                "type": "table",
+                "sql_query": """
+                WITH selected_submitted AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (PARTITION BY ClaimID ORDER BY ClaimID) AS rn
+                    FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
+                    WHERE submitted = 1
+                      AND archived = 0
+                      AND original_run_id IS NOT NULL
+                      AND DateSubmitted BETWEEN %(start_date)s AND %(end_date)s
+                ),
+                prior_submitted AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (PARTITION BY ClaimID ORDER BY ClaimID) AS rn
+                    FROM Claims FOR SYSTEM_TIME BETWEEN %(prior_start_date)s AND %(prior_end_date)s
+                    WHERE submitted = 1
+                      AND archived = 0
+                      AND original_run_id IS NOT NULL
+                      AND DateSubmitted BETWEEN %(prior_start_date)s AND %(prior_end_date)s
+                )
+                SELECT 'Selected Period' AS Period, COUNT(*) AS DraftsSubmitted
+                FROM selected_submitted WHERE rn = 1
+                UNION ALL
+                SELECT 'Prior Period' AS Period, COUNT(*) AS DraftsSubmitted
+                FROM prior_submitted WHERE rn = 1
+                """,
+                "layout": {"x": 6, "y": 11, "w": 6, "h": 4},
+                "config": {"xAxisKey": "Period", "yAxisKeys": ["DraftsSubmitted"], "colors": ["#22c55e"]},
+            },
+
+            # ── Row 5: monthly trend ──────────────────────────────────
+            {
                 "id": "claims-monthly-trend",
                 "title": "Monthly Claims Trend (YTD)",
                 "type": "line",
@@ -300,7 +334,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 GROUP BY FORMAT(c.DateCreated, 'MMM'), MONTH(c.DateCreated)
                 ORDER BY MONTH(c.DateCreated)
                 """,
-                "layout": {"x": 6, "y": 11, "w": 6, "h": 4},
+                "layout": {"x": 0, "y": 15, "w": 12, "h": 4},
                 "config": {"xAxisKey": "Month", "yAxisKeys": ["Claims"], "colors": ["#6366f1"]},
             },
         ],
