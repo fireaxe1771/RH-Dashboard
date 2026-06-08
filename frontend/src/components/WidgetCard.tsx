@@ -82,10 +82,14 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({ widget, filters, onDrill
     if (!data || data.rows.length === 0) return { value: '0', label: 'No Data' };
     const firstRow = data.rows[0];
     const keys = Object.keys(firstRow);
-    const valueKey = keys.find(k => typeof firstRow[k] === 'number') || keys[0];
+    const numericKeys = keys.filter(k => typeof firstRow[k] === 'number');
+    const valueKey = numericKeys[0] || keys[0];
+    const secondaryKey = numericKeys[1] || null;
     return {
       value: formatValue(firstRow[valueKey], widget.config.format),
-      label: keys[0] !== valueKey ? String(firstRow[keys[0]]) : ''
+      label: keys[0] !== valueKey ? String(firstRow[keys[0]]) : '',
+      secondaryValue: secondaryKey ? formatValue(firstRow[secondaryKey], widget.config.format) : '',
+      secondaryLabel: secondaryKey ? secondaryKey.replace(/([A-Z])/g, ' $1').trim() : '',
     };
   };
 
@@ -116,7 +120,7 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({ widget, filters, onDrill
 
   // 1. STAT CARD RENDERER
   if (widget.type === 'stat') {
-    const { value, label } = getStatData();
+    const { value, label, secondaryValue, secondaryLabel } = getStatData();
     return (
       <div className="card stat-card" style={{ gridColumn: `span ${widget.layout.w}`, minHeight: '150px' }}>
         <div className="stat-header">
@@ -124,11 +128,32 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({ widget, filters, onDrill
           <TrendingUp size={16} className="trend-up" />
         </div>
         <div>
-          <div className="stat-value">{value}</div>
-          {label && (
-            <div className="stat-trend trend-up">
-              <span>{label}</span>
+          {secondaryValue ? (
+            <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+              <div>
+                <div className="stat-value">{value}</div>
+                {label && (
+                  <div className="stat-trend trend-up">
+                    <span>{label}</span>
+                  </div>
+                )}
+              </div>
+              <div style={{ paddingLeft: '12px', borderLeft: '1px solid var(--border-color)' }}>
+                <div className="stat-value" style={{ fontSize: '24px', color: 'var(--text-secondary)' }}>{secondaryValue}</div>
+                <div className="stat-trend" style={{ color: 'var(--text-muted)' }}>
+                  <span>{secondaryLabel || 'Previous'}</span>
+                </div>
+              </div>
             </div>
+          ) : (
+            <>
+              <div className="stat-value">{value}</div>
+              {label && (
+                <div className="stat-trend trend-up">
+                  <span>{label}</span>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
