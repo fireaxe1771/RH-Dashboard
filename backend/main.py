@@ -342,23 +342,35 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
 
 
 async def _seed_default_dashboards() -> None:
-    """Creates the first claims dashboard when no dashboards exist yet."""
+    """Upserts the system-managed claims dashboard on every startup.
+
+    The dashboard definition lives in code (``_build_default_claims_dashboard``)
+    so that query fixes and widget changes take effect immediately without
+    requiring a manual MongoDB edit.  User-created dashboards (those without
+    ``created_by: "system"``) are never touched.
+    """
     if os.getenv("TESTING") == "true":
         return
 
     dashboards = db_manager.db["dashboards"]
-    existing_count = await dashboards.count_documents({})
-    if existing_count > 0:
-        return
-
     now = datetime.utcnow()
     payload = _build_default_claims_dashboard()
-    payload["created_by"] = "system"
-    payload["created_at"] = now
-    payload["updated_at"] = now
 
-    await dashboards.insert_one(payload)
-    logger.info("Seeded default claims dashboard: Claims Calendar-Year Overview")
+    existing = await dashboards.find_one({"created_by": "system"})
+    if existing:
+        # Preserve original creation timestamp, update everything else
+        payload["updated_at"] = now
+        await dashboards.update_one(
+            {"_id": existing["_id"]},
+            {"$set": payload},
+        )
+        logger.info("Updated system dashboard: Claims Calendar-Year Overview")
+    else:
+        payload["created_by"] = "system"
+        payload["created_at"] = now
+        payload["updated_at"] = now
+        await dashboards.insert_one(payload)
+        logger.info("Seeded default claims dashboard: Claims Calendar-Year Overview")
 
 # --- DASHBOARD METADATA ENDPOINTS ---
 
