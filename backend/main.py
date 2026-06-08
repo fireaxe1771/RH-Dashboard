@@ -104,9 +104,9 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                     SELECT *,
                            ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(ytd_start)s AND %(end_date)s
-                    WHERE submitted = 1
-                      AND original_run_id IS NOT NULL
-                      AND date_of_submitted BETWEEN %(ytd_start)s AND %(end_date)s
+                    WHERE submitted = 0
+                      AND original_run_id IS NULL
+                      AND created BETWEEN %(ytd_start)s AND %(end_date)s
                 )
                 SELECT COUNT(*) AS Count
                 FROM draft
@@ -123,9 +123,9 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 WITH DraftRoots AS (
                     SELECT DISTINCT id
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(ytd_start)s AND %(end_date)s
-                    WHERE submitted = 1
-                      AND original_run_id IS NOT NULL
-                      AND date_of_submitted BETWEEN %(ytd_start)s AND %(end_date)s
+                    WHERE submitted = 0
+                      AND original_run_id IS NULL
+                      AND created BETWEEN %(ytd_start)s AND %(end_date)s
                 ),
                 CurrentClaims AS (
                     SELECT DISTINCT id
@@ -208,16 +208,15 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "New Runs – Submitted vs Recycled",
                 "type": "bar",
                 "sql_query": """
-                WITH new_runs AS (
+                WITH all_runs AS (
                     SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
-                    WHERE ClaimCurrentTypeId = 1
-                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
+                    WHERE created BETWEEN %(start_date)s AND %(end_date)s
                 )
                 SELECT
                     CASE WHEN submitted = 1 THEN 'Submitted' ELSE 'Recycled' END AS RunType,
                     COUNT(*) AS Count
-                FROM new_runs WHERE rn = 1
+                FROM all_runs WHERE rn = 1
                 GROUP BY CASE WHEN submitted = 1 THEN 'Submitted' ELSE 'Recycled' END
                 ORDER BY Count DESC
                 """,
@@ -304,17 +303,17 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                     SELECT *,
                            ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
-                    WHERE submitted = 1
-                      AND original_run_id IS NOT NULL
-                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
+                    WHERE submitted = 0
+                      AND original_run_id IS NULL
+                      AND created BETWEEN %(start_date)s AND %(end_date)s
                 ),
                 prior_draft AS (
                     SELECT *,
                            ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(prior_start_date)s AND %(prior_end_date)s
-                    WHERE submitted = 1
-                      AND original_run_id IS NOT NULL
-                      AND date_of_submitted BETWEEN %(prior_start_date)s AND %(prior_end_date)s
+                    WHERE submitted = 0
+                      AND original_run_id IS NULL
+                      AND created BETWEEN %(prior_start_date)s AND %(prior_end_date)s
                 )
                 SELECT 'Selected Period' AS Period, COUNT(*) AS DraftsCreated
                 FROM selected_draft WHERE rn = 1
