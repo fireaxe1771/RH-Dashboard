@@ -18,38 +18,37 @@ export const DashboardViewer: React.FC<DashboardViewerProps> = ({ dashboard }) =
   // Server date fetched from SQL Server's GETDATE() – used for all date
   // range calculations so the dashboard aligns with the database clock.
   const [serverDate, setServerDate] = useState<string | undefined>(undefined);
+  const [serverDateLoaded, setServerDateLoaded] = useState(false);
 
-  const [filters, setFilters] = useState<DashboardFilters>(() => {
-    // Initialise with browser dates; will be recalculated once the server
-    // date arrives (see useEffect below).
-    const dates = computeDateRange('week', 1);
-    return {
-      department_id: undefined,
-      processor_id: undefined,
-      range_type: 'week',
-      periods_back: 1,
-      ...dates,
-    };
+  const [filters, setFilters] = useState<DashboardFilters>({
+    department_id: undefined,
+    processor_id: undefined,
+    range_type: 'week',
+    periods_back: 1,
+    start_date: '',
+    end_date: '',
   });
 
-  // Fetch the database server date once on mount, then recompute filters.
+  // Fetch the database server date once on mount, then compute filters once.
+  // Widgets are not rendered until serverDateLoaded is true, preventing
+  // a double round of queries (browser dates → server dates).
   useEffect(() => {
     let active = true;
     api.getServerDate()
       .then((dateStr) => {
         if (!active) return;
         setServerDate(dateStr);
-        // Recompute date range using the server date
-        setFilters((prev) => {
-          const rt = prev.range_type || 'week';
-          const pb = prev.periods_back ?? 1;
-          if (rt === 'day') return prev; // manual dates, don't override
-          const dates = computeDateRange(rt, pb, dateStr);
-          return { ...prev, ...dates };
-        });
+        const dates = computeDateRange('week', 1, dateStr);
+        setFilters((prev) => ({ ...prev, ...dates }));
+        setServerDateLoaded(true);
       })
       .catch((err) => {
         console.warn('Failed to fetch server date, using browser time:', err);
+        if (!active) return;
+        // Fallback to browser dates
+        const dates = computeDateRange('week', 1);
+        setFilters((prev) => ({ ...prev, ...dates }));
+        setServerDateLoaded(true);
       });
     return () => { active = false; };
   }, []);
@@ -130,17 +129,26 @@ export const DashboardViewer: React.FC<DashboardViewerProps> = ({ dashboard }) =
       {/* Dynamic Filter Bar */}
       <FilterBar filters={filters} onChange={handleFilterChange} serverDate={serverDate} />
 
-      {/* Grid of Visualization Widgets */}
-      <div className="dashboard-grid">
-        {dashboard.widgets.map((widget) => (
-          <WidgetCard
-            key={widget.id}
-            widget={widget}
-            filters={filters}
-            onDrillDown={handleDrillDown}
-          />
-        ))}
-      </div>
+      {/* Grid of Visualization Widgets – only rendered once the server date
+          (and therefore the correct filter dates) are available, so widgets
+          fire their SQL queries exactly once instead of twice. */}
+      {serverDateLoaded ? (
+        <div className="dashboard-grid">
+          {dashboard.widgets.map((widget) => (
+            <WidgetCard
+              key={widget.id}
+              widget={widget}
+              filters={filters}
+              onDrillDown={handleDrillDown}
+            />
+          ))}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px' }}>
+          <div className="loader" />
+          <span style={{ fontSize: '13px', color: 'var(--text-muted)', marginLeft: '12px' }}>Loading server date…</span>
+        </div>
+      )}
 
       {/* Click-to-Drill-down Claims Workflow Table */}
       {drillDown && (
