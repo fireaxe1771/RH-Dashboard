@@ -181,6 +181,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 WHERE c.submitted = 1
                   AND c.archived = 0
                   AND c.original_run_id IS NOT NULL
+                  AND c.ClaimCurrentTypeId = 1
                   AND {_date_filter}
                 GROUP BY c.status
                 ORDER BY Count DESC, c.status
@@ -198,8 +199,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 WHERE c.submitted = 1
                   AND c.archived = 0
                   AND c.original_run_id IS NOT NULL
-                  AND c.user_id <> 0
-                  AND c.status <> 'Unassigned'
+                  AND c.ClaimCurrentTypeId = 4
                   AND {_date_filter}
                 GROUP BY c.status
                 ORDER BY Count DESC, c.status
