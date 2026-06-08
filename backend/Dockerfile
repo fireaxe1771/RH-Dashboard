@@ -1,12 +1,25 @@
-# Python 3.11 base image with minimal OS footprint
-FROM python:3.11-slim
+# Python 3.11 base image pinned to Debian bookworm for Microsoft ODBC package compatibility
+FROM python:3.11-slim-bookworm
 
 # Install system dependencies required for SQL Server connectivity
-# Using FreeTDS for both basic and Azure AD authentication
+# Using FreeTDS for pymssql/basic auth and ODBC for Azure AD auth
+ENV ACCEPT_EULA=Y
 RUN apt-get update && apt-get install -y \
+    curl \
+    gnupg \
+    ca-certificates \
     libsybdb5 \
     freetds-dev \
+    unixodbc \
+    unixodbc-dev \
     gcc \
+    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+      | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && curl -fsSL https://packages.microsoft.com/config/debian/12/prod.list \
+      | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://#' \
+      > /etc/apt/sources.list.d/microsoft-prod.list \
+    && apt-get update \
+    && apt-get install -y msodbcsql18 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

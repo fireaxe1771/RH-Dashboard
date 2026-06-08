@@ -25,6 +25,10 @@ class QueryValidationError(TargetDatabaseError):
 class SQLConnection:
     """Manages raw connections and query execution against the target Azure SQL Database."""
 
+    def __init__(self):
+        self._claims_date_column: str | None = None
+        self._claims_column_map: Dict[str, str] | None = None
+
     def _get_odbc_connection(self, access_token: str):
         """Connect to Azure SQL using an Azure AD access token via pyodbc."""
         if pyodbc is None:
@@ -77,6 +81,130 @@ class SQLConnection:
 
         return cursor.execute(query, params)
 
+    def _resolve_claims_date_column(self, conn) -> str:
+        """Find the best available Claims date column, preferring the temporal row-start column."""
+        if self._claims_date_column:
+            return self._claims_date_column
+
+        metadata_query = """
+        SELECT TOP 1 c.name
+        FROM sys.tables t
+        INNER JOIN sys.columns c ON c.object_id = t.object_id
+        WHERE t.name = 'Claims'
+          AND c.is_hidden IN (0, 1)
+          AND c.system_type_id IN (40, 41, 42, 43, 58, 61)
+        ORDER BY
+            CASE
+                WHEN c.generated_always_type_desc = 'AS_ROW_START' THEN 0
+                WHEN c.name IN ('DateCreated', 'CreatedDate', 'CreatedAt', 'CreatedOn', 'InsertDate', 'InsertedAt', 'InsertedOn') THEN 1
+                WHEN c.name LIKE '%Date%' OR c.name LIKE '%Time%' THEN 2
+                ELSE 3
+            END,
+            c.column_id
+        """
+
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(metadata_query)
+                row = cursor.fetchone()
+        except Exception as e:
+            logger.warning(f"Failed to resolve Claims date column from metadata: {e}")
+            return "DateCreated"
+
+        if row and row[0]:
+            self._claims_date_column = row[0]
+        else:
+            self._claims_date_column = "DateCreated"
+
+        return self._claims_date_column
+
+    @staticmethod
+    def _rewrite_claims_date_column(query: str, date_column: str) -> str:
+        """Rewrites legacy DateCreated references to the resolved Claims date column."""
+        if date_column == "DateCreated" or not re.search(r"\bDateCreated\b", query, re.IGNORECASE):
+            return query
+
+        return re.sub(r"\bDateCreated\b", date_column, query)
+
+    def _prepare_claims_query(self, query: str, conn) -> str:
+        """Normalizes legacy dashboard SQL before validation/execution."""
+        if not re.search(r"\bClaims\b", query, re.IGNORECASE):
+            return query
+
+        claims_column_map = self._resolve_claims_column_map(conn)
+        for legacy_name, actual_name in claims_column_map.items():
+            if legacy_name == actual_name:
+                continue
+            query = re.sub(rf"\b{re.escape(legacy_name)}\b", actual_name, query)
+
+        claims_date_column = self._resolve_claims_date_column(conn)
+        return self._rewrite_claims_date_column(query, claims_date_column)
+
+    def _resolve_claims_column_map(self, conn) -> Dict[str, str]:
+        """Builds a legacy-to-actual column map for the Claims table from live metadata."""
+        if self._claims_column_map:
+            return self._claims_column_map
+
+        metadata_query = """
+        SELECT c.name
+        FROM sys.tables t
+        INNER JOIN sys.columns c ON c.object_id = t.object_id
+        WHERE t.name = 'Claims'
+        ORDER BY c.column_id
+        """
+
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(metadata_query)
+                rows = cursor.fetchall()
+        except Exception as e:
+            logger.warning(f"Failed to resolve Claims columns from metadata: {e}")
+            self._claims_column_map = {
+                "ClaimID": "ClaimID",
+                "DateCreated": "DateCreated",
+            }
+            return self._claims_column_map
+
+        available_columns = [str(row[0]) for row in rows if row and row[0]]
+        available_lookup = {name.lower(): name for name in available_columns}
+
+        def pick(*candidates: str) -> str | None:
+            for candidate in candidates:
+                match = available_lookup.get(candidate.lower())
+                if match:
+                    return match
+            return None
+
+        # Prefer stable identifier/date columns and then common field names used by the dashboard.
+        claims_id = pick(
+            "ClaimID", "ClaimId", "ClaimNumber", "RunNumber", "RunID", "RunId", "ID", "Id", "ClaimKey"
+        )
+        claims_date = pick(
+            "DateCreated", "CreatedDate", "CreatedAt", "CreatedOn", "SysStartTime", "ValidFrom", "StartTime"
+        )
+
+        column_map = {
+            "ClaimID": claims_id or "ClaimID",
+            "DateCreated": claims_date or "DateCreated",
+            "submitted": pick("submitted", "Submitted", "IsSubmitted", "SubmittedFlag", "HasSubmitted") or "submitted",
+            "original_run_id": pick(
+                "original_run_id", "OriginalRunId", "OriginalRunID", "RunID", "RunId", "ParentRunID", "SourceRunID"
+            ) or "original_run_id",
+            "archived": pick("archived", "Archived", "IsArchived") or "archived",
+            "user_id": pick("user_id", "UserID", "UserId", "AssignedUserID", "OwnerUserID", "ProcessorUserID") or "user_id",
+            "Status": pick("Status", "ClaimStatus", "CurrentStatus") or "Status",
+            "DepartmentID": pick("DepartmentID", "DepartmentId") or "DepartmentID",
+            "DepartmentName": pick("DepartmentName", "Department", "DeptName") or "DepartmentName",
+            "ProcessorID": pick("ProcessorID", "ProcessorId") or "ProcessorID",
+            "ProcessorName": pick("ProcessorName", "Processor", "AssignedToName") or "ProcessorName",
+            "ClaimType": pick("ClaimType", "ClaimTypeName") or "ClaimType",
+            "Amount": pick("Amount", "TotalAmount", "ClaimAmount") or "Amount",
+            "RunNumber": pick("RunNumber", "RunNo", "RunNbr") or "RunNumber",
+        }
+
+        self._claims_column_map = column_map
+        return self._claims_column_map
+
     def _get_connection(self):
         """Establishes a connection using parameters from configuration settings."""
         try:
@@ -117,9 +245,9 @@ class SQLConnection:
         # Enforce that query must start with SELECT (ignoring leading whitespace/comments)
         # Strip comments
         query_no_comments = re.sub(r'(--.*?$)|(/\*.*?\*/)', '', cleaned_query, flags=re.MULTILINE)
-        query_stripped = query_no_comments.strip()
+        query_stripped = re.sub(r'^[;\s]+', '', query_no_comments)
         
-        if not query_stripped.upper().startswith("SELECT"):
+        if not query_stripped.upper().startswith(("SELECT", "WITH")):
             raise QueryValidationError("Query Security Breach: Only read-only 'SELECT' statements are permitted.")
         
         # Block destructive SQL command keywords
@@ -139,9 +267,6 @@ class SQLConnection:
         
         Fails loudly by raising TargetDatabaseError if SQL syntax is incorrect or connections fail.
         """
-        # Validate query first
-        self.validate_query(query)
-
         # Prepare parameters dictionary
         params = {
             "department_id": filters.department_id if filters else None,
@@ -152,6 +277,9 @@ class SQLConnection:
 
         conn = self._get_connection()
         try:
+            query = self._prepare_claims_query(query, conn)
+            self.validate_query(query)
+
             with conn.cursor() as cursor:
                 self._execute_query(cursor, query, params)
                 rows = cursor.fetchall()
@@ -301,6 +429,9 @@ class SQLConnection:
 
         conn = self._get_connection()
         try:
+            query = self._prepare_claims_query(query, conn)
+            self.validate_query(query)
+
             with conn.cursor() as cursor:
                 self._execute_query(cursor, query, params)
                 rows = cursor.fetchall()

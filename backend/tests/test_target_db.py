@@ -34,11 +34,41 @@ def test_query_validation_destructive_keywords():
             target_db.validate_query(q)
         assert "Query Security Breach" in str(excinfo.value)
 
-def test_query_validation_non_select():
-    """Asserts that commands not starting with SELECT are blocked."""
-    with pytest.raises(QueryValidationError) as excinfo:
-        target_db.validate_query("WITH cte AS (SELECT * FROM Claims) SELECT * FROM cte")
-    assert "SELECT" in str(excinfo.value)
+def test_query_validation_cte_select():
+    """Asserts that CTE-based read-only queries are allowed."""
+    valid_query = ";WITH cte AS (SELECT * FROM Claims) SELECT * FROM cte"
+    target_db.validate_query(valid_query)
+
+def test_claims_date_column_rewrite():
+    """Asserts that legacy DateCreated references can be normalized to the resolved Claims column."""
+    query = "SELECT * FROM Claims WHERE DateCreated >= %(start_date)s ORDER BY DateCreated DESC"
+    rewritten = target_db._rewrite_claims_date_column(query, "SysStartTime")
+
+    assert "DateCreated" not in rewritten
+    assert "SysStartTime" in rewritten
+
+def test_claims_column_map_rewrite():
+    """Asserts that legacy Claims dashboard column names can be mapped to live schema names."""
+    target_db._claims_column_map = {
+        "ClaimID": "RunNumber",
+        "DateCreated": "SysStartTime",
+        "submitted": "IsSubmitted",
+        "original_run_id": "ParentRunID",
+    }
+    target_db._claims_date_column = "SysStartTime"
+
+    query = (
+        "SELECT COUNT(DISTINCT c.ClaimID) AS Count FROM Claims c "
+        "WHERE c.submitted = 1 AND c.original_run_id IS NOT NULL "
+        "AND c.DateCreated >= DATEFROMPARTS(YEAR(GETDATE()), 1, 1)"
+    )
+    rewritten = target_db._prepare_claims_query(query, MagicMock())
+
+    assert "c.RunNumber" in rewritten
+    assert "c.IsSubmitted" in rewritten
+    assert "c.ParentRunID" in rewritten
+    assert "SysStartTime" in rewritten
+    assert "ClaimID" not in rewritten
 
 @patch("target_db.SQLConnection._get_connection")
 def test_execute_read_formatting(mock_connect):
@@ -64,6 +94,11 @@ def test_execute_read_formatting(mock_connect):
     
     mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
     mock_connect.return_value = mock_conn
+    target_db._claims_date_column = "DateCreated"
+    target_db._claims_column_map = {
+        "ClaimID": "ClaimID",
+        "DateCreated": "DateCreated",
+    }
 
     # Execute query
     result = target_db.execute_read("SELECT ClaimID, Amount, DateCreated FROM Claims")
