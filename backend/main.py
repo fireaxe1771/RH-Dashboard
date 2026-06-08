@@ -102,11 +102,17 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "Drafts Created YTD",
                 "type": "stat",
                 "sql_query": f"""
-                SELECT COUNT(DISTINCT ClaimID) AS Count
-                FROM Claims FOR SYSTEM_TIME ALL
-                WHERE submitted = 0
-                  AND original_run_id IS NULL
-                  AND DateCreated >= {current_year}
+                WITH draft AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (PARTITION BY ClaimID ORDER BY ClaimID) AS rn
+                    FROM Claims FOR SYSTEM_TIME ALL
+                    WHERE submitted = 0
+                      AND original_run_id IS NULL
+                      AND DateCreated >= {current_year}
+                )
+                SELECT COUNT(*) AS Count
+                FROM draft
+                WHERE rn = 1
                 """,
                 "layout": {"x": 0, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#6366f1"]},
@@ -251,31 +257,33 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
             # ── Row 4: period comparison + monthly trend ─────────────
             {
                 "id": "claims-period-comparison",
-                "title": "Selected Period vs Prior Period",
+                "title": "Drafts Created – Selected vs Prior Period",
                 "type": "table",
                 "sql_query": """
-                SELECT
-                    'Selected Period' AS Period,
-                    COUNT(DISTINCT c.ClaimID) AS Claims,
-                    COALESCE(SUM(c.Amount), 0) AS TotalAmount
-                FROM Claims c
-                WHERE c.DateCreated >= %(start_date)s
-                  AND c.DateCreated <= %(end_date)s
-                  AND (%(department_id)s IS NULL OR c.DepartmentID = %(department_id)s)
-                  AND (%(processor_id)s IS NULL OR c.ProcessorID = %(processor_id)s)
+                WITH selected_draft AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (PARTITION BY ClaimID ORDER BY ClaimID) AS rn
+                    FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
+                    WHERE submitted = 0
+                      AND original_run_id IS NULL
+                      AND DateCreated BETWEEN %(start_date)s AND %(end_date)s
+                ),
+                prior_draft AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (PARTITION BY ClaimID ORDER BY ClaimID) AS rn
+                    FROM Claims FOR SYSTEM_TIME BETWEEN %(prior_start_date)s AND %(prior_end_date)s
+                    WHERE submitted = 0
+                      AND original_run_id IS NULL
+                      AND DateCreated BETWEEN %(prior_start_date)s AND %(prior_end_date)s
+                )
+                SELECT 'Selected Period' AS Period, COUNT(*) AS DraftsCreated
+                FROM selected_draft WHERE rn = 1
                 UNION ALL
-                SELECT
-                    'Prior Period' AS Period,
-                    COUNT(DISTINCT c2.ClaimID) AS Claims,
-                    COALESCE(SUM(c2.Amount), 0) AS TotalAmount
-                FROM Claims c2
-                WHERE c2.DateCreated >= %(prior_start_date)s
-                  AND c2.DateCreated <= %(prior_end_date)s
-                  AND (%(department_id)s IS NULL OR c2.DepartmentID = %(department_id)s)
-                  AND (%(processor_id)s IS NULL OR c2.ProcessorID = %(processor_id)s)
+                SELECT 'Prior Period' AS Period, COUNT(*) AS DraftsCreated
+                FROM prior_draft WHERE rn = 1
                 """,
                 "layout": {"x": 0, "y": 11, "w": 6, "h": 4},
-                "config": {"xAxisKey": "Period", "yAxisKeys": ["Claims", "TotalAmount"], "colors": ["#14b8a6"]},
+                "config": {"xAxisKey": "Period", "yAxisKeys": ["DraftsCreated"], "colors": ["#14b8a6"]},
             },
             {
                 "id": "claims-monthly-trend",

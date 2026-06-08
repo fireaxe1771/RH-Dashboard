@@ -151,12 +151,21 @@ def test_inject_claim_filters_skips_non_claims():
     assert result == query
 
 
-def test_inject_claim_filters_temporal():
+def test_inject_claim_filters_temporal_all():
     """Injects filters into temporal table queries (FOR SYSTEM_TIME ALL)."""
     filters = DashboardFilters(department_id="7")
     query = "SELECT DISTINCT ClaimID FROM Claims FOR SYSTEM_TIME ALL WHERE submitted = 0"
     result = target_db._inject_claim_filters(query, filters, {"DepartmentID": "DepartmentID", "ProcessorID": "ProcessorID"})
     assert "SELECT * FROM Claims FOR SYSTEM_TIME ALL WHERE DepartmentID = %(department_id)s" in result
+
+
+def test_inject_claim_filters_temporal_between():
+    """Injects filters into temporal table queries (FOR SYSTEM_TIME BETWEEN)."""
+    filters = DashboardFilters(department_id="7")
+    query = "SELECT * FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s WHERE submitted = 0"
+    result = target_db._inject_claim_filters(query, filters, {"DepartmentID": "DepartmentID", "ProcessorID": "ProcessorID"})
+    assert "FOR SYSTEM_TIME BETWEEN" in result
+    assert "DepartmentID = %(department_id)s" in result
 
 
 # ── Prior-period computation tests ───────────────────────────────────────

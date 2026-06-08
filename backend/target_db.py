@@ -169,10 +169,10 @@ class SQLConnection:
 
         where_clause = ' AND '.join(conditions)
 
-        # Pattern: FROM Claims [FOR SYSTEM_TIME ALL] [alias]
+        # Pattern: FROM Claims [FOR SYSTEM_TIME {ALL | BETWEEN ... AND ...}] [alias]
         pattern = (
             r'\bFROM\s+Claims\b'
-            r'(\s+FOR\s+SYSTEM_TIME\s+ALL\b)?'
+            r'(\s+FOR\s+SYSTEM_TIME\s+(?:ALL|BETWEEN\s+[^\s]+\s+AND\s+[^\s]+)\b)?'
             r'(?:\s+(?!'
             + '|'.join(rf'{kw}\b' for kw in sorted(self._ALIAS_EXCLUDE))
             + r')([a-zA-Z_]\w*))?'
