@@ -99,6 +99,18 @@ def test_default_dashboard_uses_correct_columns():
     assert "PARTITION BY id ORDER BY id" in submitted["sql_query"]
     assert "date_of_submitted BETWEEN" in submitted["sql_query"]
 
+    # New runs uses temporal query with ClaimCurrentTypeId = 1
+    new_runs = widgets["claims-new-runs-by-status"]
+    assert "FOR SYSTEM_TIME BETWEEN" in new_runs["sql_query"]
+    assert "PARTITION BY id ORDER BY id" in new_runs["sql_query"]
+    assert "ClaimCurrentTypeId = 1" in new_runs["sql_query"]
+
+    # Active runs uses temporal query with ClaimCurrentTypeId = 4
+    active_runs = widgets["claims-active-by-status"]
+    assert "FOR SYSTEM_TIME BETWEEN" in active_runs["sql_query"]
+    assert "PARTITION BY id ORDER BY id" in active_runs["sql_query"]
+    assert "ClaimCurrentTypeId = 4" in active_runs["sql_query"]
+
 def test_default_dashboard_widget_ids():
     """Verifies the expected widget IDs exist in the default dashboard."""
     dashboard = _build_default_claims_dashboard()
@@ -109,6 +121,8 @@ def test_default_dashboard_widget_ids():
         "claims-draft-deleted-ytd",
         "claims-draft-submitted-ytd",
         "claims-draft-open",
+        "claims-current-new-runs",
+        "claims-current-active-runs",
         "claims-new-runs-by-status",
         "claims-active-by-status",
         "claims-total-amount-ytd",
