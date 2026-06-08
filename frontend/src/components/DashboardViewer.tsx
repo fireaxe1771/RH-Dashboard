@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Dashboard, QueryResult, api } from '../services/api';
-import { FilterBar, DashboardFilters } from './FilterBar';
+import { FilterBar, DashboardFilters, computeDateRange } from './FilterBar';
 import { WidgetCard } from './WidgetCard';
 import { X, AlertCircle } from 'lucide-react';
 
@@ -14,24 +14,17 @@ interface DrillDownState {
   sourceWidget: string;
 }
 
-const getCurrentWeekRange = () => {
-  const today = new Date();
-  const dayOfWeek = today.getDay();
-  const start = new Date(today);
-  start.setDate(today.getDate() - dayOfWeek);
-  const format = (date: Date) => date.toISOString().slice(0, 10);
-  return {
-    start_date: format(start),
-    end_date: format(today),
-  };
-};
-
 export const DashboardViewer: React.FC<DashboardViewerProps> = ({ dashboard }) => {
-  const [filters, setFilters] = useState<DashboardFilters>(() => ({
-    department_id: undefined,
-    processor_id: undefined,
-    ...getCurrentWeekRange(),
-  }));
+  const [filters, setFilters] = useState<DashboardFilters>(() => {
+    const dates = computeDateRange('week', 0);
+    return {
+      department_id: undefined,
+      processor_id: undefined,
+      range_type: 'week',
+      periods_back: 0,
+      ...dates,
+    };
+  });
 
   const [drillDown, setDrillDown] = useState<DrillDownState | null>(null);
   const [drillDownData, setDrillDownData] = useState<QueryResult | null>(null);

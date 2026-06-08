@@ -61,6 +61,8 @@ class DashboardFilters(BaseModel):
     processor_id: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    range_type: Optional[str] = Field(None, description="Range granularity: day, week, month, or year")
+    periods_back: Optional[int] = Field(None, description="Number of periods back from current (0 = current period)")
 
 class SQLQueryRequest(BaseModel):
     """Payload to execute visual queries against target database."""
