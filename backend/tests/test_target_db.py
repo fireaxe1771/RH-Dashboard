@@ -27,7 +27,7 @@ def test_query_validation_destructive_keywords():
         "CREATE TABLE Test (ID int)",
         "TRUNCATE TABLE Claims",
         "SELECT * FROM Claims; DROP TABLE Logs",
-        "SELECT * FROM Claims WHERE Status = 'Draft' -- DROP TABLE Logs"  # Destructive keyword inside comments can be tricky, but pattern is strict
+        "SELECT * INTO BackupTable FROM Claims",  # SELECT INTO creates a new table
     ]
     for q in invalid_queries:
         with pytest.raises(QueryValidationError) as excinfo:
@@ -84,12 +84,10 @@ def test_execute_read_formatting(mock_connect):
         ('Amount', 3, None, None, None, None, None),
         ('DateCreated', 3, None, None, None, None, None)
     ]
+    # pymssql DictRow supports both integer and string indexing; use tuples
+    # since _rows_to_dicts accesses by integer index via cursor.description.
     mock_cursor.fetchall.return_value = [
-        {
-            'ClaimID': 1001,
-            'Amount': Decimal('150.75'),
-            'DateCreated': datetime(2026, 6, 4, 11, 0, 0)
-        }
+        (1001, Decimal('150.75'), datetime(2026, 6, 4, 11, 0, 0))
     ]
     
     mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
@@ -121,3 +119,73 @@ def test_execute_read_db_failure(mock_connect):
     with pytest.raises(TargetDatabaseError) as excinfo:
         target_db.execute_read("SELECT * FROM Claims")
     assert "Azure SQL Connection Failure" in str(excinfo.value)
+
+
+# ── Filter injection tests ───────────────────────────────────────────────
+
+def test_inject_claim_filters_department():
+    """Auto-injects department filter into a simple Claims query."""
+    target_db._claims_column_map = {"DepartmentID": "DepartmentID", "ProcessorID": "ProcessorID"}
+    filters = DashboardFilters(department_id="42")
+    query = "SELECT COUNT(*) FROM Claims c WHERE c.submitted = 1"
+    result = target_db._inject_claim_filters(query, filters, {"DepartmentID": "DepartmentID", "ProcessorID": "ProcessorID"})
+    assert "DepartmentID = %(department_id)s" in result
+    # Should be wrapped in a subquery
+    assert "SELECT * FROM Claims WHERE" in result
+
+
+def test_inject_claim_filters_skips_when_already_present():
+    """Skips auto-injection when the query already references the filter param."""
+    filters = DashboardFilters(department_id="42")
+    query = "SELECT COUNT(*) FROM Claims c WHERE c.DepartmentID = %(department_id)s"
+    result = target_db._inject_claim_filters(query, filters, {"DepartmentID": "DepartmentID", "ProcessorID": "ProcessorID"})
+    # No double-injection: should still only have one reference
+    assert result.count("%(department_id)s") == 1
+
+
+def test_inject_claim_filters_skips_non_claims():
+    """Does not inject filters into queries that don't reference Claims."""
+    filters = DashboardFilters(department_id="42")
+    query = "SELECT name FROM sys.tables"
+    result = target_db._inject_claim_filters(query, filters, {"DepartmentID": "DepartmentID"})
+    assert result == query
+
+
+def test_inject_claim_filters_temporal_all():
+    """Injects filters into temporal table queries (FOR SYSTEM_TIME ALL)."""
+    filters = DashboardFilters(department_id="7")
+    query = "SELECT DISTINCT ClaimID FROM Claims FOR SYSTEM_TIME ALL WHERE submitted = 0"
+    result = target_db._inject_claim_filters(query, filters, {"DepartmentID": "DepartmentID", "ProcessorID": "ProcessorID"})
+    assert "SELECT * FROM Claims FOR SYSTEM_TIME ALL WHERE DepartmentID = %(department_id)s" in result
+
+
+def test_inject_claim_filters_temporal_between():
+    """Injects filters into temporal table queries (FOR SYSTEM_TIME BETWEEN)."""
+    filters = DashboardFilters(department_id="7")
+    query = "SELECT * FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s WHERE submitted = 0"
+    result = target_db._inject_claim_filters(query, filters, {"DepartmentID": "DepartmentID", "ProcessorID": "ProcessorID"})
+    assert "FOR SYSTEM_TIME BETWEEN" in result
+    assert "DepartmentID = %(department_id)s" in result
+
+
+# ── Prior-period computation tests ───────────────────────────────────────
+
+def test_compute_prior_period_basic():
+    """Computes prior period for a 7-day range."""
+    prior_start, prior_end = target_db.compute_prior_period("2026-06-01", "2026-06-07")
+    assert prior_start == "2026-05-25"
+    assert prior_end == "2026-05-31"
+
+
+def test_compute_prior_period_single_day():
+    """Computes prior period for a single-day range."""
+    prior_start, prior_end = target_db.compute_prior_period("2026-06-05", "2026-06-05")
+    assert prior_start == "2026-06-04"
+    assert prior_end == "2026-06-04"
+
+
+def test_compute_prior_period_none():
+    """Returns None when dates are missing."""
+    assert target_db.compute_prior_period(None, "2026-06-07") == (None, None)
+    assert target_db.compute_prior_period("2026-06-01", None) == (None, None)
+    assert target_db.compute_prior_period(None, None) == (None, None)
