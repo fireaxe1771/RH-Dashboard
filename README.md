@@ -76,6 +76,8 @@ npm run dev
 ```
 
 The development server will start on http://localhost:5173
+and proxies `/api/*` to `http://localhost:8001` by default. If you run the
+backend somewhere else, set `VITE_DEV_PROXY_TARGET` before starting Vite.
 
 ## Testing
 
@@ -138,7 +140,7 @@ The backend provides the following main endpoints:
 
 See `.env.example` for all available configuration options:
 
-- `PORT` - Backend server port (default: 8000)
+- `PORT` - Backend server port (default: 8001)
 - `MONGODB_URI` - MongoDB connection string
 - `MONGODB_DB_NAME` - MongoDB database name
 - `AZURE_SQL_HOST` - Azure SQL server hostname

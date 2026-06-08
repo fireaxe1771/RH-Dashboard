@@ -22,7 +22,7 @@ COPY --from=build /app/dist /usr/share/nginx/html
 # in /etc/nginx/templates. NGINX_ENVSUBST_FILTER limits substitution to
 # BACKEND_URL so nginx's own $variables (e.g. $host) are left untouched.
 COPY default.conf.template /etc/nginx/templates/default.conf.template
-ENV BACKEND_URL=http://backend:8000
+ENV BACKEND_URL=http://backend:8001
 ENV NGINX_ENVSUBST_FILTER=BACKEND_URL
 
 EXPOSE 80

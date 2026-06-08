@@ -64,6 +64,14 @@ def mock_entra_verification(monkeypatch):
         
     monkeypatch.setattr(TokenVerifier, "verify_token", mock_verify)
 
+@pytest.fixture(autouse=True)
+def reset_target_db_cache():
+    """Ensures each test starts with a clean SQL column-resolution cache."""
+    from target_db import target_db
+
+    target_db._claims_date_column = None
+    target_db._claims_column_map = None
+
 @pytest.fixture
 def test_client():
     """Provides a synchronous HTTP client for integration test endpoint hits."""
