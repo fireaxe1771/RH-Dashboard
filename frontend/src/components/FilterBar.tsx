@@ -16,38 +16,55 @@ export interface DashboardFilters {
 interface FilterBarProps {
   filters: DashboardFilters;
   onChange: (filters: DashboardFilters) => void;
+  /** ISO date string from the database server (GETDATE()). When set, all
+   *  date-range calculations use this instead of the browser clock. */
+  serverDate?: string;
 }
 
-// ── Date helpers (Sunday-based rolling weeks) ────────────────────────────
+// ── Date helpers (Sunday-based weeks: Sunday 00:00 → Saturday 23:59) ────
+// All date arithmetic uses the database server date (fetched via /api/server-date)
+// so the dashboard always aligns with SQL Server's GETDATE().
 
-const fmt = (d: Date): string => d.toISOString().slice(0, 10);
+/** Format a Date as YYYY-MM-DD using LOCAL calendar values (not UTC). */
+const fmt = (d: Date): string => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
 
+/**
+ * Compute a date range for display purposes.
+ * @param rangeType  day | week | month | year
+ * @param periodsBack  0 = current period, 1 = previous, etc.
+ * @param serverDate  ISO date string from the DB server (e.g. "2026-06-08").
+ *                     Falls back to the browser's local date if omitted.
+ */
 export function computeDateRange(
   rangeType: RangeType,
   periodsBack: number,
+  serverDate?: string,
 ): { start_date: string; end_date: string } {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // Parse the server date (YYYY-MM-DD) into local-calendar components
+  let today: Date;
+  if (serverDate) {
+    const [y, m, d] = serverDate.split('-').map(Number);
+    today = new Date(y, m - 1, d);
+  } else {
+    today = new Date();
+    today.setHours(0, 0, 0, 0);
+  }
 
   if (rangeType === 'week') {
-    const currentWeekStart = new Date(today);
-    currentWeekStart.setDate(today.getDate() - today.getDay());
-
-    if (periodsBack === 0) {
-      return {
-        start_date: fmt(currentWeekStart),
-        end_date: fmt(today),
-      };
-    }
-
-    const start = new Date(currentWeekStart);
-    start.setDate(currentWeekStart.getDate() - periodsBack * 7);
-    const end = new Date(start);
-    end.setDate(start.getDate() + 6);
-
+    // getDay(): Sunday=0 … Saturday=6
+    const diffToSunday = today.getDay();
+    const sunday = new Date(today);
+    sunday.setDate(today.getDate() - diffToSunday - periodsBack * 7);
+    const saturday = new Date(sunday);
+    saturday.setDate(sunday.getDate() + 6);
     return {
-      start_date: fmt(start),
-      end_date: fmt(end),
+      start_date: fmt(sunday),
+      end_date: periodsBack === 0 ? fmt(today) : fmt(saturday),
     };
   }
 
@@ -106,7 +123,7 @@ function periodOptions(rangeType: RangeType): { value: number; label: string }[]
   return [];
 }
 
-export const FilterBar: React.FC<FilterBarProps> = ({ filters, onChange }) => {
+export const FilterBar: React.FC<FilterBarProps> = ({ filters, onChange, serverDate }) => {
   const [options, setOptions] = useState<FilterOptions>({
     departments: [],
     processors: [],
@@ -146,13 +163,13 @@ export const FilterBar: React.FC<FilterBarProps> = ({ filters, onChange }) => {
       // Keep current dates, just switch mode
       onChange({ ...filters, range_type: newType, periods_back: pb });
     } else {
-      const dates = computeDateRange(newType, pb);
+      const dates = computeDateRange(newType, pb, serverDate);
       onChange({ ...filters, range_type: newType, periods_back: pb, ...dates });
     }
   };
 
   const handlePeriodsBackChange = (pb: number) => {
-    const dates = computeDateRange(rangeType, pb);
+    const dates = computeDateRange(rangeType, pb, serverDate);
     onChange({ ...filters, periods_back: pb, ...dates });
   };
 

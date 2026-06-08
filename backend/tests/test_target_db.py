@@ -189,3 +189,51 @@ def test_compute_prior_period_none():
     assert target_db.compute_prior_period(None, "2026-06-07") == (None, None)
     assert target_db.compute_prior_period("2026-06-01", None) == (None, None)
     assert target_db.compute_prior_period(None, None) == (None, None)
+
+
+# ── Server date-range computation tests ──────────────────────────────────
+
+def test_compute_date_range_week_sunday_saturday():
+    """Week boundaries are Sunday→Saturday; periodsBack=1 on Monday 2026-06-08
+    should give Sun 2026-05-31 → Sat 2026-06-06 (Kevin's exact test case)."""
+    from datetime import date as _date
+    monday = _date(2026, 6, 8)
+    start, end = target_db.compute_date_range(monday, 'week', 1)
+    assert start == "2026-05-31"
+    assert end == "2026-06-06"
+
+
+def test_compute_date_range_week_current():
+    """Current week (periodsBack=0) ends on today, not Saturday."""
+    from datetime import date as _date
+    wednesday = _date(2026, 6, 10)  # Wednesday
+    start, end = target_db.compute_date_range(wednesday, 'week', 0)
+    assert start == "2026-06-07"  # Sunday
+    assert end == "2026-06-10"    # today (Wednesday)
+
+
+def test_compute_date_range_week_two_back():
+    """periodsBack=2 on Monday 2026-06-08 → Sun 2026-05-24 → Sat 2026-05-30."""
+    from datetime import date as _date
+    monday = _date(2026, 6, 8)
+    start, end = target_db.compute_date_range(monday, 'week', 2)
+    assert start == "2026-05-24"
+    assert end == "2026-05-30"
+
+
+def test_compute_date_range_month():
+    """Month range for 1 month back."""
+    from datetime import date as _date
+    today = _date(2026, 6, 8)
+    start, end = target_db.compute_date_range(today, 'month', 1)
+    assert start == "2026-05-01"
+    assert end == "2026-05-31"
+
+
+def test_compute_date_range_year():
+    """Year range for 1 year back."""
+    from datetime import date as _date
+    today = _date(2026, 6, 8)
+    start, end = target_db.compute_date_range(today, 'year', 1)
+    assert start == "2025-01-01"
+    assert end == "2025-12-31"
