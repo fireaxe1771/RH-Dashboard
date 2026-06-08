@@ -16,12 +16,14 @@ interface DrillDownState {
 
 export const DashboardViewer: React.FC<DashboardViewerProps> = ({ dashboard }) => {
   const [filters, setFilters] = useState<DashboardFilters>(() => {
-    const dates = computeDateRange('week', 0);
+    // Default to last complete week (Sun–Sat) so the dashboard
+    // opens with a full week of data and a meaningful prior-period comparison.
+    const dates = computeDateRange('week', 1);
     return {
       department_id: undefined,
       processor_id: undefined,
       range_type: 'week',
-      periods_back: 0,
+      periods_back: 1,
       ...dates,
     };
   });
