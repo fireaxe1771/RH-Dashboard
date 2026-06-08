@@ -342,8 +342,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                            ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
                     WHERE submitted = 1
-                      AND archived = 0
-                      AND original_run_id IS NOT NULL
+                      AND original_run_id IS NULL
                       AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 ),
                 prior_submitted AS (
@@ -351,8 +350,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                            ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(prior_start_date)s AND %(prior_end_date)s
                     WHERE submitted = 1
-                      AND archived = 0
-                      AND original_run_id IS NOT NULL
+                      AND original_run_id IS NULL
                       AND date_of_submitted BETWEEN %(prior_start_date)s AND %(prior_end_date)s
                 )
                 SELECT 'Selected Period' AS Period, COUNT(*) AS DraftsSubmitted
