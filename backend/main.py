@@ -81,8 +81,6 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
       equally-long prior period.
     * **Monthly trend** – always YTD for context.
     """
-    current_year = "DATEFROMPARTS(YEAR(GETDATE()), 1, 1)"
-
     # NULL-safe date filter clause fragment (reused across date-filtered widgets)
     _date_filter = (
         "(%(start_date)s IS NULL OR c.created >= %(start_date)s)\n"
@@ -105,10 +103,10 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 WITH draft AS (
                     SELECT *,
                            ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
-                    FROM Claims FOR SYSTEM_TIME ALL
+                    FROM Claims FOR SYSTEM_TIME BETWEEN %(ytd_start)s AND %(end_date)s
                     WHERE submitted = 0
                       AND original_run_id IS NULL
-                      AND created >= {current_year}
+                      AND created BETWEEN %(ytd_start)s AND %(end_date)s
                 )
                 SELECT COUNT(*) AS Count
                 FROM draft
@@ -124,14 +122,14 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "sql_query": f"""
                 WITH DraftRoots AS (
                     SELECT DISTINCT id
-                    FROM Claims FOR SYSTEM_TIME ALL
+                    FROM Claims FOR SYSTEM_TIME BETWEEN %(ytd_start)s AND %(end_date)s
                     WHERE submitted = 0
                       AND original_run_id IS NULL
-                      AND created >= {current_year}
+                      AND created BETWEEN %(ytd_start)s AND %(end_date)s
                 ),
                 CurrentClaims AS (
                     SELECT DISTINCT id
-                    FROM Claims
+                    FROM Claims FOR SYSTEM_TIME BETWEEN %(ytd_start)s AND %(end_date)s
                 )
                 SELECT COUNT(*) AS Count
                 FROM DraftRoots d
@@ -151,7 +149,8 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 WHERE c.submitted = 1
                   AND c.archived = 0
                   AND c.original_run_id IS NOT NULL
-                  AND c.created >= {current_year}
+                  AND c.created >= %(ytd_start)s
+                  AND c.created <= %(end_date)s
                 """,
                 "layout": {"x": 6, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#22c55e"]},
@@ -160,11 +159,12 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "id": "claims-draft-open",
                 "title": "Drafts Still Open",
                 "type": "stat",
-                "sql_query": """
+                "sql_query": f"""
                 SELECT COUNT(DISTINCT c.id) AS Count
                 FROM Claims c
                 WHERE c.submitted = 0
                   AND c.original_run_id IS NULL
+                  AND c.created <= %(end_date)s
                 """,
                 "layout": {"x": 9, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#f59e0b"]},
@@ -215,7 +215,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                       AND submitted = 1
                       AND archived = 0
                       AND original_run_id IS NOT NULL
-                      AND created BETWEEN %(start_date)s AND %(end_date)s
+                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 )
                 SELECT status, COUNT(*) AS Count
                 FROM new_runs WHERE rn = 1
@@ -237,7 +237,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                       AND submitted = 1
                       AND archived = 0
                       AND original_run_id IS NOT NULL
-                      AND created BETWEEN %(start_date)s AND %(end_date)s
+                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 )
                 SELECT status, COUNT(*) AS Count
                 FROM active_runs WHERE rn = 1
@@ -258,7 +258,8 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 FROM Claims c
                 WHERE c.submitted = 1
                   AND c.archived = 0
-                  AND c.created >= {current_year}
+                  AND c.created >= %(ytd_start)s
+                  AND c.created <= %(end_date)s
                 """,
                 "layout": {"x": 0, "y": 11, "w": 4, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#14b8a6"], "format": "currency"},
@@ -306,7 +307,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
                     WHERE submitted = 0
                       AND original_run_id IS NULL
-                      AND created BETWEEN %(start_date)s AND %(end_date)s
+                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 ),
                 prior_draft AS (
                     SELECT *,
@@ -314,7 +315,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(prior_start_date)s AND %(prior_end_date)s
                     WHERE submitted = 0
                       AND original_run_id IS NULL
-                      AND created BETWEEN %(prior_start_date)s AND %(prior_end_date)s
+                      AND date_of_submitted BETWEEN %(prior_start_date)s AND %(prior_end_date)s
                 )
                 SELECT 'Selected Period' AS Period, COUNT(*) AS DraftsCreated
                 FROM selected_draft WHERE rn = 1
@@ -370,7 +371,8 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 FROM Claims c
                 WHERE c.submitted = 1
                   AND c.archived = 0
-                  AND c.created >= {current_year}
+                  AND c.created >= %(ytd_start)s
+                  AND c.created <= %(end_date)s
                 GROUP BY FORMAT(c.created, 'MMM'), MONTH(c.created)
                 ORDER BY MONTH(c.created)
                 """,
