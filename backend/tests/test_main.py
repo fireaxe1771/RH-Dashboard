@@ -96,7 +96,7 @@ def test_default_dashboard_uses_correct_columns():
     # Submitted period comparison uses id
     submitted = widgets["claims-submitted-period-comparison"]
     assert "PARTITION BY id ORDER BY id" in submitted["sql_query"]
-    assert "DateSubmitted BETWEEN" in submitted["sql_query"]
+    assert "date_of_submitted BETWEEN" in submitted["sql_query"]
 
 def test_default_dashboard_widget_ids():
     """Verifies the expected widget IDs exist in the default dashboard."""
