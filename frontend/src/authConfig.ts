@@ -1,5 +1,7 @@
 import { Configuration, PopupRequest } from "@azure/msal-browser";
 
+const isDevAuthBypass = import.meta.env.VITE_DEV_AUTH_BYPASS === 'true';
+
 /**
  * Configuration object to be passed to MSAL instance on creation.
  * For details, visit: https://github.com/AzureAD/microsoft-authentication-library-for-js/blob/dev/lib/msal-browser/docs/configuration.md
@@ -8,8 +10,10 @@ export const msalConfig: Configuration = {
   auth: {
     // These will be supplied by the user during deployment.
     // We default to template configurations or environment variables.
-    clientId: import.meta.env.VITE_AZURE_CLIENT_ID || "",
-    authority: `https://login.microsoftonline.com/${import.meta.env.VITE_AZURE_TENANT_ID || ""}`,
+    clientId: isDevAuthBypass ? "local-dev-client-id" : (import.meta.env.VITE_AZURE_CLIENT_ID || ""),
+    authority: isDevAuthBypass
+      ? "https://login.microsoftonline.com/common"
+      : `https://login.microsoftonline.com/${import.meta.env.VITE_AZURE_TENANT_ID || ""}`,
     redirectUri: window.location.origin,
     postLogoutRedirectUri: window.location.origin,
   },

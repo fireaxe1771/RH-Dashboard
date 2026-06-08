@@ -12,7 +12,7 @@ class Settings:
     """
     
     # Web server settings
-    PORT: int = int(os.getenv("PORT", "8000"))
+    PORT: int = int(os.getenv("PORT", "8001"))
     
     # Metadata DB (MongoDB) configuration
     MONGODB_URI: str = os.getenv("MONGODB_URI", "")
@@ -28,6 +28,7 @@ class Settings:
     AZURE_SQL_TENANT_ID: str = os.getenv("AZURE_SQL_TENANT_ID", "")
     
     # Entra ID Authentication configuration
+    DEV_AUTH_BYPASS: bool = os.getenv("DEV_AUTH_BYPASS", "false").lower() == "true"
     AZURE_CLIENT_ID: str = os.getenv("AZURE_CLIENT_ID", "")
     AZURE_TENANT_ID: str = os.getenv("AZURE_TENANT_ID", "")
 
@@ -60,11 +61,12 @@ class Settings:
             if not self.AZURE_SQL_TENANT_ID:
                 missing.append("AZURE_SQL_TENANT_ID")
             
-        # Check Authentication configuration
-        if not self.AZURE_CLIENT_ID:
-            missing.append("AZURE_CLIENT_ID")
-        if not self.AZURE_TENANT_ID:
-            missing.append("AZURE_TENANT_ID")
+        # Check Authentication configuration unless local development bypass is enabled
+        if not self.DEV_AUTH_BYPASS:
+            if not self.AZURE_CLIENT_ID:
+                missing.append("AZURE_CLIENT_ID")
+            if not self.AZURE_TENANT_ID:
+                missing.append("AZURE_TENANT_ID")
             
         if missing:
             error_msg = (

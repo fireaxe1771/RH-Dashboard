@@ -20,6 +20,17 @@ class TokenVerifier:
         self.tenant_id = settings.AZURE_TENANT_ID
         self.client_id = settings.AZURE_CLIENT_ID
 
+    @staticmethod
+    def _build_dev_user() -> dict:
+        """Returns a stable mock identity for local-development bypass mode."""
+        return {
+            "preferred_username": "dev.local@streamlineas.com",
+            "upn": "dev.local@streamlineas.com",
+            "name": "Local Dev User",
+            "iss": "local-dev-bypass",
+            "aud": settings.AZURE_CLIENT_ID or "local-dev",
+        }
+
     def _fetch_jwks(self) -> dict:
         """Retrieves active Microsoft public key sets from discovery endpoint."""
         url = "https://login.microsoftonline.com/common/discovery/v2.0/keys"
@@ -108,6 +119,9 @@ verifier = TokenVerifier()
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security_scheme)) -> dict:
     """Dependency verifying security bearer credentials, returning verified user claim dictionary."""
+    if settings.DEV_AUTH_BYPASS:
+        return verifier._build_dev_user()
+
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

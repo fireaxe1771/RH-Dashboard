@@ -22,6 +22,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { instance, accounts, inProgress } = useMsal();
   const isMsalAuthenticated = useIsAuthenticated();
+  const isDevAuthBypass = import.meta.env.VITE_DEV_AUTH_BYPASS === 'true';
   const [configError, setConfigError] = useState<string | null>(null);
 
   // Validate environment variables on startup
@@ -30,7 +31,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const tenantId = import.meta.env.VITE_AZURE_TENANT_ID;
 
     // Fail loudly if Entra ID configuration is missing
-    if (!clientId) {
+    if (isDevAuthBypass) {
+      setConfigError(null);
+    } else if (!clientId) {
       setConfigError("VITE_AZURE_CLIENT_ID is not configured in the environment variables.");
     } else if (!tenantId) {
       setConfigError("VITE_AZURE_TENANT_ID is not configured in the environment variables.");
@@ -39,6 +42,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Sync MSAL access tokens to the API service layer
   useEffect(() => {
+    if (isDevAuthBypass) {
+      setAuthToken(null);
+      return;
+    }
+
     if (isMsalAuthenticated && accounts.length > 0) {
       instance
         .acquireTokenSilent({
@@ -55,18 +63,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } else {
       setAuthToken(null);
     }
-  }, [isMsalAuthenticated, accounts, instance]);
+  }, [isDevAuthBypass, isMsalAuthenticated, accounts, instance]);
 
   const user: UserProfile | null = isMsalAuthenticated && accounts.length > 0
     ? {
         name: accounts[0].name || accounts[0].username,
         email: accounts[0].username,
       }
-    : null;
+    : (isDevAuthBypass
+        ? {
+            name: 'Local Dev User',
+            email: 'dev.local@streamlineas.com',
+          }
+        : null);
 
-  const isAuthLoading = inProgress !== 'none';
+  const isAuthLoading = isDevAuthBypass ? false : inProgress !== 'none';
 
   const login = async () => {
+    if (isDevAuthBypass) {
+      return;
+    }
+
     if (configError) {
       console.error("Login halted: Application is misconfigured.");
       return;
@@ -80,6 +97,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
+    if (isDevAuthBypass) {
+      return;
+    }
+
     if (isMsalAuthenticated) {
       await instance.logoutRedirect({
         postLogoutRedirectUri: window.location.origin,
@@ -134,7 +155,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     <AuthContext.Provider
       value={{
         user,
-        isAuthenticated: isMsalAuthenticated,
+        isAuthenticated: isDevAuthBypass ? true : isMsalAuthenticated,
         loading: isAuthLoading,
         login,
         logout,

@@ -42,14 +42,14 @@ docker-compose up --build
 
 This will start:
 - MongoDB on port 27017 (local container)
-- Backend API on port 8000
-- Frontend web app on port 3000
+- Backend API on port 8001
+- Frontend web app on port 3001
 
 ### 3. Access the Application
 
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:8000
-- API Documentation: http://localhost:8000/docs
+- Frontend: http://localhost:3001
+- Backend API: http://localhost:8001
+- API Documentation: http://localhost:8001/docs
 
 ## Development Setup
 
@@ -62,7 +62,7 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate  # Windows
 pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8001
 ```
 
 ### Frontend Development
@@ -178,7 +178,7 @@ Verify your Azure SQL firewall allows access from your IP address and that the c
 ### Authentication Issues
 
 Ensure your Azure AD application is properly configured with the correct redirect URLs:
-- Local development: `http://localhost:3000`
+- Local development: `http://localhost:3001`
 - Production: Your production frontend URL
 
 ## License

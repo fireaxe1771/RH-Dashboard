@@ -19,7 +19,7 @@ services:
       dockerfile: Dockerfile
     container_name: rh-dashboard-backend
     ports:
-      - "8000:8000"
+      - "8001:8001"
     env_file:
       - .env
     environment:
@@ -36,9 +36,13 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_AZURE_CLIENT_ID: ${AZURE_CLIENT_ID}
+        VITE_AZURE_TENANT_ID: ${AZURE_TENANT_ID}
+        VITE_DEV_AUTH_BYPASS: ${VITE_DEV_AUTH_BYPASS}
     container_name: rh-dashboard-frontend
     ports:
-      - "3000:80"
+      - "3001:80"
     environment:
       - VITE_AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
       - VITE_AZURE_TENANT_ID=${AZURE_TENANT_ID}
