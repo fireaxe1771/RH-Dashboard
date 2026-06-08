@@ -74,72 +74,79 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
     return {
         "name": "Claims Calendar-Year Overview",
         "description": (
-            "System-versioned claims dashboard limited to the current calendar year, "
-            "with current-week defaults and current/previous week comparisons for claim flow."
+            "System-versioned claims dashboard focused on current draft inventory, "
+            "year-to-date draft activity, and a compact status breakdown for submitted runs."
         ),
         "widgets": [
             {
-                "id": "claims-draft-intake-ytd",
-                "title": "Draft Claims Created YTD",
+                "id": "claims-total-drafts",
+                "title": "Total Drafts in System",
                 "type": "stat",
                 "sql_query": f"""
                 SELECT COUNT(DISTINCT c.ClaimID) AS Count
                 FROM Claims c
                 WHERE c.submitted = 0
                   AND c.original_run_id IS NULL
-                  AND c.DateCreated >= {current_year}
+                  AND c.archived = 0
                 """,
                 "layout": {"x": 0, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#6366f1"]},
             },
             {
-                "id": "claims-draft-deleted-ytd",
-                "title": "Deleted Drafts YTD",
+                "id": "claims-draft-intake-ytd",
+                "title": "Draft Claims Created YTD",
                 "type": "stat",
                 "sql_query": f"""
-                WITH DraftRoots AS (
-                    SELECT DISTINCT ClaimID
-                    FROM Claims FOR SYSTEM_TIME ALL
-                    WHERE submitted = 0
-                      AND original_run_id IS NULL
-                      AND DateCreated >= {current_year}
-                ),
-                CurrentClaims AS (
-                    SELECT DISTINCT ClaimID
-                    FROM Claims
+                WITH DraftVersions AS (
+                    SELECT
+                        c.ClaimID,
+                        c.DateCreated,
+                        ROW_NUMBER() OVER (PARTITION BY c.ClaimID ORDER BY c.DateCreated ASC) AS rn
+                    FROM Claims FOR SYSTEM_TIME ALL c
+                    WHERE c.submitted = 0
+                      AND c.original_run_id IS NULL
                 )
                 SELECT COUNT(*) AS Count
-                FROM DraftRoots d
-                LEFT JOIN CurrentClaims c ON c.ClaimID = d.ClaimID
-                WHERE c.ClaimID IS NULL
+                FROM DraftVersions
+                WHERE rn = 1
+                  AND DateCreated >= {current_year}
                 """,
                 "layout": {"x": 3, "y": 0, "w": 3, "h": 3},
-                "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#ef4444"]},
+                "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#22c55e"]},
             },
             {
                 "id": "claims-draft-submitted-ytd",
                 "title": "Drafts Submitted YTD",
                 "type": "stat",
                 "sql_query": f"""
-                SELECT COUNT(DISTINCT c.original_run_id) AS Count
-                FROM Claims c
-                WHERE c.submitted = 1
-                  AND c.archived = 0
-                  AND c.original_run_id IS NOT NULL
-                  AND c.DateCreated >= {current_year}
+                WITH SubmittedVersions AS (
+                    SELECT
+                        c.original_run_id,
+                        c.DateCreated,
+                        ROW_NUMBER() OVER (PARTITION BY c.original_run_id ORDER BY c.DateCreated ASC) AS rn
+                    FROM Claims FOR SYSTEM_TIME ALL c
+                    WHERE c.submitted = 1
+                      AND c.archived = 0
+                      AND c.original_run_id IS NOT NULL
+                )
+                SELECT COUNT(*) AS Count
+                FROM SubmittedVersions
+                WHERE rn = 1
+                  AND DateCreated >= {current_year}
                 """,
                 "layout": {"x": 6, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#22c55e"]},
             },
             {
                 "id": "claims-draft-open-ytd",
-                "title": "Drafts Remaining YTD",
+                "title": "Drafts Remaining Today",
                 "type": "stat",
                 "sql_query": f"""
                 SELECT COUNT(DISTINCT c.ClaimID) AS Count
                 FROM Claims c
                 WHERE c.submitted = 0
                   AND c.original_run_id IS NULL
+                  AND c.archived = 0
                   AND c.DateCreated >= {current_year}
                 """,
                 "layout": {"x": 9, "y": 0, "w": 3, "h": 3},
@@ -147,99 +154,34 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
             },
             {
                 "id": "claims-new-runs-by-status",
-                "title": "New Runs by Status",
+                "title": "Submitted Runs by Status YTD",
                 "type": "bar",
                 "sql_query": f"""
-                SELECT c.Status, COUNT(DISTINCT c.ClaimID) AS Count
-                FROM Claims c
-                WHERE c.submitted = 1
-                  AND c.archived = 0
-                  AND c.original_run_id IS NOT NULL
-                  AND c.DateCreated >= {current_year}
-                GROUP BY c.Status
-                ORDER BY Count DESC, c.Status
-                """,
-                "layout": {"x": 0, "y": 3, "w": 6, "h": 5},
-                "config": {"xAxisKey": "Status", "yAxisKeys": ["Count"], "colors": ["#8b5cf6"]},
-            },
-            {
-                "id": "claims-active-by-status",
-                "title": "Active Runs by Status",
-                "type": "bar",
-                "sql_query": f"""
-                SELECT c.Status, COUNT(DISTINCT c.ClaimID) AS Count
-                FROM Claims c
-                WHERE c.submitted = 1
-                  AND c.archived = 0
-                  AND c.original_run_id IS NOT NULL
-                  AND c.user_id <> '0'
-                  AND c.Status <> 'Unassigned'
-                  AND c.DateCreated >= {current_year}
-                GROUP BY c.Status
-                ORDER BY Count DESC, c.Status
-                """,
-                "layout": {"x": 6, "y": 3, "w": 6, "h": 5},
-                "config": {"xAxisKey": "Status", "yAxisKeys": ["Count"], "colors": ["#0ea5e9"]},
-            },
-            {
-                "id": "claims-weekly-comparison",
-                "title": "Current Week vs Previous Week",
-                "type": "table",
-                "sql_query": f"""
-                WITH WeekBounds AS (
+                WITH StatusCounts AS (
                     SELECT
-                        DATEADD(WEEK, DATEDIFF(WEEK, 0, CAST(GETDATE() AS date)), 0) AS CurrentWeekStart,
-                        DATEADD(DAY, 7, DATEADD(WEEK, DATEDIFF(WEEK, 0, CAST(GETDATE() AS date)), 0)) AS NextWeekStart,
-                        DATEADD(DAY, -7, DATEADD(WEEK, DATEDIFF(WEEK, 0, CAST(GETDATE() AS date)), 0)) AS PreviousWeekStart
-                )
-                SELECT
-                    Bucket,
-                    COUNT(DISTINCT ClaimID) AS Count
-                FROM (
-                    SELECT
-                        c.ClaimID,
-                        CASE
-                            WHEN c.DateCreated >= wb.CurrentWeekStart AND c.DateCreated < wb.NextWeekStart THEN 'Current Week'
-                            WHEN c.DateCreated >= wb.PreviousWeekStart AND c.DateCreated < wb.CurrentWeekStart THEN 'Previous Week'
-                        END AS Bucket
+                        COALESCE(NULLIF(LTRIM(RTRIM(c.Status)), ''), 'Unassigned') AS StatusLabel,
+                        COUNT(DISTINCT c.original_run_id) AS Count
                     FROM Claims c
-                    CROSS JOIN WeekBounds wb
-                    WHERE c.DateCreated >= wb.PreviousWeekStart
-                      AND c.DateCreated < wb.NextWeekStart
+                    WHERE c.submitted = 1
+                      AND c.archived = 0
+                      AND c.original_run_id IS NOT NULL
                       AND c.DateCreated >= {current_year}
-                ) x
-                WHERE Bucket IS NOT NULL
-                GROUP BY Bucket
-                ORDER BY CASE Bucket WHEN 'Current Week' THEN 1 ELSE 2 END
+                    GROUP BY COALESCE(NULLIF(LTRIM(RTRIM(c.Status)), ''), 'Unassigned')
+                ),
+                Ranked AS (
+                    SELECT
+                        StatusLabel,
+                        Count,
+                        ROW_NUMBER() OVER (ORDER BY Count DESC, StatusLabel) AS rn
+                    FROM StatusCounts
+                )
+                SELECT StatusLabel, Count
+                FROM Ranked
+                WHERE rn <= 8
+                ORDER BY Count DESC, StatusLabel
                 """,
-                "layout": {"x": 0, "y": 8, "w": 6, "h": 4},
-                "config": {"xAxisKey": "Bucket", "yAxisKeys": ["Count"], "colors": ["#14b8a6"]},
-            },
-            {
-                "id": "claims-ai-indicators",
-                "title": "Potential AI / Automation Indicators",
-                "type": "table",
-                "sql_query": """
-                SELECT
-                    t.name AS TableName,
-                    c.name AS ColumnName,
-                    ty.name AS DataType
-                FROM sys.tables t
-                INNER JOIN sys.columns c ON c.object_id = t.object_id
-                INNER JOIN sys.types ty ON c.user_type_id = ty.user_type_id
-                WHERE t.name IN ('Claims', 'Invoices')
-                  AND (
-                    c.name LIKE '%AI%'
-                    OR c.name LIKE '%ML%'
-                    OR c.name LIKE '%OCR%'
-                    OR c.name LIKE '%AUTO%'
-                    OR c.name LIKE '%INTELL%'
-                    OR c.name LIKE '%PROCESS%'
-                  )
-                ORDER BY t.name, c.name
-                """,
-                "layout": {"x": 6, "y": 8, "w": 6, "h": 4},
-                "config": {"xAxisKey": "TableName", "yAxisKeys": ["ColumnName"], "colors": ["#f97316"]},
+                "layout": {"x": 0, "y": 3, "w": 12, "h": 5},
+                "config": {"xAxisKey": "StatusLabel", "yAxisKeys": ["Count"], "colors": ["#8b5cf6"]},
             },
         ],
     }
@@ -251,18 +193,32 @@ async def _seed_default_dashboards() -> None:
         return
 
     dashboards = db_manager.db["dashboards"]
-    existing_count = await dashboards.count_documents({})
-    if existing_count > 0:
-        return
 
     now = datetime.utcnow()
     payload = _build_default_claims_dashboard()
     payload["created_by"] = "system"
     payload["created_at"] = now
     payload["updated_at"] = now
+    result = await dashboards.update_one(
+        {"name": payload["name"], "created_by": "system"},
+        {
+            "$set": {
+                "description": payload["description"],
+                "widgets": payload["widgets"],
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "created_by": payload["created_by"],
+                "created_at": payload["created_at"],
+            },
+        },
+        upsert=True
+    )
 
-    await dashboards.insert_one(payload)
-    logger.info("Seeded default claims dashboard: Claims Calendar-Year Overview")
+    if result.upserted_id:
+        logger.info("Seeded default claims dashboard: Claims Calendar-Year Overview")
+    else:
+        logger.info("Refreshed default claims dashboard: Claims Calendar-Year Overview")
 
 # --- DASHBOARD METADATA ENDPOINTS ---
 

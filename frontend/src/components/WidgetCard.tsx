@@ -180,6 +180,10 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({ widget, filters, onDrill
   const xKey = widget.config.xAxisKey || columns[0];
   const yKeys = widget.config.yAxisKeys || columns.filter(c => c !== xKey).slice(0, 1);
   const colorPalette = widget.config.colors || ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#0ea5e9'];
+  const formatChartTick = (value: number): string => {
+    if (!Number.isFinite(value)) return '0';
+    return formatValue(Math.round(value));
+  };
 
   // 3. TABLE RENDERER
   if (widget.type === 'table') {
@@ -243,7 +247,7 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({ widget, filters, onDrill
                 <g key={idx}>
                   <line className="svg-grid-line" x1={padding.left} y1={yVal} x2={svgWidth - padding.right} y2={yVal} />
                   <text className="svg-axis-text" x={padding.left - 10} y={yVal + 4} textAnchor="end">
-                    {formatValue(labelVal)}
+                    {formatChartTick(labelVal)}
                   </text>
                 </g>
               );
@@ -329,7 +333,7 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({ widget, filters, onDrill
                 <g key={idx}>
                   <line className="svg-grid-line" x1={padding.left} y1={yVal} x2={svgWidth - padding.right} y2={yVal} />
                   <text className="svg-axis-text" x={padding.left - 10} y={yVal + 4} textAnchor="end">
-                    {formatValue(labelVal)}
+                    {formatChartTick(labelVal)}
                   </text>
                 </g>
               );
