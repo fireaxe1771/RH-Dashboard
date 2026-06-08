@@ -208,17 +208,21 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "New Runs – Submitted vs Recycled",
                 "type": "bar",
                 "sql_query": """
-                WITH new_runs AS (
+                WITH submitted_runs AS (
                     SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
                     FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
-                    WHERE COALESCE(date_of_submitted, created) BETWEEN %(start_date)s AND %(end_date)s
+                    WHERE submitted = 1
+                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
+                ),
+                recycled_runs AS (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
+                    FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
+                    WHERE submitted = 0
+                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 )
-                SELECT
-                    CASE WHEN submitted = 1 THEN 'Submitted' ELSE 'Recycled' END AS RunType,
-                    COUNT(*) AS Count
-                FROM new_runs WHERE rn = 1
-                GROUP BY CASE WHEN submitted = 1 THEN 'Submitted' ELSE 'Recycled' END
-                ORDER BY Count DESC
+                SELECT 'Submitted' AS RunType, COUNT(*) AS Count FROM submitted_runs WHERE rn = 1
+                UNION ALL
+                SELECT 'Recycled' AS RunType, COUNT(*) AS Count FROM recycled_runs WHERE rn = 1
                 """,
                 "layout": {"x": 6, "y": 3, "w": 6, "h": 3},
                 "config": {"xAxisKey": "RunType", "yAxisKeys": ["Count"], "colors": ["#8b5cf6"]},
