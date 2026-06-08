@@ -2,6 +2,8 @@ import pymssql
 import logging
 import re
 import struct
+import threading
+import time
 from datetime import date, timedelta
 from typing import List, Dict, Any, Tuple
 from azure.identity import ClientSecretCredential
@@ -26,9 +28,17 @@ class QueryValidationError(TargetDatabaseError):
 class SQLConnection:
     """Manages raw connections and query execution against the target Azure SQL Database."""
 
+    # Azure AD tokens are valid for ~60-75 minutes.  We cache the token and
+    # refresh it 5 minutes before expiry so that concurrent widget requests
+    # share a single token instead of each acquiring their own (~0.9 s each).
+    _TOKEN_REFRESH_MARGIN = 300  # seconds
+
     def __init__(self):
         self._claims_date_column: str | None = None
         self._claims_column_map: Dict[str, str] | None = None
+        self._cached_token: str | None = None
+        self._token_expiry: float = 0.0  # epoch seconds
+        self._token_lock = threading.Lock()
 
     def _get_odbc_connection(self, access_token: str):
         """Connect to Azure SQL using an Azure AD access token via pyodbc."""
@@ -352,23 +362,38 @@ class SQLConnection:
         self._claims_column_map = column_map
         return self._claims_column_map
 
+    def _get_azure_ad_token(self) -> str:
+        """Return a cached Azure AD access token, refreshing only when near expiry.
+
+        Thread-safe: concurrent callers block briefly on the lock while one
+        thread refreshes, then all share the new token.
+        """
+        now = time.time()
+        if self._cached_token and now < self._token_expiry - self._TOKEN_REFRESH_MARGIN:
+            return self._cached_token
+
+        with self._token_lock:
+            # Double-check after acquiring the lock (another thread may have refreshed)
+            now = time.time()
+            if self._cached_token and now < self._token_expiry - self._TOKEN_REFRESH_MARGIN:
+                return self._cached_token
+
+            credential = ClientSecretCredential(
+                tenant_id=settings.AZURE_SQL_TENANT_ID,
+                client_id=settings.AZURE_SQL_USER,
+                client_secret=settings.AZURE_SQL_PASSWORD,
+            )
+            token = credential.get_token("https://database.windows.net/.default")
+            self._cached_token = token.token
+            self._token_expiry = token.expires_on  # epoch seconds
+            logger.info("Azure AD token refreshed (expires %s)", self._token_expiry)
+            return self._cached_token
+
     def _get_connection(self):
         """Establishes a connection using parameters from configuration settings."""
         try:
             if settings.AZURE_SQL_AUTHENTICATION == "azure-ad":
-                # Azure AD Service Principal authentication using token
-                # Get Azure AD token using Service Principal credentials
-                credential = ClientSecretCredential(
-                    tenant_id=settings.AZURE_SQL_TENANT_ID,
-                    client_id=settings.AZURE_SQL_USER,
-                    client_secret=settings.AZURE_SQL_PASSWORD
-                )
-                
-                # Get access token for Azure SQL Database
-                token = credential.get_token("https://database.windows.net/.default")
-                access_token = token.token
-                
-                # Connect using the access token through ODBC
+                access_token = self._get_azure_ad_token()
                 return self._get_odbc_connection(access_token)
             else:
                 # Basic authentication using username/password
