@@ -88,10 +88,10 @@ def test_default_dashboard_uses_correct_columns():
     assert "FOR SYSTEM_TIME BETWEEN" in ytd["sql_query"]
     assert "%(end_date)s" in ytd["sql_query"]
 
-    # Period comparison uses id/date_of_submitted
+    # Period comparison uses id/created (drafts: submitted=0)
     period = widgets["claims-period-comparison"]
     assert "PARTITION BY id ORDER BY id" in period["sql_query"]
-    assert "date_of_submitted BETWEEN" in period["sql_query"]
+    assert "created BETWEEN" in period["sql_query"]
     assert "%(start_date)s" in period["sql_query"]
     assert "%(prior_start_date)s" in period["sql_query"]
 
@@ -100,11 +100,12 @@ def test_default_dashboard_uses_correct_columns():
     assert "PARTITION BY id ORDER BY id" in submitted["sql_query"]
     assert "date_of_submitted BETWEEN" in submitted["sql_query"]
 
-    # New runs uses temporal query with ClaimCurrentTypeId = 1
+    # New runs Submitted vs Recycled uses temporal query split by submitted flag
     new_runs = widgets["claims-new-runs-by-type"]
     assert "FOR SYSTEM_TIME BETWEEN" in new_runs["sql_query"]
     assert "PARTITION BY id ORDER BY id" in new_runs["sql_query"]
-    assert "ClaimCurrentTypeId = 1" in new_runs["sql_query"]
+    assert "Submitted" in new_runs["sql_query"]
+    assert "Recycled" in new_runs["sql_query"]
 
     # Active runs uses temporal query with ClaimCurrentTypeId = 4
     active_runs = widgets["claims-active-by-status"]
