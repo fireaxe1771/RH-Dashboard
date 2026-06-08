@@ -432,6 +432,16 @@ class SQLConnection:
 
         prior_start, prior_end = self.compute_prior_period(start_date, end_date)
 
+        # Compute YTD start (Jan 1 of the year containing the end_date)
+        ytd_start = None
+        if end_date:
+            try:
+                from datetime import date as _date
+                ed = _date.fromisoformat(str(end_date))
+                ytd_start = f"{ed.year}-01-01"
+            except (ValueError, TypeError):
+                pass
+
         params = {
             "department_id": filters.department_id if filters else None,
             "processor_id": filters.processor_id if filters else None,
@@ -439,6 +449,7 @@ class SQLConnection:
             "end_date": end_date,
             "prior_start_date": prior_start,
             "prior_end_date": prior_end,
+            "ytd_start": ytd_start,
         }
 
         try:
