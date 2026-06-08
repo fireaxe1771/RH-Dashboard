@@ -75,7 +75,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
         "name": "Claims Calendar-Year Overview",
         "description": (
             "System-versioned claims dashboard focused on current draft inventory, "
-            "year-to-date draft activity, and a compact status breakdown for submitted runs."
+            "year-to-date draft activity filtered by created date, and a compact status breakdown for submitted runs."
         ),
         "widgets": [
             {
@@ -83,13 +83,13 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "Total Drafts in System",
                 "type": "stat",
                 "sql_query": f"""
-                SELECT COUNT(DISTINCT c.ClaimID) AS Count
+                SELECT COUNT(*) AS Count
                 FROM Claims c
                 WHERE c.submitted = 0
                   AND c.original_run_id IS NULL
                   AND c.archived = 0
                 """,
-                "layout": {"x": 0, "y": 0, "w": 3, "h": 3},
+                "layout": {"x": 0, "y": 0, "w": 2, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#6366f1"]},
             },
             {
@@ -111,8 +111,22 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 WHERE rn = 1
                   AND DateCreated >= {current_year}
                 """,
-                "layout": {"x": 3, "y": 0, "w": 3, "h": 3},
+                "layout": {"x": 2, "y": 0, "w": 2, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#22c55e"]},
+            },
+            {
+                "id": "claims-draft-deleted",
+                "title": "Drafts Deleted",
+                "type": "stat",
+                "sql_query": """
+                SELECT COUNT(DISTINCT c.ClaimID) AS Count
+                FROM Claims c
+                WHERE c.submitted = 0
+                  AND c.original_run_id IS NULL
+                  AND c.archived = 1
+                """,
+                "layout": {"x": 4, "y": 0, "w": 2, "h": 3},
+                "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#ef4444"]},
             },
             {
                 "id": "claims-draft-submitted-ytd",
@@ -126,7 +140,6 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                         ROW_NUMBER() OVER (PARTITION BY c.original_run_id ORDER BY c.DateCreated ASC) AS rn
                     FROM Claims FOR SYSTEM_TIME ALL c
                     WHERE c.submitted = 1
-                      AND c.archived = 0
                       AND c.original_run_id IS NOT NULL
                 )
                 SELECT COUNT(*) AS Count
@@ -134,12 +147,12 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 WHERE rn = 1
                   AND DateCreated >= {current_year}
                 """,
-                "layout": {"x": 6, "y": 0, "w": 3, "h": 3},
+                "layout": {"x": 6, "y": 0, "w": 2, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#22c55e"]},
             },
             {
                 "id": "claims-draft-open-ytd",
-                "title": "Drafts Remaining Today",
+                "title": "Drafts Remaining This Year",
                 "type": "stat",
                 "sql_query": f"""
                 SELECT COUNT(DISTINCT c.ClaimID) AS Count
@@ -147,10 +160,52 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 WHERE c.submitted = 0
                   AND c.original_run_id IS NULL
                   AND c.archived = 0
-                  AND c.DateCreated >= {current_year}
+                  AND c.created >= {current_year}
                 """,
-                "layout": {"x": 9, "y": 0, "w": 3, "h": 3},
+                "layout": {"x": 8, "y": 0, "w": 2, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#f59e0b"]},
+            },
+            {
+                "id": "claims-draft-created-period",
+                "title": "Draft Claims Created This Period",
+                "type": "stat",
+                "sql_query": """
+                WITH PeriodBounds AS (
+                    SELECT
+                        CAST(%(start_date)s AS date) AS CurrentStart,
+                        CAST(%(end_date)s AS date) AS CurrentEnd,
+                        DATEADD(
+                            DAY,
+                            -(DATEDIFF(DAY, CAST(%(start_date)s AS date), CAST(%(end_date)s AS date)) + 1),
+                            CAST(%(start_date)s AS date)
+                        ) AS PreviousStart,
+                        DATEADD(DAY, -1, CAST(%(start_date)s AS date)) AS PreviousEnd
+                )
+                SELECT
+                    (
+                        SELECT COUNT(*)
+                        FROM Claims c
+                        CROSS JOIN PeriodBounds b
+                        WHERE c.submitted = 0
+                          AND c.original_run_id IS NULL
+                          AND c.archived = 0
+                          AND c.created >= b.CurrentStart
+                          AND c.created < DATEADD(DAY, 1, b.CurrentEnd)
+                    ) AS CurrentPeriod,
+                    (
+                        SELECT COUNT(*)
+                        FROM Claims c
+                        CROSS JOIN PeriodBounds b
+                        WHERE c.submitted = 0
+                          AND c.original_run_id IS NULL
+                          AND c.archived = 0
+                          AND c.created >= b.PreviousStart
+                          AND c.created < DATEADD(DAY, 1, b.PreviousEnd)
+                    ) AS PreviousPeriod
+                FROM PeriodBounds
+                """,
+                "layout": {"x": 0, "y": 3, "w": 4, "h": 3},
+                "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#38bdf8"]},
             },
             {
                 "id": "claims-new-runs-by-status",
@@ -180,7 +235,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 WHERE rn <= 8
                 ORDER BY Count DESC, StatusLabel
                 """,
-                "layout": {"x": 0, "y": 3, "w": 12, "h": 5},
+                "layout": {"x": 0, "y": 6, "w": 12, "h": 5},
                 "config": {"xAxisKey": "StatusLabel", "yAxisKeys": ["Count"], "colors": ["#8b5cf6"]},
             },
         ],

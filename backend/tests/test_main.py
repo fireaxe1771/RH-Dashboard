@@ -89,21 +89,43 @@ def test_default_draft_summary_widgets_are_aligned():
     dashboard = _build_default_claims_dashboard()
     total_widget = next(widget for widget in dashboard["widgets"] if widget["id"] == "claims-total-drafts")
     created_widget = next(widget for widget in dashboard["widgets"] if widget["id"] == "claims-draft-intake-ytd")
+    deleted_widget = next(widget for widget in dashboard["widgets"] if widget["id"] == "claims-draft-deleted")
+    period_widget = next(widget for widget in dashboard["widgets"] if widget["id"] == "claims-draft-created-period")
     submitted_widget = next(widget for widget in dashboard["widgets"] if widget["id"] == "claims-draft-submitted-ytd")
     remaining_widget = next(widget for widget in dashboard["widgets"] if widget["id"] == "claims-draft-open-ytd")
+    status_widget = next(widget for widget in dashboard["widgets"] if widget["id"] == "claims-new-runs-by-status")
 
-    assert "COUNT(DISTINCT c.ClaimID)" in total_widget["sql_query"]
+    assert "COUNT(*)" in total_widget["sql_query"]
     assert "c.submitted = 0" in total_widget["sql_query"]
     assert "c.original_run_id IS NULL" in total_widget["sql_query"]
     assert "c.archived = 0" in total_widget["sql_query"]
     assert "FOR SYSTEM_TIME ALL" in created_widget["sql_query"]
     assert "ROW_NUMBER() OVER (PARTITION BY c.ClaimID" in created_widget["sql_query"]
+    assert "c.DateCreated >= " in created_widget["sql_query"]
+    assert "c.archived = 1" in deleted_widget["sql_query"]
+    assert "c.submitted = 0" in deleted_widget["sql_query"]
+    assert "c.original_run_id IS NULL" in deleted_widget["sql_query"]
+    assert "%(start_date)s" in period_widget["sql_query"]
+    assert "%(end_date)s" in period_widget["sql_query"]
+    assert "CurrentPeriod" in period_widget["sql_query"]
+    assert "PreviousPeriod" in period_widget["sql_query"]
+    assert "c.created >= b.CurrentStart" in period_widget["sql_query"]
+    assert "c.created < DATEADD(DAY, 1, b.CurrentEnd)" in period_widget["sql_query"]
+    assert "c.created >= b.PreviousStart" in period_widget["sql_query"]
+    assert "c.created < DATEADD(DAY, 1, b.PreviousEnd)" in period_widget["sql_query"]
     assert "FOR SYSTEM_TIME ALL" in submitted_widget["sql_query"]
     assert "ROW_NUMBER() OVER (PARTITION BY c.original_run_id" in submitted_widget["sql_query"]
+    assert "c.archived = 0" not in submitted_widget["sql_query"]
+    assert "c.DateCreated >= " in submitted_widget["sql_query"]
     assert "c.submitted = 0" in remaining_widget["sql_query"]
     assert "c.archived = 0" in remaining_widget["sql_query"]
-    assert "c.DateCreated >= " in remaining_widget["sql_query"]
-    assert total_widget["layout"]["w"] == 3
-    assert created_widget["layout"]["w"] == 3
-    assert submitted_widget["layout"]["w"] == 3
-    assert remaining_widget["layout"]["w"] == 3
+    assert "c.created >= " in remaining_widget["sql_query"]
+    assert total_widget["layout"]["w"] == 2
+    assert created_widget["layout"]["w"] == 2
+    assert deleted_widget["layout"]["w"] == 2
+    assert period_widget["layout"]["w"] == 4
+    assert period_widget["layout"]["y"] == 3
+    assert submitted_widget["layout"]["w"] == 2
+    assert remaining_widget["layout"]["w"] == 2
+    assert status_widget["layout"]["y"] == 6
+    assert remaining_widget["title"] == "Drafts Remaining This Year"
