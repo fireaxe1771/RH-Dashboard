@@ -149,8 +149,8 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 WHERE c.submitted = 1
                   AND c.archived = 0
                   AND c.original_run_id IS NOT NULL
-                  AND c.created >= %(ytd_start)s
-                  AND c.created <= %(end_date)s
+                  AND c.date_of_submitted >= %(ytd_start)s
+                  AND c.date_of_submitted <= %(end_date)s
                 """,
                 "layout": {"x": 6, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#22c55e"]},
