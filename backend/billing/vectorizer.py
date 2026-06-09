@@ -4,7 +4,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 
-from openai import AsyncOpenAI
+from openai import AsyncAzureOpenAI, AsyncOpenAI
 
 from config import settings
 from billing import VectorizerError
@@ -19,7 +19,21 @@ _MONTH_NAMES = [
 
 @lru_cache(maxsize=1)
 def _get_openai_client() -> AsyncOpenAI:
-    """Returns a cached AsyncOpenAI client instance."""
+    """Returns a cached async client.
+
+    Uses Azure OpenAI (Foundry) when AZURE_OPENAI_ENDPOINT is configured, otherwise
+    falls back to the OpenAI.com API. AsyncAzureOpenAI is a subclass of AsyncOpenAI,
+    so callers use the same chat/embeddings interface; for Azure the ``model``
+    argument is the deployment name.
+    """
+    if settings.AZURE_OPENAI_ENDPOINT:
+        if not settings.AZURE_OPENAI_API_KEY:
+            raise VectorizerError("AZURE_OPENAI_API_KEY is not set.")
+        return AsyncAzureOpenAI(
+            api_key=settings.AZURE_OPENAI_API_KEY,
+            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+            api_version=settings.AZURE_OPENAI_API_VERSION,
+        )
     if not settings.OPENAI_API_KEY:
         raise VectorizerError("OPENAI_API_KEY is not set.")
     return AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
