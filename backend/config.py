@@ -32,6 +32,24 @@ class Settings:
     AZURE_CLIENT_ID: str = os.getenv("AZURE_CLIENT_ID", "")
     AZURE_TENANT_ID: str = os.getenv("AZURE_TENANT_ID", "")
 
+    # --- Azure Billing Integration ---
+    AZURE_BILLING_CLIENT_ID: str = os.getenv("AZURE_BILLING_CLIENT_ID", "")
+    AZURE_BILLING_CLIENT_SECRET: str = os.getenv("AZURE_BILLING_CLIENT_SECRET", "")
+    AZURE_SUBSCRIPTION_ID: str = os.getenv("AZURE_SUBSCRIPTION_ID", "")
+    AZURE_BILLING_ACCOUNT_ID: str = os.getenv("AZURE_BILLING_ACCOUNT_ID", "")
+    AZURE_BILLING_ACCOUNT_TYPE: str = os.getenv("AZURE_BILLING_ACCOUNT_TYPE", "MOSP")
+    AZURE_MANAGEMENT_GROUP_ID: str = os.getenv("AZURE_MANAGEMENT_GROUP_ID", "")
+
+    # --- AI / Embeddings ---
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_EMBEDDING_MODEL: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+    OPENAI_CHAT_MODEL: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+
+    # --- Billing Sync Configuration ---
+    BILLING_SYNC_ENABLED: bool = os.getenv("BILLING_SYNC_ENABLED", "true").lower() == "true"
+    BILLING_DAILY_SYNC_HOUR: int = int(os.getenv("BILLING_DAILY_SYNC_HOUR", "2"))
+    BILLING_HISTORY_MONTHS: int = int(os.getenv("BILLING_HISTORY_MONTHS", "12"))
+
     def validate_settings(self) -> None:
         """Validates configuration parameters, stopping startup if required variables are missing."""
         missing = []
@@ -79,6 +97,24 @@ class Settings:
             sys.stderr.write(error_msg)
             sys.stderr.flush()
             raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+
+        # Billing variables are only required when the sync scheduler is enabled
+        if self.BILLING_SYNC_ENABLED and os.getenv("TESTING") != "true":
+            self.validate_billing_settings()
+
+    def validate_billing_settings(self) -> None:
+        """Validates billing service principal and AI credentials when sync is enabled."""
+        missing = []
+        if not self.AZURE_BILLING_CLIENT_ID:
+            missing.append("AZURE_BILLING_CLIENT_ID")
+        if not self.AZURE_BILLING_CLIENT_SECRET:
+            missing.append("AZURE_BILLING_CLIENT_SECRET")
+        if not self.AZURE_SUBSCRIPTION_ID:
+            missing.append("AZURE_SUBSCRIPTION_ID")
+        if not self.OPENAI_API_KEY:
+            missing.append("OPENAI_API_KEY")
+        if missing:
+            raise ValueError(f"Missing required billing variables: {', '.join(missing)}")
 
 # Create and validate configurations globally
 settings = Settings()

@@ -5,6 +5,14 @@ import { Navbar } from './components/Navbar';
 import { DashboardViewer } from './components/DashboardViewer';
 import { DashboardDesigner } from './components/DashboardDesigner';
 import { Dashboard, api } from './services/api';
+import { BillingView } from './components/billing/types';
+import { BillingOverview } from './components/billing/BillingOverview';
+import { TopSpendersTable } from './components/billing/TopSpendersTable';
+import { BudgetsPanel } from './components/billing/BudgetsPanel';
+import { AdvisorPanel } from './components/billing/AdvisorPanel';
+import { InvoiceList } from './components/billing/InvoiceList';
+import { ReservationDashboard } from './components/billing/ReservationDashboard';
+import { AICostAnalyst } from './components/billing/AICostAnalyst';
 import { 
   Database, 
   ShieldAlert, 
@@ -12,6 +20,16 @@ import {
   AlertCircle,
   FileSpreadsheet
 } from 'lucide-react';
+
+const BILLING_VIEW_TITLES: Record<BillingView, { title: string; description: string }> = {
+  'billing-overview':     { title: 'Cost Overview',    description: 'Month-to-date Azure spend, top services, and budget health' },
+  'billing-top-spenders': { title: 'Top Spenders',     description: 'Highest-cost services and resource groups this period' },
+  'billing-budgets':      { title: 'Budgets & Alerts', description: 'Budget utilization and active cost alerts' },
+  'billing-advisor':      { title: 'Azure Advisor',    description: 'Cost, security, and performance recommendations' },
+  'billing-invoices':     { title: 'Invoices',         description: 'Billing invoices and downloadable statements' },
+  'billing-reservations': { title: 'Reservations',     description: 'Reserved instance purchase opportunities' },
+  'billing-ai':           { title: 'AI Cost Analyst',  description: 'Ask natural language questions about your Azure costs' },
+};
 
 export const AppContent: React.FC = () => {
   const { isAuthenticated, loading: authLoading, login, user } = useAuth();
@@ -25,6 +43,9 @@ export const AppContent: React.FC = () => {
   // Designer state
   const [isDesignerOpen, setIsDesignerOpen] = useState(false);
   const [editDashboard, setEditDashboard] = useState<Dashboard | null>(null);
+
+  // Azure billing view state
+  const [activeBillingView, setActiveBillingView] = useState<BillingView | null>(null);
 
   // Fetch dashboards on login
   useEffect(() => {
@@ -76,11 +97,19 @@ export const AppContent: React.FC = () => {
   const handleSelectDashboard = (id: string) => {
     setIsDesignerOpen(false);
     setEditDashboard(null);
+    setActiveBillingView(null);
     setSelectedId(id);
+  };
+
+  const handleSelectBillingView = (view: BillingView) => {
+    setIsDesignerOpen(false);
+    setEditDashboard(null);
+    setActiveBillingView(view);
   };
 
   const handleNewDashboard = () => {
     setEditDashboard(null);
+    setActiveBillingView(null);
     setIsDesignerOpen(true);
   };
 
@@ -212,6 +241,19 @@ export const AppContent: React.FC = () => {
   // 2. AUTHENTICATED WORKSPACE PORTAL
   const selectedDashboard = dashboards.find(d => (d.id || d._id) === selectedId);
 
+  const renderBillingView = () => {
+    switch (activeBillingView) {
+      case 'billing-overview':     return <BillingOverview />;
+      case 'billing-top-spenders': return <TopSpendersTable />;
+      case 'billing-budgets':      return <BudgetsPanel />;
+      case 'billing-advisor':      return <AdvisorPanel />;
+      case 'billing-invoices':     return <InvoiceList />;
+      case 'billing-reservations': return <ReservationDashboard />;
+      case 'billing-ai':           return <AICostAnalyst />;
+      default:                     return null;
+    }
+  };
+
   return (
     <div className="app-container">
       {/* Sidebar navigation */}
@@ -221,6 +263,8 @@ export const AppContent: React.FC = () => {
         onSelect={handleSelectDashboard}
         onNew={handleNewDashboard}
         isDesignerOpen={isDesignerOpen}
+        activeBillingView={activeBillingView}
+        onSelectBillingView={handleSelectBillingView}
       />
 
       {/* Main app body area */}
@@ -229,17 +273,21 @@ export const AppContent: React.FC = () => {
         {/* Top Navbar */}
         <Navbar
           title={
-            isDesignerOpen 
-              ? (editDashboard ? `Editing: ${editDashboard.name}` : "Create New Dashboard")
-              : (selectedDashboard ? selectedDashboard.name : "No Dashboard Selected")
+            activeBillingView
+              ? BILLING_VIEW_TITLES[activeBillingView].title
+              : isDesignerOpen 
+                ? (editDashboard ? `Editing: ${editDashboard.name}` : "Create New Dashboard")
+                : (selectedDashboard ? selectedDashboard.name : "No Dashboard Selected")
           }
           description={
-            isDesignerOpen
-              ? "Design widgets using SQL queries or embed external reporting widgets"
-              : (selectedDashboard?.description || "Select a dashboard or create one to start mapping claims logs")
+            activeBillingView
+              ? BILLING_VIEW_TITLES[activeBillingView].description
+              : isDesignerOpen
+                ? "Design widgets using SQL queries or embed external reporting widgets"
+                : (selectedDashboard?.description || "Select a dashboard or create one to start mapping claims logs")
           }
           isConnecting={dashboardsLoading}
-          onRefresh={!isDesignerOpen ? loadDashboards : undefined}
+          onRefresh={!isDesignerOpen && !activeBillingView ? loadDashboards : undefined}
           dbStatus={dashboardsError ? 'error' : 'connected'}
         />
 
@@ -265,7 +313,9 @@ export const AppContent: React.FC = () => {
             </div>
           )}
 
-          {isDesignerOpen ? (
+          {activeBillingView ? (
+            renderBillingView()
+          ) : isDesignerOpen ? (
             <DashboardDesigner
               initialDashboard={editDashboard}
               onSave={async () => {

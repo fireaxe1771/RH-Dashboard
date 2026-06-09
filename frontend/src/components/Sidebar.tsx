@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useAuth } from './AuthContext';
 import { 
   LayoutDashboard, 
@@ -6,9 +6,36 @@ import {
   LogOut, 
   User, 
   ChevronRight,
-  Database
+  ChevronDown,
+  Database,
+  DollarSign,
+  BarChart3,
+  TrendingUp,
+  Target,
+  Lightbulb,
+  FileText,
+  Clock,
+  Sparkles,
+  LucideIcon
 } from 'lucide-react';
 import { Dashboard } from '../services/api';
+import { BillingView } from './billing/types';
+
+interface BillingSidebarItem {
+  id: BillingView;
+  label: string;
+  icon: LucideIcon;
+}
+
+const BILLING_NAV_ITEMS: BillingSidebarItem[] = [
+  { id: 'billing-overview',     label: 'Cost Overview',   icon: BarChart3 },
+  { id: 'billing-top-spenders', label: 'Top Spenders',    icon: TrendingUp },
+  { id: 'billing-budgets',      label: 'Budgets & Alerts', icon: Target },
+  { id: 'billing-advisor',      label: 'Advisor',         icon: Lightbulb },
+  { id: 'billing-invoices',     label: 'Invoices',        icon: FileText },
+  { id: 'billing-reservations', label: 'Reservations',    icon: Clock },
+  { id: 'billing-ai',           label: 'AI Cost Analyst', icon: Sparkles },
+];
 
 interface SidebarProps {
   dashboards: Dashboard[];
@@ -16,6 +43,8 @@ interface SidebarProps {
   onSelect: (id: string) => void;
   onNew: () => void;
   isDesignerOpen: boolean;
+  activeBillingView?: BillingView | null;
+  onSelectBillingView?: (view: BillingView) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -24,7 +53,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelect,
   onNew,
   isDesignerOpen,
+  activeBillingView = null,
+  onSelectBillingView,
 }) => {
+  const [billingExpanded, setBillingExpanded] = useState(true);
   const { user, logout } = useAuth();
 
   // Get initials for profile avatar
@@ -84,6 +116,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
             );
           })
         )}
+
+        <button
+          className="sidebar-item"
+          onClick={() => setBillingExpanded((v) => !v)}
+          style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left', marginTop: '16px' }}
+        >
+          <DollarSign size={18} style={{ color: 'var(--accent-primary)' }} />
+          <span style={{ flex: 1, fontWeight: 600 }}>Azure Billing</span>
+          {billingExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </button>
+
+        {billingExpanded &&
+          BILLING_NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeBillingView === item.id;
+            return (
+              <button
+                key={item.id}
+                className={`sidebar-item ${isActive ? 'active' : ''}`}
+                onClick={() => onSelectBillingView?.(item.id)}
+                style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left', paddingLeft: '24px' }}
+              >
+                <Icon size={16} />
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {item.label}
+                </span>
+              </button>
+            );
+          })}
       </nav>
 
       {user && (

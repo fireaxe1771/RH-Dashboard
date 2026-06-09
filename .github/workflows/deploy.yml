@@ -116,3 +116,12 @@ jobs:
           TF_VAR_azure_sql_password: ${{ secrets.AZURE_SQL_PASSWORD }}
           TF_VAR_azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
           TF_VAR_azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+          # Billing integration secrets
+          TF_VAR_azure_billing_client_id: ${{ secrets.AZURE_BILLING_CLIENT_ID }}
+          TF_VAR_azure_billing_client_secret: ${{ secrets.AZURE_BILLING_CLIENT_SECRET }}
+          TF_VAR_azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          TF_VAR_azure_billing_account_id: ${{ secrets.AZURE_BILLING_ACCOUNT_ID }}
+          TF_VAR_azure_billing_account_type: ${{ secrets.AZURE_BILLING_ACCOUNT_TYPE }}
+          TF_VAR_azure_management_group_id: ${{ secrets.AZURE_MANAGEMENT_GROUP_ID }}
+          # AI integration secrets
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
