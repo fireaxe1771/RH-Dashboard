@@ -51,16 +51,34 @@ class _AsyncCollection:
     async def insert_one(self, *args, **kwargs):
         return self._col.insert_one(*args, **kwargs)
 
+    async def insert_many(self, *args, **kwargs):
+        return self._col.insert_many(*args, **kwargs)
+
     async def find_one_and_update(self, *args, **kwargs):
         from pymongo import ReturnDocument
         # mongomock uses return_document kwarg
         return self._col.find_one_and_update(*args, **kwargs)
 
+    async def update_one(self, *args, **kwargs):
+        return self._col.update_one(*args, **kwargs)
+
+    async def update_many(self, *args, **kwargs):
+        return self._col.update_many(*args, **kwargs)
+
     async def delete_one(self, *args, **kwargs):
         return self._col.delete_one(*args, **kwargs)
 
+    async def delete_many(self, *args, **kwargs):
+        return self._col.delete_many(*args, **kwargs)
+
     async def count_documents(self, *args, **kwargs):
         return self._col.count_documents(*args, **kwargs)
+
+    async def distinct(self, *args, **kwargs):
+        return self._col.distinct(*args, **kwargs)
+
+    def aggregate(self, *args, **kwargs):
+        return _AsyncCursor(self._col.aggregate(*args, **kwargs))
 
     async def create_index(self, *args, **kwargs):
         return self._col.create_index(*args, **kwargs)
