@@ -41,9 +41,15 @@ class Settings:
     AZURE_MANAGEMENT_GROUP_ID: str = os.getenv("AZURE_MANAGEMENT_GROUP_ID", "")
 
     # --- AI / Embeddings ---
+    # When AZURE_OPENAI_ENDPOINT is set, the app uses Azure OpenAI (Foundry) and
+    # OPENAI_CHAT_MODEL / OPENAI_EMBEDDING_MODEL are treated as Azure *deployment* names.
+    # Otherwise it falls back to the OpenAI.com API using OPENAI_API_KEY.
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     OPENAI_EMBEDDING_MODEL: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     OPENAI_CHAT_MODEL: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+    AZURE_OPENAI_ENDPOINT: str = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+    AZURE_OPENAI_API_KEY: str = os.getenv("AZURE_OPENAI_API_KEY", "")
+    AZURE_OPENAI_API_VERSION: str = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
 
     # --- Billing Sync Configuration ---
     BILLING_SYNC_ENABLED: bool = os.getenv("BILLING_SYNC_ENABLED", "true").lower() == "true"
@@ -111,8 +117,12 @@ class Settings:
             missing.append("AZURE_BILLING_CLIENT_SECRET")
         if not self.AZURE_SUBSCRIPTION_ID:
             missing.append("AZURE_SUBSCRIPTION_ID")
-        if not self.OPENAI_API_KEY:
-            missing.append("OPENAI_API_KEY")
+        # AI credentials: Azure OpenAI (Foundry) takes precedence; otherwise OpenAI.com
+        if self.AZURE_OPENAI_ENDPOINT:
+            if not self.AZURE_OPENAI_API_KEY:
+                missing.append("AZURE_OPENAI_API_KEY")
+        elif not self.OPENAI_API_KEY:
+            missing.append("OPENAI_API_KEY (or set AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY)")
         if missing:
             raise ValueError(f"Missing required billing variables: {', '.join(missing)}")
 
