@@ -18,6 +18,7 @@ from models import (
     DrillDownRequest,
     DashboardFilters
 )
+from billing_routes import billing_router
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -57,6 +58,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount the Azure billing analytics router
+app.include_router(billing_router, prefix="/api/billing")
 
 def serialize_mongo_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Helper to convert MongoDB ObjectId to JSON-serializable string identifier."""
