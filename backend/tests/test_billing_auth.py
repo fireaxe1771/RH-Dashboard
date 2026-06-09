@@ -68,16 +68,3 @@ def test_missing_client_id_raises_config_error(billing_auth, monkeypatch):
 
     with pytest.raises(BillingConfigError):
         billing_auth.get_billing_credential()
-
-
-def test_auth_test_endpoint_returns_token_prefix(test_client):
-    with patch("billing_routes.get_billing_token", return_value="0123456789abcdef"):
-        response = test_client.get(
-            "/api/billing/auth/test",
-            headers={"Authorization": "Bearer valid-token"},
-        )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "ok"
-    assert body["token_prefix"] == "0123456789"

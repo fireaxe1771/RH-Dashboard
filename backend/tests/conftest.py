@@ -12,6 +12,8 @@ os.environ["AZURE_SQL_USER"] = "mock_user"
 os.environ["AZURE_SQL_PASSWORD"] = "mock_pass"
 os.environ["AZURE_CLIENT_ID"] = "mock_client"
 os.environ["AZURE_TENANT_ID"] = "mock_tenant"
+# Disable the billing scheduler/backfill during tests (no billing creds needed)
+os.environ["BILLING_SYNC_ENABLED"] = "false"
 
 # Ensure backend directory is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -32,7 +34,10 @@ class _AsyncCursor:
         self._cursor = cursor
 
     async def to_list(self, length=None):
-        return list(self._cursor)
+        items = list(self._cursor)
+        if length is not None:
+            return items[:length]
+        return items
 
 
 class _AsyncCollection:

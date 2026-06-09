@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -18,6 +19,8 @@ from models import (
     DrillDownRequest,
     DashboardFilters
 )
+from billing.scheduler import billing_scheduler, setup_billing_jobs
+from billing.sync_service import run_full_backfill
 from billing_routes import billing_router
 
 # Setup logging
@@ -34,6 +37,13 @@ async def lifespan(app: FastAPI):
         await db_manager.init_indexes()
         # Seed a first claims dashboard for fresh environments
         await _seed_default_dashboards()
+        # Start billing sync scheduler if enabled
+        if settings.BILLING_SYNC_ENABLED:
+            setup_billing_jobs()
+            billing_scheduler.start()
+            logger.info("Billing sync scheduler started.")
+            # Run initial backfill in background (no-op if already populated)
+            asyncio.create_task(_run_billing_backfill_if_needed())
     except Exception as e:
         logger.critical(f"Database Initialization Failed during startup: {e}")
         # Fail loudly to prevent running app in unconfigured state
@@ -42,7 +52,22 @@ async def lifespan(app: FastAPI):
     yield
     
     # Clean disconnect on shutdown
+    if settings.BILLING_SYNC_ENABLED and billing_scheduler.running:
+        billing_scheduler.shutdown(wait=False)
+        logger.info("Billing sync scheduler stopped.")
     db_manager.disconnect()
+
+
+async def _run_billing_backfill_if_needed() -> None:
+    """Checks if billing data exists; runs full backfill if not. Background task."""
+    try:
+        db = db_manager.db
+        count = await db["azure_cost_details"].count_documents({})
+        if count == 0:
+            logger.info("No billing data found. Starting historical backfill...")
+            await run_full_backfill(db, settings.BILLING_HISTORY_MONTHS, "startup_backfill")
+    except Exception as e:
+        logger.error(f"Billing backfill check failed: {e}")
 
 app = FastAPI(
     title="RecoveryHub Dashboard Portal API",

@@ -68,6 +68,13 @@ export function setAuthToken(token: string | null): void {
 }
 
 /**
+ * Returns the active OAuth bearer token (shared with the billing API client).
+ */
+export function getAuthToken(): string | null {
+  return activeToken;
+}
+
+/**
  * Helper to build headers with authentication tokens if available.
  */
 function getHeaders(): HeadersInit {
