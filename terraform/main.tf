@@ -114,9 +114,23 @@ resource "azurerm_container_app" "backend" {
       }
 
       # --- AI / Embeddings ---
+      # Azure OpenAI (Foundry) takes precedence when AZURE_OPENAI_ENDPOINT is set;
+      # otherwise the app falls back to OpenAI.com via OPENAI_API_KEY.
       env {
         name        = "OPENAI_API_KEY"
         secret_name = "openai-api-key"
+      }
+      env {
+        name  = "AZURE_OPENAI_ENDPOINT"
+        value = var.azure_openai_endpoint
+      }
+      env {
+        name        = "AZURE_OPENAI_API_KEY"
+        secret_name = "azure-openai-api-key"
+      }
+      env {
+        name  = "AZURE_OPENAI_API_VERSION"
+        value = var.azure_openai_api_version
       }
       env {
         name  = "OPENAI_EMBEDDING_MODEL"
@@ -172,6 +186,11 @@ resource "azurerm_container_app" "backend" {
   secret {
     name  = "openai-api-key"
     value = var.openai_api_key
+  }
+
+  secret {
+    name  = "azure-openai-api-key"
+    value = var.azure_openai_api_key
   }
 }
 

@@ -123,5 +123,10 @@ jobs:
           TF_VAR_azure_billing_account_id: ${{ secrets.AZURE_BILLING_ACCOUNT_ID }}
           TF_VAR_azure_billing_account_type: ${{ secrets.AZURE_BILLING_ACCOUNT_TYPE }}
           TF_VAR_azure_management_group_id: ${{ secrets.AZURE_MANAGEMENT_GROUP_ID }}
-          # AI integration secrets
+          # AI integration secrets (Azure OpenAI / Foundry; OpenAI.com optional).
+          # API version and chat/embedding deployment names use the Terraform
+          # defaults (2024-10-21, gpt-5.4-mini, text-embedding-3-small); override
+          # them in terraform/billing_variables.tf if your deployments differ.
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_azure_openai_endpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          TF_VAR_azure_openai_api_key: ${{ secrets.AZURE_OPENAI_API_KEY }}
