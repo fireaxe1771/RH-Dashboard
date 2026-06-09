@@ -86,15 +86,70 @@ resource "azurerm_container_app" "backend" {
         name  = "AZURE_TENANT_ID"
         value = var.azure_tenant_id
       }
+
+      # --- Azure Billing Integration ---
+      env {
+        name  = "AZURE_BILLING_CLIENT_ID"
+        value = var.azure_billing_client_id
+      }
+      env {
+        name        = "AZURE_BILLING_CLIENT_SECRET"
+        secret_name = "billing-client-secret"
+      }
+      env {
+        name  = "AZURE_SUBSCRIPTION_ID"
+        value = var.azure_subscription_id
+      }
+      env {
+        name  = "AZURE_BILLING_ACCOUNT_ID"
+        value = var.azure_billing_account_id
+      }
+      env {
+        name  = "AZURE_BILLING_ACCOUNT_TYPE"
+        value = var.azure_billing_account_type
+      }
+      env {
+        name  = "AZURE_MANAGEMENT_GROUP_ID"
+        value = var.azure_management_group_id
+      }
+
+      # --- AI / Embeddings ---
+      env {
+        name        = "OPENAI_API_KEY"
+        secret_name = "openai-api-key"
+      }
+      env {
+        name  = "OPENAI_EMBEDDING_MODEL"
+        value = var.openai_embedding_model
+      }
+      env {
+        name  = "OPENAI_CHAT_MODEL"
+        value = var.openai_chat_model
+      }
+
+      # --- Billing Sync Configuration ---
+      env {
+        name  = "BILLING_SYNC_ENABLED"
+        value = var.billing_sync_enabled
+      }
+      env {
+        name  = "BILLING_DAILY_SYNC_HOUR"
+        value = var.billing_daily_sync_hour
+      }
+      env {
+        name  = "BILLING_HISTORY_MONTHS"
+        value = var.billing_history_months
+      }
     }
 
-    # SCALE TO ZERO RULES
-    min_replicas = 0
+    # APScheduler requires a persistent replica; min_replicas = 1 keeps the
+    # billing scheduler running instead of scaling to zero (doc 08, section 6).
+    min_replicas = 1
     max_replicas = 5
 
     # Scale based on HTTP requests
     http_scale_rule {
-      name             = "http-scale"
+      name                = "http-scale"
       concurrent_requests = "50"
     }
   }
@@ -107,6 +162,16 @@ resource "azurerm_container_app" "backend" {
   secret {
     name  = "sql-password"
     value = var.azure_sql_password
+  }
+
+  secret {
+    name  = "billing-client-secret"
+    value = var.azure_billing_client_secret
+  }
+
+  secret {
+    name  = "openai-api-key"
+    value = var.openai_api_key
   }
 }
 
@@ -157,7 +222,7 @@ resource "azurerm_container_app" "frontend" {
     max_replicas = 5
 
     http_scale_rule {
-      name             = "http-scale"
+      name                = "http-scale"
       concurrent_requests = "50"
     }
   }

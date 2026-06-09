@@ -12,6 +12,8 @@ os.environ["AZURE_SQL_USER"] = "mock_user"
 os.environ["AZURE_SQL_PASSWORD"] = "mock_pass"
 os.environ["AZURE_CLIENT_ID"] = "mock_client"
 os.environ["AZURE_TENANT_ID"] = "mock_tenant"
+# Disable the billing scheduler/backfill during tests (no billing creds needed)
+os.environ["BILLING_SYNC_ENABLED"] = "false"
 
 # Ensure backend directory is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -32,7 +34,10 @@ class _AsyncCursor:
         self._cursor = cursor
 
     async def to_list(self, length=None):
-        return list(self._cursor)
+        items = list(self._cursor)
+        if length is not None:
+            return items[:length]
+        return items
 
 
 class _AsyncCollection:
@@ -51,16 +56,34 @@ class _AsyncCollection:
     async def insert_one(self, *args, **kwargs):
         return self._col.insert_one(*args, **kwargs)
 
+    async def insert_many(self, *args, **kwargs):
+        return self._col.insert_many(*args, **kwargs)
+
     async def find_one_and_update(self, *args, **kwargs):
         from pymongo import ReturnDocument
         # mongomock uses return_document kwarg
         return self._col.find_one_and_update(*args, **kwargs)
 
+    async def update_one(self, *args, **kwargs):
+        return self._col.update_one(*args, **kwargs)
+
+    async def update_many(self, *args, **kwargs):
+        return self._col.update_many(*args, **kwargs)
+
     async def delete_one(self, *args, **kwargs):
         return self._col.delete_one(*args, **kwargs)
 
+    async def delete_many(self, *args, **kwargs):
+        return self._col.delete_many(*args, **kwargs)
+
     async def count_documents(self, *args, **kwargs):
         return self._col.count_documents(*args, **kwargs)
+
+    async def distinct(self, *args, **kwargs):
+        return self._col.distinct(*args, **kwargs)
+
+    def aggregate(self, *args, **kwargs):
+        return _AsyncCursor(self._col.aggregate(*args, **kwargs))
 
     async def create_index(self, *args, **kwargs):
         return self._col.create_index(*args, **kwargs)
