@@ -38,23 +38,46 @@ variable "azure_management_group_id" {
 }
 
 # --- AI / Embeddings Variables ---
+# Two providers are supported. When azure_openai_endpoint is set the app uses
+# Azure OpenAI (Foundry) and openai_embedding_model / openai_chat_model are the
+# Azure *deployment* names; otherwise it falls back to OpenAI.com via openai_api_key.
 
 variable "openai_api_key" {
   type        = string
   sensitive   = true
-  description = "OpenAI API key for text-embedding-3-small embeddings and GPT-4o-mini chat completions."
+  default     = ""
+  description = "OpenAI.com API key. Leave blank when using Azure OpenAI (Foundry)."
+}
+
+variable "azure_openai_endpoint" {
+  type        = string
+  default     = ""
+  description = "Azure OpenAI (Foundry) resource endpoint, e.g. https://<resource>.openai.azure.com/. When set, the app uses Azure OpenAI instead of OpenAI.com."
+}
+
+variable "azure_openai_api_key" {
+  type        = string
+  sensitive   = true
+  default     = ""
+  description = "API key for the Azure OpenAI (Foundry) resource. Never logged or printed."
+}
+
+variable "azure_openai_api_version" {
+  type        = string
+  default     = "2024-10-21"
+  description = "Azure OpenAI REST API version."
 }
 
 variable "openai_embedding_model" {
   type        = string
   default     = "text-embedding-3-small"
-  description = "OpenAI embedding model to use for vectorization."
+  description = "Embedding model (OpenAI.com) or deployment name (Azure OpenAI) used for vectorization. Must output 1536 dims to match the Atlas vector index."
 }
 
 variable "openai_chat_model" {
   type        = string
-  default     = "gpt-4o-mini"
-  description = "OpenAI chat completion model for AI cost analysis."
+  default     = "gpt-5.4-mini"
+  description = "Chat model (OpenAI.com) or deployment name (Azure OpenAI) for AI cost analysis."
 }
 
 # --- Billing Sync Configuration Variables ---
