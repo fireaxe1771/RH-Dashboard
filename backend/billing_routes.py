@@ -374,7 +374,7 @@ async def billing_ai_query(request: BillingAIQueryRequest, db=Depends(get_db)):
                 {"role": "user", "content": request.question},
             ],
             temperature=0.2,
-            max_tokens=1500,
+            max_completion_tokens=1500,
         )
         answer = chat_response.choices[0].message.content
 
