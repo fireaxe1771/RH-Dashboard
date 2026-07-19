@@ -152,24 +152,27 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "Deleted Drafts YTD",
                 "type": "stat",
                 "sql_query": f"""
-                WITH DraftRoots AS (
-                    SELECT DISTINCT id
-                    FROM Claims FOR SYSTEM_TIME BETWEEN %(ytd_start)s AND %(end_date)s
+                WITH draft AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (PARTITION BY id ORDER BY [timestamp]) AS rn
+                    FROM dbo.claims_deleted
                     WHERE submitted = 0
                       AND original_run_id IS NULL
                       AND created BETWEEN %(ytd_start)s AND %(end_date)s
-                ),
-                CurrentClaims AS (
-                    SELECT DISTINCT id
-                    FROM Claims FOR SYSTEM_TIME BETWEEN %(ytd_start)s AND %(end_date)s
+                      -- `timestamp` captures the deletion event (set when the
+                      -- row is moved into deleted_claims, then immutable).
+                      -- Require both creation AND deletion to fall in YTD so
+                      -- the metric mirrors Drafts Created YTD over the same
+                      -- window while only counting drafts actually deleted
+                      -- during that window.
+                      AND [timestamp] BETWEEN %(ytd_start)s AND %(end_date)s
                 )
                 SELECT
                     FORMAT(COUNT(*), '#,0') + ' / '
                     + FORMAT(CAST(ROUND(COUNT(*) * 1.0 / DATEPART(WEEK, CAST(%(end_date)s AS DATE)), 0) AS INT), '#,0')
                     + ' per week' AS Count
-                FROM DraftRoots d
-                LEFT JOIN CurrentClaims c ON c.id = d.id
-                WHERE c.id IS NULL
+                FROM draft
+                WHERE rn = 1
                 """,
                 "layout": {"x": 3, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#ef4444"]},
@@ -193,51 +196,39 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "layout": {"x": 6, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#22c55e"]},
             },
+
+            # ── Row 2: combined current-status stat card ───────────
+            # Fuses the former "Drafts Still Open", "Current New Runs", and
+            # "Current Active Runs" tiles into a single 3-value stat card.
+            # Each subquery is the exact filter from the old standalone widget,
+            # returned as its own column so the stat card can render them side
+            # by side with per-value labels.
             {
-                "id": "claims-draft-open",
-                "title": "Drafts Still Open",
+                "id": "claims-current-summary",
+                "title": "Current Claims Summary",
                 "type": "stat",
                 "sql_query": f"""
-                SELECT COUNT(DISTINCT c.id) AS Count
-                FROM Claims c
-                WHERE c.submitted = 0
-                  AND c.original_run_id IS NULL
-                  AND c.created <= %(end_date)s
+                SELECT
+                    (SELECT COUNT(DISTINCT c.id)
+                     FROM Claims c
+                     WHERE c.submitted = 0
+                       AND c.original_run_id IS NULL
+                       AND c.created <= %(end_date)s) AS Drafts,
+                    (SELECT COUNT(DISTINCT c.id)
+                     FROM Claims c
+                     WHERE c.submitted = 1
+                       AND c.archived = 0
+                       AND c.original_run_id IS NOT NULL
+                       AND c.ClaimCurrentTypeId = 1) AS NewRuns,
+                    (SELECT COUNT(DISTINCT c.id)
+                     FROM Claims c
+                     WHERE c.submitted = 1
+                       AND c.archived = 0
+                       AND c.original_run_id IS NOT NULL
+                       AND c.ClaimCurrentTypeId = 4) AS ActiveRuns
                 """,
-                "layout": {"x": 9, "y": 0, "w": 3, "h": 3},
-                "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#f59e0b"]},
-            },
-
-            # ── Row 2: current totals for new & active runs ──────────
-            {
-                "id": "claims-current-new-runs",
-                "title": "Current New Runs",
-                "type": "stat",
-                "sql_query": """
-                SELECT COUNT(DISTINCT c.id) AS Count
-                FROM Claims c
-                WHERE c.submitted = 1
-                  AND c.archived = 0
-                  AND c.original_run_id IS NOT NULL
-                  AND c.ClaimCurrentTypeId = 1
-                """,
-                "layout": {"x": 0, "y": 3, "w": 3, "h": 3},
-                "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#8b5cf6"]},
-            },
-            {
-                "id": "claims-current-active-runs",
-                "title": "Current Active Runs",
-                "type": "stat",
-                "sql_query": """
-                SELECT COUNT(DISTINCT c.id) AS Count
-                FROM Claims c
-                WHERE c.submitted = 1
-                  AND c.archived = 0
-                  AND c.original_run_id IS NOT NULL
-                  AND c.ClaimCurrentTypeId = 4
-                """,
-                "layout": {"x": 3, "y": 3, "w": 3, "h": 3},
-                "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#0ea5e9"]},
+                "layout": {"x": 0, "y": 3, "w": 6, "h": 3},
+                "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#f59e0b", "#8b5cf6", "#0ea5e9"]},
             },
 
             # ── Row 3: temporal status charts (runs processed during period) ──

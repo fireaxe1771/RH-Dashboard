@@ -15,3 +15,15 @@ venv/
 # Frontend build artifacts & dependencies
 frontend/dist/
 frontend/node_modules/
+frontend/test-results/
+frontend/playwright-report/
+frontend/playwright/.cache/
+
+# Python test coverage
+backend/.coverage
+backend/htmlcov/
+.coverage
+htmlcov/
+
+# Terraform plugin directory (lock file IS committed)
+terraform/.terraform/
