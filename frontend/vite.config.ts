@@ -1,4 +1,5 @@
 /// <reference types="vitest" />
+/// <reference types="node" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -22,5 +23,6 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: './src/setupTests.ts',
     css: true,
+    exclude: ['**/node_modules/**', '**/dist/**', '**/e2e/**'],
   },
 });
