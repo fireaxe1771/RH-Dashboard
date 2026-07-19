@@ -85,11 +85,32 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({ widget, filters, onDrill
     const numericKeys = keys.filter(k => typeof firstRow[k] === 'number');
     const valueKey = numericKeys[0] || keys[0];
     const secondaryKey = numericKeys[1] || null;
+    const tertiaryKey = numericKeys[2] || null;
+
+    // When multiple numeric values are present, use column names as labels
+    // for each value so the user can tell them apart. Otherwise, fall back
+    // to the single-value behavior (label from a non-numeric first column).
+    const formatLabel = (key: string): string =>
+      key.replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').trim();
+
+    if (secondaryKey) {
+      return {
+        value: formatValue(firstRow[valueKey], widget.config.format),
+        label: formatLabel(valueKey),
+        secondaryValue: formatValue(firstRow[secondaryKey], widget.config.format),
+        secondaryLabel: formatLabel(secondaryKey),
+        tertiaryValue: tertiaryKey ? formatValue(firstRow[tertiaryKey], widget.config.format) : '',
+        tertiaryLabel: tertiaryKey ? formatLabel(tertiaryKey) : '',
+      };
+    }
+
     return {
       value: formatValue(firstRow[valueKey], widget.config.format),
       label: keys[0] !== valueKey ? String(firstRow[keys[0]]) : '',
-      secondaryValue: secondaryKey ? formatValue(firstRow[secondaryKey], widget.config.format) : '',
-      secondaryLabel: secondaryKey ? secondaryKey.replace(/([A-Z])/g, ' $1').trim() : '',
+      secondaryValue: '',
+      secondaryLabel: '',
+      tertiaryValue: '',
+      tertiaryLabel: '',
     };
   };
 
@@ -120,7 +141,7 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({ widget, filters, onDrill
 
   // 1. STAT CARD RENDERER
   if (widget.type === 'stat') {
-    const { value, label, secondaryValue, secondaryLabel } = getStatData();
+    const { value, label, secondaryValue, secondaryLabel, tertiaryValue, tertiaryLabel } = getStatData();
     return (
       <div className="card stat-card" style={{ gridColumn: `span ${widget.layout.w}`, minHeight: '150px' }}>
         <div className="stat-header">
@@ -128,7 +149,30 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({ widget, filters, onDrill
           <TrendingUp size={16} className="trend-up" />
         </div>
         <div>
-          {secondaryValue ? (
+          {tertiaryValue ? (
+            <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+              <div>
+                <div className="stat-value">{value}</div>
+                {label && (
+                  <div className="stat-trend trend-up">
+                    <span>{label}</span>
+                  </div>
+                )}
+              </div>
+              <div style={{ paddingLeft: '12px', borderLeft: '1px solid var(--border-color)' }}>
+                <div className="stat-value" style={{ fontSize: '24px', color: 'var(--text-secondary)' }}>{secondaryValue}</div>
+                <div className="stat-trend" style={{ color: 'var(--text-muted)' }}>
+                  <span>{secondaryLabel || 'Previous'}</span>
+                </div>
+              </div>
+              <div style={{ paddingLeft: '12px', borderLeft: '1px solid var(--border-color)' }}>
+                <div className="stat-value" style={{ fontSize: '24px', color: 'var(--text-secondary)' }}>{tertiaryValue}</div>
+                <div className="stat-trend" style={{ color: 'var(--text-muted)' }}>
+                  <span>{tertiaryLabel || 'Previous'}</span>
+                </div>
+              </div>
+            </div>
+          ) : secondaryValue ? (
             <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
               <div>
                 <div className="stat-value">{value}</div>
