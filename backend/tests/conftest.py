@@ -12,6 +12,8 @@ os.environ["AZURE_SQL_USER"] = "mock_user"
 os.environ["AZURE_SQL_PASSWORD"] = "mock_pass"
 os.environ["AZURE_CLIENT_ID"] = "mock_client"
 os.environ["AZURE_TENANT_ID"] = "mock_tenant"
+# Force auth enforcement in tests (overrides any DEV_AUTH_BYPASS=true from a local .env)
+os.environ["DEV_AUTH_BYPASS"] = "false"
 # Disable the billing scheduler/backfill during tests (no billing creds needed)
 os.environ["BILLING_SYNC_ENABLED"] = "false"
 
