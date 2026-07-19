@@ -88,6 +88,20 @@ def test_default_dashboard_uses_correct_columns():
     assert "FOR SYSTEM_TIME BETWEEN" in ytd["sql_query"]
     assert "%(end_date)s" in ytd["sql_query"]
 
+    # Deleted Drafts YTD queries the deleted_claims table (plain, non-temporal)
+    # and filters on BOTH created and the deletion timestamp falling in YTD,
+    # mirroring the Drafts Created YTD filters plus the deletion-date window.
+    deleted = widgets["claims-draft-deleted-ytd"]
+    assert "FROM dbo.claims_deleted" in deleted["sql_query"]
+    assert "FOR SYSTEM_TIME" not in deleted["sql_query"]
+    assert "PARTITION BY id ORDER BY [timestamp]" in deleted["sql_query"]
+    assert "submitted = 0" in deleted["sql_query"]
+    assert "original_run_id IS NULL" in deleted["sql_query"]
+    assert "created BETWEEN %(ytd_start)s AND %(end_date)s" in deleted["sql_query"]
+    # `timestamp` is a SQL Server reserved keyword so it must be bracketed.
+    assert "[timestamp] BETWEEN %(ytd_start)s AND %(end_date)s" in deleted["sql_query"]
+    assert "WHERE rn = 1" in deleted["sql_query"]
+
     # Period comparison uses id/created (drafts: submitted=0)
     period = widgets["claims-period-comparison"]
     assert "PARTITION BY id ORDER BY id" in period["sql_query"]
@@ -113,6 +127,21 @@ def test_default_dashboard_uses_correct_columns():
     assert "PARTITION BY id ORDER BY id" in active_runs["sql_query"]
     assert "ClaimCurrentTypeId = 4" in active_runs["sql_query"]
 
+    # Current Claims Summary combines the former Drafts Still Open, Current
+    # New Runs, and Current Active Runs tiles into a single 3-column stat
+    # query. Each subquery preserves the exact filter from the old widget.
+    summary = widgets["claims-current-summary"]
+    assert "AS Drafts" in summary["sql_query"]
+    assert "AS NewRuns" in summary["sql_query"]
+    assert "AS ActiveRuns" in summary["sql_query"]
+    # Drafts Still Open filter: submitted=0, original_run_id IS NULL, created <= end_date
+    assert "submitted = 0" in summary["sql_query"]
+    assert "c.created <= %(end_date)s" in summary["sql_query"]
+    # New Runs filter: submitted=1, archived=0, ClaimCurrentTypeId = 1
+    assert "ClaimCurrentTypeId = 1" in summary["sql_query"]
+    # Active Runs filter: submitted=1, archived=0, ClaimCurrentTypeId = 4
+    assert "ClaimCurrentTypeId = 4" in summary["sql_query"]
+
 def test_default_dashboard_widget_ids():
     """Verifies the expected widget IDs exist in the default dashboard."""
     dashboard = _build_default_claims_dashboard()
@@ -122,9 +151,7 @@ def test_default_dashboard_widget_ids():
         "claims-draft-intake-ytd",
         "claims-draft-deleted-ytd",
         "claims-draft-submitted-ytd",
-        "claims-draft-open",
-        "claims-current-new-runs",
-        "claims-current-active-runs",
+        "claims-current-summary",
         "claims-new-runs-by-type",
         "claims-active-by-status",
         "claims-total-amount-ytd",
