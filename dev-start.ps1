@@ -76,16 +76,77 @@ function Write-Section([string]$msg) {
     Write-Host "`n=== $msg ===" -ForegroundColor Cyan
 }
 
+function Test-DockerReady {
+    # Verifies the Docker engine is actually responsive before we issue any
+    # docker commands. Without this, a half-started Docker Desktop (UI up but
+    # engine WSL distro stopped) makes every `docker` call block forever and
+    # the script appears to hang on "Stopping existing dev containers".
+    Write-Section 'Checking Docker engine'
+    $job = Start-Job -ScriptBlock {
+        $v = docker version --format '{{.Server.Version}}' 2>&1
+        # Return exit code AND output so the parent can judge both.
+        return [PSCustomObject]@{ ExitCode = $LASTEXITCODE; Output = $v }
+    }
+    if (Wait-Job $job -Timeout 15) {
+        $result = Receive-Job $job
+        Remove-Job $job -Force
+        $out = if ($result.Output) { $result.Output } else { '' }
+        $code = if ($null -ne $result.ExitCode) { $result.ExitCode } else { 1 }
+        if ($code -eq 0 -and "$out" -match '\d+\.\d+') {
+            Write-Host "Docker engine ready (server $out)." -ForegroundColor Green
+            return
+        }
+        $msg = @"
+Docker engine is not responding correctly.
+
+`docker version` returned (exit $code):
+$out
+
+Common causes:
+  - Docker Desktop is still starting up (wait ~30s and retry)
+  - The Docker Desktop Linux engine/WSL distro is stopped or crashed
+    (check Docker Desktop UI, or run: wsl --shutdown then restart Docker Desktop)
+  - Wrong docker context (run: docker context ls)
+"@
+        throw $msg
+    }
+    Remove-Job $job -Force
+    throw @"
+Docker engine did not respond within 15 seconds. It appears to be hung.
+
+Docker Desktop may be mid-startup or in a broken state. Try:
+  1. Quit Docker Desktop fully (right-click tray icon -> Quit)
+  2. wsl --shutdown
+  3. Start Docker Desktop again and wait for the engine to be ready
+  4. Re-run this script
+"@
+}
+
+function Test-ContainerExists([string]$name) {
+    # Returns true if a container (running or stopped) with the given name exists.
+    $found = docker ps -a --filter "name=^/${name}$" --format '{{.Names}}' 2>$null
+    return [bool]$found
+}
+
 function Stop-Containers {
     Write-Section 'Stopping existing dev containers'
-    docker rm -f $FrontendContainer 2>$null | Out-Null
-    docker rm -f $BackendContainer   2>$null | Out-Null
-    docker rm -f $MongoContainer     2>$null | Out-Null
+    foreach ($c in @($FrontendContainer, $BackendContainer, $MongoContainer)) {
+        if (Test-ContainerExists $c) {
+            docker rm -f $c | Out-Null
+            Write-Host "Removed $c"
+        } else {
+            Write-Host "Skipped $c (not present)"
+        }
+    }
     Write-Host 'Done.'
 }
 
 function Remove-Network {
-    docker network rm $NetworkName 2>$null | Out-Null
+    $exists = docker network ls --filter "name=$NetworkName" --format '{{.Name}}' 2>$null
+    if ($exists) {
+        docker network rm $NetworkName | Out-Null
+        Write-Host "Removed network: $NetworkName"
+    }
 }
 
 function Create-Network {
@@ -210,6 +271,11 @@ function Start-Containers {
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+# Fail fast if the Docker engine isn't actually up. Without this, a
+# half-started Docker Desktop makes every docker call block forever and
+# the script appears to hang on "Stopping existing dev containers".
+Test-DockerReady
 
 if ($Stop) {
     Stop-Containers

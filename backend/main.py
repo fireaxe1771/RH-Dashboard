@@ -129,20 +129,26 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "Drafts Created YTD",
                 "type": "stat",
                 "sql_query": f"""
-                WITH draft AS (
-                    SELECT *,
-                           ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
-                    FROM Claims FOR SYSTEM_TIME BETWEEN %(ytd_start)s AND %(end_date)s
-                    WHERE submitted = 0
-                      AND original_run_id IS NULL
-                      AND created BETWEEN %(ytd_start)s AND %(end_date)s
-                )
                 SELECT
                     FORMAT(COUNT(*), '#,0') + ' / '
                     + FORMAT(CAST(ROUND(COUNT(*) * 1.0 / DATEPART(WEEK, CAST(%(end_date)s AS DATE)), 0) AS INT), '#,0')
                     + ' per week' AS Count
-                FROM draft
-                WHERE rn = 1
+                FROM (
+                    SELECT id FROM Claims
+                    WHERE submitted = 0
+                      AND original_run_id IS NULL
+                      AND created BETWEEN %(ytd_start)s AND %(end_date)s
+                    UNION
+                    SELECT id FROM Claims
+                    WHERE submitted = 1
+                      AND original_run_id IS NOT NULL
+                      AND created BETWEEN %(ytd_start)s AND %(end_date)s
+                    UNION
+                    SELECT id FROM dbo.claims_deleted
+                    WHERE submitted = 0
+                      AND original_run_id IS NULL
+                      AND created BETWEEN %(ytd_start)s AND %(end_date)s
+                ) AS draft
                 """,
                 "layout": {"x": 0, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#6366f1"]},
@@ -152,27 +158,21 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "Deleted Drafts YTD",
                 "type": "stat",
                 "sql_query": f"""
-                WITH draft AS (
-                    SELECT *,
-                           ROW_NUMBER() OVER (PARTITION BY id ORDER BY [timestamp]) AS rn
-                    FROM dbo.claims_deleted
-                    WHERE submitted = 0
-                      AND original_run_id IS NULL
-                      AND created BETWEEN %(ytd_start)s AND %(end_date)s
-                      -- `timestamp` captures the deletion event (set when the
-                      -- row is moved into deleted_claims, then immutable).
-                      -- Require both creation AND deletion to fall in YTD so
-                      -- the metric mirrors Drafts Created YTD over the same
-                      -- window while only counting drafts actually deleted
-                      -- during that window.
-                      AND [timestamp] BETWEEN %(ytd_start)s AND %(end_date)s
-                )
                 SELECT
-                    FORMAT(COUNT(*), '#,0') + ' / '
-                    + FORMAT(CAST(ROUND(COUNT(*) * 1.0 / DATEPART(WEEK, CAST(%(end_date)s AS DATE)), 0) AS INT), '#,0')
+                    FORMAT(COUNT(DISTINCT id), '#,0') + ' / '
+                    + FORMAT(CAST(ROUND(COUNT(DISTINCT id) * 1.0 / DATEPART(WEEK, CAST(%(end_date)s AS DATE)), 0) AS INT), '#,0')
                     + ' per week' AS Count
-                FROM draft
-                WHERE rn = 1
+                FROM dbo.claims_deleted
+                WHERE submitted = 0
+                  AND original_run_id IS NULL
+                  AND created BETWEEN %(ytd_start)s AND %(end_date)s
+                  -- `timestamp` captures the deletion event (set when the
+                  -- row is moved into claims_deleted, then immutable).
+                  -- Require both creation AND deletion to fall in YTD so
+                  -- the metric mirrors Drafts Created YTD over the same
+                  -- window while only counting drafts actually deleted
+                  -- during that window.
+                  AND [timestamp] BETWEEN %(ytd_start)s AND %(end_date)s
                 """,
                 "layout": {"x": 3, "y": 0, "w": 3, "h": 3},
                 "config": {"xAxisKey": "", "yAxisKeys": [], "colors": ["#ef4444"]},
@@ -237,25 +237,17 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "New Runs – Submitted vs Recycled",
                 "type": "bar",
                 "sql_query": """
-                WITH submitted_runs AS (
-                    SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
-                    FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
-                    WHERE submitted = 1
-                      AND original_run_id IS NULL
-                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
-                ),
-                recycled_runs AS (
-                    SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
-                    FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
-                    WHERE submitted = 0
-                      AND original_run_id IS NULL
-                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
-                )
                 SELECT 'Submitted' AS RunType, COUNT(*) AS Count
-                FROM submitted_runs WHERE rn = 1
+                FROM Claims
+                WHERE submitted = 1
+                  AND original_run_id IS NULL
+                  AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 UNION ALL
                 SELECT 'Recycled' AS RunType, COUNT(*) AS Count
-                FROM recycled_runs WHERE rn = 1
+                FROM Claims
+                WHERE submitted = 0
+                  AND original_run_id IS NULL
+                  AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 """,
                 "layout": {"x": 6, "y": 3, "w": 6, "h": 3},
                 "config": {"xAxisKey": "RunType", "yAxisKeys": ["Count"], "colors": ["#8b5cf6"]},
@@ -265,17 +257,13 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "title": "Active Runs Processed During Period",
                 "type": "bar",
                 "sql_query": """
-                WITH active_runs AS (
-                    SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
-                    FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
-                    WHERE ClaimCurrentTypeId = 4
-                      AND submitted = 1
-                      AND archived = 0
-                      AND original_run_id IS NOT NULL
-                      AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
-                )
                 SELECT status, COUNT(*) AS Count
-                FROM active_runs WHERE rn = 1
+                FROM Claims
+                WHERE ClaimCurrentTypeId = 4
+                  AND submitted = 1
+                  AND archived = 0
+                  AND original_run_id IS NOT NULL
+                  AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 GROUP BY status
                 ORDER BY Count DESC, status
                 """,
@@ -337,26 +325,42 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "type": "table",
                 "sql_query": """
                 WITH selected_draft AS (
-                    SELECT *,
-                           ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
-                    FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
+                    SELECT id FROM Claims
+                    WHERE submitted = 0
+                      AND original_run_id IS NULL
+                      AND created BETWEEN %(start_date)s AND %(end_date)s
+                    UNION
+                    SELECT id FROM Claims
+                    WHERE submitted = 1
+                      AND original_run_id IS NOT NULL
+                      AND created BETWEEN %(start_date)s AND %(end_date)s
+                    UNION
+                    SELECT id FROM dbo.claims_deleted
                     WHERE submitted = 0
                       AND original_run_id IS NULL
                       AND created BETWEEN %(start_date)s AND %(end_date)s
                 ),
                 prior_draft AS (
-                    SELECT *,
-                           ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
-                    FROM Claims FOR SYSTEM_TIME BETWEEN %(prior_start_date)s AND %(prior_end_date)s
+                    SELECT id FROM Claims
+                    WHERE submitted = 0
+                      AND original_run_id IS NULL
+                      AND created BETWEEN %(prior_start_date)s AND %(prior_end_date)s
+                    UNION
+                    SELECT id FROM Claims
+                    WHERE submitted = 1
+                      AND original_run_id IS NOT NULL
+                      AND created BETWEEN %(prior_start_date)s AND %(prior_end_date)s
+                    UNION
+                    SELECT id FROM dbo.claims_deleted
                     WHERE submitted = 0
                       AND original_run_id IS NULL
                       AND created BETWEEN %(prior_start_date)s AND %(prior_end_date)s
                 )
                 SELECT 'Selected Period' AS Period, COUNT(*) AS DraftsCreated
-                FROM selected_draft WHERE rn = 1
+                FROM selected_draft
                 UNION ALL
                 SELECT 'Prior Period' AS Period, COUNT(*) AS DraftsCreated
-                FROM prior_draft WHERE rn = 1
+                FROM prior_draft
                 """,
                 "layout": {"x": 0, "y": 14, "w": 6, "h": 4},
                 "config": {"xAxisKey": "Period", "yAxisKeys": ["DraftsCreated"], "colors": ["#14b8a6"]},
@@ -367,26 +371,22 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "type": "table",
                 "sql_query": """
                 WITH selected_submitted AS (
-                    SELECT *,
-                           ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
-                    FROM Claims FOR SYSTEM_TIME BETWEEN %(start_date)s AND %(end_date)s
+                    SELECT id FROM Claims
                     WHERE submitted = 1
                       AND original_run_id IS NULL
                       AND date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
                 ),
                 prior_submitted AS (
-                    SELECT *,
-                           ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn
-                    FROM Claims FOR SYSTEM_TIME BETWEEN %(prior_start_date)s AND %(prior_end_date)s
+                    SELECT id FROM Claims
                     WHERE submitted = 1
                       AND original_run_id IS NULL
                       AND date_of_submitted BETWEEN %(prior_start_date)s AND %(prior_end_date)s
                 )
                 SELECT 'Selected Period' AS Period, COUNT(*) AS DraftsSubmitted
-                FROM selected_submitted WHERE rn = 1
+                FROM selected_submitted
                 UNION ALL
                 SELECT 'Prior Period' AS Period, COUNT(*) AS DraftsSubmitted
-                FROM prior_submitted WHERE rn = 1
+                FROM prior_submitted
                 """,
                 "layout": {"x": 6, "y": 14, "w": 6, "h": 4},
                 "config": {"xAxisKey": "Period", "yAxisKeys": ["DraftsSubmitted"], "colors": ["#22c55e"]},
