@@ -149,7 +149,7 @@ function Remove-Network {
     }
 }
 
-function Create-Network {
+function New-Network {
     $exists = docker network ls --filter "name=$NetworkName" --format '{{.Name}}' 2>$null
     if (-not $exists) {
         docker network create $NetworkName | Out-Null
@@ -157,7 +157,7 @@ function Create-Network {
     }
 }
 
-function Ensure-Volume {
+function New-Volume {
     $exists = docker volume ls --filter "name=$MongoVolume" --format '{{.Name}}' 2>$null
     if (-not $exists) {
         docker volume create $MongoVolume | Out-Null
@@ -204,8 +204,8 @@ function Build-Images([bool]$noCache) {
 function Start-Containers {
     Write-Section 'Starting dev containers'
 
-    Create-Network
-    Ensure-Volume
+    New-Network
+    New-Volume
 
     # MongoDB: stores saved dashboards and billing data. Uses the persistent
     # volume so dashboards survive container rebuilds/restarts.
