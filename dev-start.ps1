@@ -234,15 +234,25 @@ function Start-Containers {
     }
 
     # Backend: runs on 8001, uses the repo .env for all Azure/Mongo/AI secrets.
-    # MONGODB_URI is overridden to point at the mongo container on the docker
-    # network instead of localhost (which won't work inside a container).
+    # MONGODB_URI is rewritten from localhost/127.0.0.1 to the mongo container
+    # alias for local dev, but kept as-is when pointed at a real cluster.
+    $MongodbUri = ''
+    foreach ($line in Get-Content $EnvFile) {
+        if ($line -match '^MONGODB_URI\s*=\s*(.*)$') {
+            $MongodbUri = $Matches[1]
+            break
+        }
+    }
+    if ($MongodbUri -match 'localhost|127\.0\.0\.1') {
+        $MongodbUri = $MongodbUri -replace 'localhost|127\.0\.0\.1', 'mongo'
+    }
     docker run -d `
         --name $BackendContainer `
         --network $NetworkName `
         --network-alias backend `
         -p 8001:8001 `
         --env-file $EnvFile `
-        -e 'MONGODB_URI=mongodb://mongo:27017' `
+        -e "MONGODB_URI=$MongodbUri" `
         $BackendImage
     if ($LASTEXITCODE -ne 0) { throw 'Failed to start backend container.' }
 
