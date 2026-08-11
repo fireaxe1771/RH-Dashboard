@@ -162,6 +162,34 @@ def test_default_dashboard_uses_correct_columns():
     # Active Runs filter: submitted=1, archived=0, ClaimCurrentTypeId = 4
     assert "ClaimCurrentTypeId = 4" in summary["sql_query"]
 
+def test_top_departments_widget_structure():
+    """Verifies the top-departments exportable grid uses plain Claims (no
+    FOR SYSTEM_TIME) and groups by department for the selected period."""
+    dashboard = _build_default_claims_dashboard()
+    widgets = {w["id"]: w for w in dashboard["widgets"]}
+
+    top_depts = widgets["claims-top-departments-drafts"]
+    assert top_depts["type"] == "table"
+    assert "FOR SYSTEM_TIME" not in top_depts["sql_query"]
+    assert "TOP 50" in top_depts["sql_query"]
+    assert "GROUP BY c.DepartmentID" in top_depts["sql_query"]
+    assert "ORDER BY Drafts DESC" in top_depts["sql_query"]
+    assert "created BETWEEN %(start_date)s AND %(end_date)s" in top_depts["sql_query"]
+    # Combines current drafts (submitted=0, no run) and submitted runs
+    assert "submitted = 0" in top_depts["sql_query"]
+    assert "submitted = 1" in top_depts["sql_query"]
+    assert "original_run_id IS NULL" in top_depts["sql_query"]
+    assert "original_run_id IS NOT NULL" in top_depts["sql_query"]
+    # Returns Department ID, Name, State, and Draft count
+    assert "c.DepartmentID AS DepartmentID" in top_depts["sql_query"]
+    assert "AS DepartmentName" in top_depts["sql_query"]
+    assert "MAX(d.physical_state) AS State" in top_depts["sql_query"]
+    assert "COUNT(DISTINCT c.id) AS Drafts" in top_depts["sql_query"]
+    # Joins to Departments master table for physical_state
+    assert "LEFT JOIN Departments d ON d.ID = c.DepartmentID" in top_depts["sql_query"]
+    # Layout: full-width grid at the bottom of the dashboard
+    assert top_depts["layout"]["w"] == 12
+
 def test_default_dashboard_widget_ids():
     """Verifies the expected widget IDs exist in the default dashboard."""
     dashboard = _build_default_claims_dashboard()
@@ -180,5 +208,6 @@ def test_default_dashboard_widget_ids():
         "claims-period-comparison",
         "claims-submitted-period-comparison",
         "claims-monthly-trend",
+        "claims-top-departments-drafts",
     }
     assert expected_ids == widget_ids

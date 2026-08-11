@@ -412,6 +412,53 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "layout": {"x": 0, "y": 18, "w": 12, "h": 4},
                 "config": {"xAxisKey": "Month", "yAxisKeys": ["Claims"], "colors": ["#6366f1"]},
             },
+
+            # ── Row 7: top fire departments by drafts (exportable grid) ──
+            # Lists the top 50 fire departments ranked by the number of
+            # drafts created (current drafts + submitted runs) during the
+            # selected date range.  Ordered by draft count descending so
+            # the most active departments surface to the top for weekly
+            # comparison.  Excludes deleted drafts because claims_deleted
+            # lacks a reliable department-name column (only dept_id) and
+            # deleted drafts were never truly "submitted" into the system.
+            #
+            # Joins to the Departments master table to pull physical_state
+            # (the state the fire department operates in, not a mailing
+            # address state).  LEFT JOIN so departments missing from the
+            # master table still appear with a NULL state.
+            #
+            # The TOP 50 / no HAVING threshold can be tuned — drop to TOP 20
+            # or add ``HAVING COUNT(DISTINCT c.id) > 5`` to limit to
+            # departments submitting more than 5 runs.
+            {
+                "id": "claims-top-departments-drafts",
+                "title": "Top Fire Departments by Drafts (Period)",
+                "type": "table",
+                "sql_query": f"""
+                SELECT TOP 50
+                    c.DepartmentID AS DepartmentID,
+                    COALESCE(MAX(d.Name), MAX(c.DepartmentName)) AS DepartmentName,
+                    MAX(d.physical_state) AS State,
+                    COUNT(DISTINCT c.id) AS Drafts
+                FROM (
+                    SELECT id, DepartmentID, DepartmentName FROM Claims
+                    WHERE submitted = 0
+                      AND original_run_id IS NULL
+                      AND created BETWEEN %(start_date)s AND %(end_date)s
+                    UNION
+                    SELECT id, DepartmentID, DepartmentName FROM Claims
+                    WHERE submitted = 1
+                      AND original_run_id IS NOT NULL
+                      AND created BETWEEN %(start_date)s AND %(end_date)s
+                ) c
+                LEFT JOIN Departments d ON d.ID = c.DepartmentID
+                WHERE c.DepartmentID IS NOT NULL
+                GROUP BY c.DepartmentID
+                ORDER BY Drafts DESC
+                """,
+                "layout": {"x": 0, "y": 22, "w": 12, "h": 10},
+                "config": {"xAxisKey": "DepartmentName", "yAxisKeys": ["Drafts"], "colors": ["#6366f1"]},
+            },
         ],
     }
 

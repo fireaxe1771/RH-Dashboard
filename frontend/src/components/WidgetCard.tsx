@@ -1,16 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import { api, Widget, QueryResult } from '../services/api';
 import { DashboardFilters } from './FilterBar';
-import { 
-  TrendingUp, 
-  TrendingDown, 
-  Table, 
-  ExternalLink, 
+import {
+  TrendingUp,
+  TrendingDown,
+  Table,
+  ExternalLink,
   AlertCircle,
   BarChart3,
   LineChart,
-  PieChart
+  PieChart,
+  Download,
+  FileSpreadsheet
 } from 'lucide-react';
+import { exportToCsv, exportToExcel } from '../utils/export';
 
 interface WidgetCardProps {
   widget: Widget;
@@ -256,11 +259,56 @@ export const WidgetCard: React.FC<WidgetCardProps> = ({ widget, filters, onDrill
 
   // 3. TABLE RENDERER
   if (widget.type === 'table') {
+    // Table height scales with layout.h so wide grids (e.g. top-50
+    // departments) get more vertical space.  Falls back to 380px.
+    const tableHeight = Math.max(380, widget.layout.h * 55);
     return (
-      <div className="card" style={{ gridColumn: `span ${widget.layout.w}`, height: '380px' }}>
+      <div className="card" style={{ gridColumn: `span ${widget.layout.w}`, height: `${tableHeight}px` }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontSize: '14px', fontWeight: 600 }}>{widget.title}</span>
-          <Table size={14} style={{ color: 'var(--text-muted)' }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              onClick={() => exportToCsv(widget.title, columns, rows)}
+              title="Export to CSV"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                background: 'none',
+                border: '1px solid var(--border-color)',
+                borderRadius: 'var(--border-radius-sm)',
+                padding: '4px 8px',
+                fontSize: '11px',
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+                transition: 'border-color 0.2s, color 0.2s',
+              }}
+            >
+              <Download size={12} />
+              <span>CSV</span>
+            </button>
+            <button
+              onClick={() => exportToExcel(widget.title, columns, rows)}
+              title="Export to Excel"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                background: 'none',
+                border: '1px solid var(--border-color)',
+                borderRadius: 'var(--border-radius-sm)',
+                padding: '4px 8px',
+                fontSize: '11px',
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+                transition: 'border-color 0.2s, color 0.2s',
+              }}
+            >
+              <FileSpreadsheet size={12} />
+              <span>Excel</span>
+            </button>
+            <Table size={14} style={{ color: 'var(--text-muted)' }} />
+          </div>
         </div>
         <div className="table-container" style={{ flex: 1, overflowY: 'auto' }}>
           <table className="data-table">
