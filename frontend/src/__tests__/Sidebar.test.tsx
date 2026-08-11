@@ -54,6 +54,35 @@ describe('Sidebar Component', () => {
     expect(handleSelect).toHaveBeenCalledWith('dash-2');
   });
 
+  test('places static dashboards above saved dashboards and removes duplicate system entries', () => {
+    render(
+      <Sidebar
+        dashboards={[
+          { id: 'system-1', name: 'Claims Calendar-Year Overview', created_by: 'system', widgets: [] },
+          { id: 'system-2', name: 'Claims Calendar-Year Overview', created_by: 'system', widgets: [] },
+          { id: 'saved-1', name: 'My Dashboard', widgets: [] },
+        ]}
+        selectedId="system-1"
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        isDesignerOpen={false}
+        onSelectAiAdoption={vi.fn()}
+      />
+    );
+
+    expect(screen.getAllByText('Claims Calendar-Year Overview')).toHaveLength(1);
+    expect(screen.getByText('AI Adoption')).toBeInTheDocument();
+    expect(screen.getByText('Azure Billing')).toBeInTheDocument();
+    expect(screen.getByText('Saved Dashboards')).toBeInTheDocument();
+    expect(screen.getByText('My Dashboard')).toBeInTheDocument();
+
+    const sidebar = screen.getByTestId('sidebar');
+    const sidebarText = sidebar.textContent ?? '';
+    expect(sidebarText.indexOf('AI Adoption')).toBeLessThan(sidebarText.indexOf('Saved Dashboards'));
+    expect(sidebarText.indexOf('Azure Billing')).toBeLessThan(sidebarText.indexOf('Saved Dashboards'));
+    expect(sidebarText.indexOf('Claims Calendar-Year Overview')).toBeLessThan(sidebarText.indexOf('Saved Dashboards'));
+  });
+
   test('triggers onNew when clicking New Dashboard button', () => {
     const handleNew = vi.fn();
     render(

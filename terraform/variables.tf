@@ -48,8 +48,8 @@ variable "mongodb_db_name" {
 
 variable "recoveryhub_ai_mongodb_db_name" {
   type        = string
-  default     = "recoveryhub_dashboard"
-  description = "MongoDB database name for the RecoveryHub AI fee/resource configuration. Defaults to the dashboard metadata database."
+  default     = "AI_FEE_CALC_MULTI_AGENT_PROD"
+  description = "MongoDB database name for the RecoveryHub AI fee/resource configuration."
 }
 
 variable "azure_sql_host" {

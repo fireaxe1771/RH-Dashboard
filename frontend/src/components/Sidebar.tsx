@@ -64,6 +64,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [billingExpanded, setBillingExpanded] = useState(true);
   const { user, logout } = useAuth();
 
+  const staticDashboards = dashboards.filter((dashboard, index, all) => (
+    dashboard.created_by === 'system'
+      && all.findIndex((candidate) => candidate.name === dashboard.name && candidate.created_by === 'system') === index
+  ));
+  const savedDashboards = dashboards.filter((dashboard) => dashboard.created_by !== 'system');
+
   // Get initials for profile avatar
   const getInitials = (name: string) => {
     return name
@@ -102,39 +108,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <span>AI Adoption</span>
         </button>
 
-        <div style={{ margin: '16px 0 8px 0' }} className="sidebar-menu-section">
-          Saved Dashboards
-        </div>
-
-        {dashboards.length === 0 ? (
-          <div style={{ padding: '8px 12px', fontSize: '12px', color: 'var(--text-muted)' }}>
-            No dashboards created.
-          </div>
-        ) : (
-          dashboards.map((dash) => {
-            const id = dash.id || dash._id || '';
-            const isActive = !isDesignerOpen && selectedId === id;
-            return (
-              <button
-                key={id}
-                className={`sidebar-item ${isActive ? 'active' : ''}`}
-                onClick={() => onSelect(id)}
-                style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left' }}
-              >
-                <LayoutDashboard size={18} />
-                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {dash.name}
-                </span>
-                <ChevronRight size={14} style={{ opacity: isActive ? 1 : 0.3 }} />
-              </button>
-            );
-          })
-        )}
+        {staticDashboards.map((dash) => {
+          const id = dash.id || dash._id || '';
+          const isActive = !isDesignerOpen && selectedId === id;
+          return (
+            <button
+              key={id}
+              className={`sidebar-item ${isActive ? 'active' : ''}`}
+              onClick={() => onSelect(id)}
+              style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left' }}
+            >
+              <LayoutDashboard size={18} />
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {dash.name}
+              </span>
+              <ChevronRight size={14} style={{ opacity: isActive ? 1 : 0.3 }} />
+            </button>
+          );
+        })}
 
         <button
           className="sidebar-item"
           onClick={() => setBillingExpanded((v) => !v)}
-          style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left', marginTop: '16px' }}
+          style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left', marginTop: '8px' }}
         >
           <DollarSign size={18} style={{ color: 'var(--accent-primary)' }} />
           <span style={{ flex: 1, fontWeight: 600 }}>Azure Billing</span>
@@ -159,6 +155,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </button>
             );
           })}
+
+        <div style={{ margin: '16px 0 8px 0' }} className="sidebar-menu-section">
+          Saved Dashboards
+        </div>
+
+        {savedDashboards.length === 0 ? (
+          <div style={{ padding: '8px 12px', fontSize: '12px', color: 'var(--text-muted)' }}>
+            No dashboards created.
+          </div>
+        ) : (
+          savedDashboards.map((dash) => {
+            const id = dash.id || dash._id || '';
+            const isActive = !isDesignerOpen && selectedId === id;
+            return (
+              <button
+                key={id}
+                className={`sidebar-item ${isActive ? 'active' : ''}`}
+                onClick={() => onSelect(id)}
+                style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left' }}
+              >
+                <LayoutDashboard size={18} />
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {dash.name}
+                </span>
+                <ChevronRight size={14} style={{ opacity: isActive ? 1 : 0.3 }} />
+              </button>
+            );
+          })
+        )}
       </nav>
 
       {user && (

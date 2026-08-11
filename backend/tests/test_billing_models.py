@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 
@@ -56,7 +56,7 @@ def test_advisor_recommendation_item_requires_core_fields():
         savings_currency="USD",
         current_sku="Standard_D4s_v3",
         recommended_sku="Standard_D2s_v3",
-        last_updated=datetime.utcnow(),
+        last_updated=datetime.now(UTC),
         status="Active",
     )
     assert rec.estimated_monthly_savings == 50.0

@@ -7,6 +7,15 @@ const devProxyTarget = process.env.VITE_DEV_PROXY_TARGET ?? 'http://localhost:80
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'lucide-react'],
+        },
+      },
+    },
+  },
   server: {
     port: 3001,
     host: true,

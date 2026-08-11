@@ -17,12 +17,11 @@ class Settings:
     # Metadata DB (MongoDB) configuration
     MONGODB_URI: str = os.getenv("MONGODB_URI", "")
     MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME", "recoveryhub_dashboard")
-    # AI fee/resource configuration lives in the same MongoDB cluster as the
-    # dashboard metadata. By default it uses the same database; set this only
-    # when it is split out into a separate database.
+    # AI fee/resource configuration is maintained in the production AI database,
+    # separate from the dashboard metadata database.
     RECOVERYHUB_AI_MONGODB_DB_NAME: str = os.getenv(
         "RECOVERYHUB_AI_MONGODB_DB_NAME",
-        os.getenv("MONGODB_DB_NAME", "recoveryhub_dashboard"),
+        "AI_FEE_CALC_MULTI_AGENT_PROD",
     )
     
     # Target SQL Database (Azure SQL) configuration

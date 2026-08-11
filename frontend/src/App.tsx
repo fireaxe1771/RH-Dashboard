@@ -355,14 +355,16 @@ export const AppContent: React.FC = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
               
               {/* Dashboard operational buttons (edit / delete) */}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-                <button className="btn" onClick={handleEditDashboard} style={{ padding: '8px 14px', fontSize: '13px' }}>
-                  <span>Edit Layout</span>
-                </button>
-                <button className="btn btn-danger" onClick={handleDeleteDashboard} style={{ padding: '8px 14px', fontSize: '13px' }}>
-                  <span>Delete Dashboard</span>
-                </button>
-              </div>
+              {selectedDashboard.created_by !== 'system' && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                  <button className="btn" onClick={handleEditDashboard} style={{ padding: '8px 14px', fontSize: '13px' }}>
+                    <span>Edit Layout</span>
+                  </button>
+                  <button className="btn btn-danger" onClick={handleDeleteDashboard} style={{ padding: '8px 14px', fontSize: '13px' }}>
+                    <span>Delete Dashboard</span>
+                  </button>
+                </div>
+              )}
 
               {/* Renders widgets and grid */}
               <DashboardViewer dashboard={selectedDashboard} />
