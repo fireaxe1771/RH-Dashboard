@@ -422,10 +422,13 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
             # lacks a reliable department-name column (only dept_id) and
             # deleted drafts were never truly "submitted" into the system.
             #
-            # Joins to the Departments master table to pull physical_state
-            # (the state the fire department operates in, not a mailing
-            # address state).  LEFT JOIN so departments missing from the
-            # master table still appear with a NULL state.
+            # Column naming differs between the two tables: Claims stores the
+            # department key as `dept_id`, while the Departments master table
+            # uses `ID`.  The department name and physical_state (the state
+            # the department operates in, not a mailing address) both come
+            # from Departments — Claims has no name column.  LEFT JOIN so a
+            # department missing from the master table still appears in the
+            # ranking with a NULL name/state rather than dropping out.
             #
             # The TOP 50 / no HAVING threshold can be tuned — drop to TOP 20
             # or add ``HAVING COUNT(DISTINCT c.id) > 5`` to limit to
@@ -436,24 +439,24 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "type": "table",
                 "sql_query": f"""
                 SELECT TOP 50
-                    c.DepartmentID AS DepartmentID,
-                    COALESCE(MAX(d.Name), MAX(c.DepartmentName)) AS DepartmentName,
+                    c.dept_id AS DeptID,
+                    MAX(d.Name) AS DepartmentName,
                     MAX(d.physical_state) AS State,
                     COUNT(DISTINCT c.id) AS Drafts
                 FROM (
-                    SELECT id, DepartmentID, DepartmentName FROM Claims
+                    SELECT id, dept_id FROM Claims
                     WHERE submitted = 0
                       AND original_run_id IS NULL
                       AND created BETWEEN %(start_date)s AND %(end_date)s
                     UNION
-                    SELECT id, DepartmentID, DepartmentName FROM Claims
+                    SELECT id, dept_id FROM Claims
                     WHERE submitted = 1
                       AND original_run_id IS NOT NULL
                       AND created BETWEEN %(start_date)s AND %(end_date)s
                 ) c
-                LEFT JOIN Departments d ON d.ID = c.DepartmentID
-                WHERE c.DepartmentID IS NOT NULL
-                GROUP BY c.DepartmentID
+                LEFT JOIN Departments d ON d.ID = c.dept_id
+                WHERE c.dept_id IS NOT NULL
+                GROUP BY c.dept_id
                 ORDER BY Drafts DESC
                 """,
                 "layout": {"x": 0, "y": 22, "w": 12, "h": 10},

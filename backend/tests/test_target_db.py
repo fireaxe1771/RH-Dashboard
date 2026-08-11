@@ -70,6 +70,37 @@ def test_claims_column_map_rewrite():
     assert "SysStartTime" in rewritten
     assert "ClaimID" not in rewritten
 
+def test_claims_column_map_resolves_dept_id():
+    """Claims keys the department as `dept_id`, not `DepartmentID`.
+
+    The map must resolve to the live column so that (a) legacy
+    ``DepartmentID`` references are rewritten and (b) ``_inject_claim_filters``
+    emits ``dept_id = %(department_id)s`` when the Fire Department filter is
+    applied.  Emitting ``DepartmentID`` would raise an invalid-column error.
+    """
+    target_db._claims_column_map = None
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    # Live Claims metadata: snake_case dept_id, no DepartmentID/DepartmentName
+    mock_cursor.fetchall.return_value = [
+        ("id",), ("dept_id",), ("submitted",), ("original_run_id",), ("created",),
+    ]
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+
+    column_map = target_db._resolve_claims_column_map(mock_conn)
+    assert column_map["DepartmentID"] == "dept_id"
+
+    # Filter injection must use the resolved column
+    filters = DashboardFilters(department_id="42")
+    result = target_db._inject_claim_filters(
+        "SELECT COUNT(*) FROM Claims c WHERE c.submitted = 1", filters, column_map
+    )
+    assert "dept_id = %(department_id)s" in result
+    assert "DepartmentID = %(department_id)s" not in result
+
+    target_db._claims_column_map = None
+
+
 @patch("target_db.SQLConnection._get_connection")
 def test_execute_read_formatting(mock_connect):
     """Verifies decimal and date types returned by pyodbc/pymssql are formatted correctly for JSON."""
