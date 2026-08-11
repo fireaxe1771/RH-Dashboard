@@ -110,6 +110,7 @@ jobs:
           TF_VAR_backend_image_tag: ${{ github.sha }}
           TF_VAR_frontend_image_tag: ${{ github.sha }}
           TF_VAR_mongodb_uri: ${{ secrets.MONGODB_URI }}
+          TF_VAR_recoveryhub_ai_mongodb_db_name: ${{ secrets.RECOVERYHUB_AI_MONGODB_DB_NAME || 'AI_FEE_CALC_MULTI_AGENT_PROD' }}
           TF_VAR_azure_sql_host: ${{ secrets.AZURE_SQL_HOST }}
           TF_VAR_azure_sql_db: ${{ secrets.AZURE_SQL_DB }}
           TF_VAR_azure_sql_user: ${{ secrets.AZURE_SQL_USER }}
