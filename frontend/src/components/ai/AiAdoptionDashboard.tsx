@@ -87,7 +87,7 @@ export const AiAdoptionDashboard: React.FC = () => {
       'Department ID',
       'Department Name',
       'State',
-      'Drafts',
+      'Submitted Drafts',
       '% of Volume',
       'AI Status',
       'AI Mode',
@@ -102,7 +102,7 @@ export const AiAdoptionDashboard: React.FC = () => {
       'Department ID': d.department_id,
       'Department Name': d.department_name || '—',
       State: d.state || '—',
-      Drafts: d.drafts,
+      'Submitted Drafts': d.submitted_drafts,
       '% of Volume': `${d.percent_of_total_volume.toFixed(2)}%`,
       'AI Status': statusLabels[d.ai_status] || d.ai_status,
       'AI Mode': d.ai_mode,
@@ -281,7 +281,7 @@ export const AiAdoptionDashboard: React.FC = () => {
                     <td>{dept.department_id}</td>
                     <td>{dept.department_name || '—'}</td>
                     <td>{dept.state || '—'}</td>
-                    <td>{dept.drafts.toLocaleString()}</td>
+                    <td>{dept.submitted_drafts.toLocaleString()}</td>
                     <td>{dept.percent_of_total_volume.toFixed(2)}%</td>
                     <td>
                       <span

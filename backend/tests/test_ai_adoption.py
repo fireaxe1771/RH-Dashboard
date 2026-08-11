@@ -1,10 +1,11 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import mongomock
 
 from ai_adoption_service import (
     _classify_fees,
     get_ai_participation_map,
+    get_department_draft_activity,
     AI_SEND_OPTIONS,
 )
 
@@ -52,6 +53,24 @@ def test_classify_mixed_mode():
     assert result["qualifying_fee_count"] == 2
 
 
+def test_department_activity_matches_claims_submitted_tile_query():
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    cursor.description = None
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+
+    with patch("ai_adoption_service.target_db._get_connection", return_value=connection):
+        get_department_draft_activity("2026-08-04", "2026-08-11")
+
+    query = cursor.execute.call_args.args[0]
+    assert "c.submitted = 1" in query
+    assert "c.original_run_id IS NULL" in query
+    assert "c.date_of_submitted BETWEEN %(start_date)s AND %(end_date)s" in query
+    assert "created BETWEEN" not in query
+    assert "ORDER BY submitted_drafts DESC" in query
+
+
 @pytest.mark.asyncio
 async def test_get_ai_participation_map_returns_qualifying_departments_only():
     client = mongomock.MongoClient()
@@ -77,20 +96,24 @@ async def test_get_ai_participation_map_returns_qualifying_departments_only():
     class _AsyncCursor:
         def __init__(self, items):
             self._items = items
+
         async def to_list(self, length=None):
             return self._items
 
     class _AsyncCol:
         def __init__(self, col):
             self._col = col
+
         def find(self, *args, **kwargs):
             return _AsyncCursor(list(self._col.find(*args, **kwargs)))
 
     class _AsyncDb:
         def __init__(self, db):
             self._db = db
+
         def __getitem__(self, name):
             return _AsyncCol(self._db[name])
+
         async def list_collection_names(self):
             return self._db.list_collection_names()
 

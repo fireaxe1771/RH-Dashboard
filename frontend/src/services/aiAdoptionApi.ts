@@ -18,7 +18,7 @@ export interface AiAdoptionDepartment {
   department_id: string;
   department_name: string | null;
   state: string | null;
-  drafts: number;
+  submitted_drafts: number;
   percent_of_total_volume: number;
   ai_status: string;
   ai_mode: string;

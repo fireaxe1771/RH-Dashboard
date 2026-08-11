@@ -21,7 +21,7 @@ class AiAdoptionResult(BaseModel):
     department_id: str
     department_name: Optional[str]
     state: Optional[str]
-    drafts: int
+    submitted_drafts: int
     percent_of_total_volume: float
     ai_status: str
     ai_mode: str
@@ -152,29 +152,22 @@ def get_department_draft_activity(
     end_date: str,
     limit: int = 50,
 ) -> List[Dict[str, Any]]:
-    """Aggregate draft/submitted-run volume by department for the period."""
+    """Count drafts submitted during the period, matching the Claims dashboard tile."""
     sql = f"""
     SELECT TOP {limit}
         CAST(c.dept_id AS VARCHAR(50)) AS department_id,
         MAX(d.Name) AS department_name,
         MAX(d.physical_state) AS state,
-        COUNT(DISTINCT c.id) AS drafts
-    FROM (
-        SELECT id, dept_id FROM Claims
-        WHERE submitted = 0
-          AND original_run_id IS NULL
-          AND created BETWEEN %(start_date)s AND %(end_date)s
-        UNION
-        SELECT id, dept_id FROM Claims
-        WHERE submitted = 1
-          AND original_run_id IS NOT NULL
-          AND created BETWEEN %(start_date)s AND %(end_date)s
-    ) c
+        COUNT(DISTINCT c.id) AS submitted_drafts
+    FROM Claims c
     LEFT JOIN Departments d ON d.ID = c.dept_id
-    WHERE c.dept_id IS NOT NULL
+    WHERE c.submitted = 1
+      AND c.original_run_id IS NULL
+      AND c.date_of_submitted BETWEEN %(start_date)s AND %(end_date)s
+      AND c.dept_id IS NOT NULL
       AND c.dept_id NOT IN (1136, 2198, 2627, 2628, 2629)
     GROUP BY CAST(c.dept_id AS VARCHAR(50))
-    ORDER BY drafts DESC
+    ORDER BY submitted_drafts DESC
     """
 
     filters = DashboardFilters(start_date=start_date, end_date=end_date)
@@ -204,7 +197,7 @@ async def get_ai_adoption_report(
 
     participation = await get_ai_participation_map(ai_db, dept_ids)
 
-    total_drafts = sum(int(row.get("drafts", 0) or 0) for row in activity)
+    total_drafts = sum(int(row.get("submitted_drafts", 0) or 0) for row in activity)
     total_drafts = max(total_drafts, 1)  # avoid div/0; 0 still handled below
 
     departments: List[Dict[str, Any]] = []
@@ -242,7 +235,7 @@ async def get_ai_adoption_report(
         if ai_status != "all" and status != ai_status:
             continue
 
-        drafts = int(row.get("drafts", 0) or 0)
+        drafts = int(row.get("submitted_drafts", 0) or 0)
         pct = (drafts / total_drafts * 100) if total_drafts > 0 else 0.0
         departments.append(
             {
@@ -250,7 +243,7 @@ async def get_ai_adoption_report(
                 "department_id": row.get("department_id"),
                 "department_name": row.get("department_name"),
                 "state": row.get("state"),
-                "drafts": drafts,
+                "submitted_drafts": drafts,
                 "percent_of_total_volume": round(pct, 2),
                 "ai_status": status,
                 "ai_mode": ai_info.get("ai_mode", status),
@@ -274,7 +267,7 @@ async def get_ai_adoption_report(
             dept_id = int(row["department_id"])
         except (ValueError, TypeError):
             continue
-        drafts = int(row.get("drafts", 0) or 0)
+        drafts = int(row.get("submitted_drafts", 0) or 0)
 
         if participation is None:
             unknown += 1
