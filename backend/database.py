@@ -10,6 +10,7 @@ class DatabaseManager:
     def __init__(self):
         self.client: AsyncIOMotorClient = None
         self.db = None
+        self.ai_db = None
 
     def connect(self) -> None:
         """Establishes connection client to the Azure/local MongoDB instance."""
@@ -20,7 +21,9 @@ class DatabaseManager:
                 serverSelectionTimeoutMS=5000  # Timeout quickly if unreachable (fail loudly)
             )
             self.db = self.client[settings.MONGODB_DB_NAME]
+            self.ai_db = self.client[settings.RECOVERYHUB_AI_MONGODB_DB_NAME]
             logger.info(f"Successfully bound to database: '{settings.MONGODB_DB_NAME}'")
+            logger.info(f"Successfully bound to RecoveryHub AI database: '{settings.RECOVERYHUB_AI_MONGODB_DB_NAME}'")
         except Exception as e:
             logger.error(f"Failed to connect to MongoDB instance: {e}")
             raise e
@@ -132,3 +135,10 @@ def get_db():
     if db_manager.db is None:
         raise RuntimeError("Database connection is offline.")
     return db_manager.db
+
+
+def get_ai_db():
+    """Dependency provider yielding the RecoveryHub AI MongoDB instance."""
+    if db_manager.ai_db is None:
+        raise RuntimeError("RecoveryHub AI database connection is offline.")
+    return db_manager.ai_db

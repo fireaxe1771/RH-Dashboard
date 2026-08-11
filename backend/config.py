@@ -17,6 +17,10 @@ class Settings:
     # Metadata DB (MongoDB) configuration
     MONGODB_URI: str = os.getenv("MONGODB_URI", "")
     MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME", "recoveryhub_dashboard")
+    RECOVERYHUB_AI_MONGODB_DB_NAME: str = os.getenv(
+        "RECOVERYHUB_AI_MONGODB_DB_NAME",
+        "AI_FEE_CALC_MULTI_AGENT_PROD",
+    )
     
     # Target SQL Database (Azure SQL) configuration
     AZURE_SQL_HOST: str = os.getenv("AZURE_SQL_HOST", "")

@@ -16,6 +16,7 @@ import {
   FileText,
   Clock,
   Sparkles,
+  Zap,
   LucideIcon
 } from 'lucide-react';
 import { Dashboard } from '../services/api';
@@ -45,6 +46,8 @@ interface SidebarProps {
   isDesignerOpen: boolean;
   activeBillingView?: BillingView | null;
   onSelectBillingView?: (view: BillingView) => void;
+  aiAdoptionOpen?: boolean;
+  onSelectAiAdoption?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -55,6 +58,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isDesignerOpen,
   activeBillingView = null,
   onSelectBillingView,
+  aiAdoptionOpen = false,
+  onSelectAiAdoption,
 }) => {
   const [billingExpanded, setBillingExpanded] = useState(true);
   const { user, logout } = useAuth();
@@ -86,6 +91,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <Plus size={18} />
           <span>New Dashboard</span>
+        </button>
+
+        <button
+          className={`sidebar-item ${aiAdoptionOpen ? 'active' : ''}`}
+          onClick={onSelectAiAdoption}
+          style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left', marginTop: '8px' }}
+        >
+          <Zap size={18} style={{ color: 'var(--accent-primary)' }} />
+          <span>AI Adoption</span>
         </button>
 
         <div style={{ margin: '16px 0 8px 0' }} className="sidebar-menu-section">
