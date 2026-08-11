@@ -172,7 +172,7 @@ def test_top_departments_widget_structure():
     assert top_depts["type"] == "table"
     assert "FOR SYSTEM_TIME" not in top_depts["sql_query"]
     assert "TOP 50" in top_depts["sql_query"]
-    assert "GROUP BY c.dept_id" in top_depts["sql_query"]
+    assert "GROUP BY CAST(c.dept_id AS VARCHAR(50))" in top_depts["sql_query"]
     assert "ORDER BY Drafts DESC" in top_depts["sql_query"]
     assert "created BETWEEN %(start_date)s AND %(end_date)s" in top_depts["sql_query"]
     # Combines current drafts (submitted=0, no run) and submitted runs
@@ -181,7 +181,7 @@ def test_top_departments_widget_structure():
     assert "original_run_id IS NULL" in top_depts["sql_query"]
     assert "original_run_id IS NOT NULL" in top_depts["sql_query"]
     # Returns Department ID, Name, State, and Draft count
-    assert "c.dept_id AS DeptID" in top_depts["sql_query"]
+    assert "CAST(c.dept_id AS VARCHAR(50)) AS DeptID" in top_depts["sql_query"]
     assert "MAX(d.Name) AS DepartmentName" in top_depts["sql_query"]
     assert "MAX(d.physical_state) AS State" in top_depts["sql_query"]
     assert "COUNT(DISTINCT c.id) AS Drafts" in top_depts["sql_query"]
@@ -191,6 +191,11 @@ def test_top_departments_widget_structure():
     # Departments master table only.
     assert "c.DepartmentName" not in top_depts["sql_query"]
     assert "c.DepartmentID" not in top_depts["sql_query"]
+    # DeptID is exposed as a string so the table/export do not apply
+    # thousands-separator number formatting.
+    assert "GROUP BY CAST(c.dept_id AS VARCHAR(50))" in top_depts["sql_query"]
+    # Rural Metro contract departments are excluded from this ranking.
+    assert "c.dept_id NOT IN (1136, 2198, 2627, 2628, 2629)" in top_depts["sql_query"]
     # Layout: full-width grid at the bottom of the dashboard
     assert top_depts["layout"]["w"] == 12
 

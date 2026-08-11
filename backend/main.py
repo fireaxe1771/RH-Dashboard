@@ -430,6 +430,10 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
             # department missing from the master table still appears in the
             # ranking with a NULL name/state rather than dropping out.
             #
+            # Excludes Rural Metro contract departments (not owned fire
+            # departments) by their master IDs, since they share a billing
+            # model rather than operating as individual fire departments.
+            #
             # The TOP 50 / no HAVING threshold can be tuned — drop to TOP 20
             # or add ``HAVING COUNT(DISTINCT c.id) > 5`` to limit to
             # departments submitting more than 5 runs.
@@ -439,7 +443,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "type": "table",
                 "sql_query": f"""
                 SELECT TOP 50
-                    c.dept_id AS DeptID,
+                    CAST(c.dept_id AS VARCHAR(50)) AS DeptID,
                     MAX(d.Name) AS DepartmentName,
                     MAX(d.physical_state) AS State,
                     COUNT(DISTINCT c.id) AS Drafts
@@ -456,7 +460,8 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 ) c
                 LEFT JOIN Departments d ON d.ID = c.dept_id
                 WHERE c.dept_id IS NOT NULL
-                GROUP BY c.dept_id
+                  AND c.dept_id NOT IN (1136, 2198, 2627, 2628, 2629)
+                GROUP BY CAST(c.dept_id AS VARCHAR(50))
                 ORDER BY Drafts DESC
                 """,
                 "layout": {"x": 0, "y": 22, "w": 12, "h": 10},
