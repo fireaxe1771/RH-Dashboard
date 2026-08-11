@@ -91,6 +91,8 @@ async def test_get_ai_participation_map_returns_qualifying_departments_only():
             self._db = db
         def __getitem__(self, name):
             return _AsyncCol(self._db[name])
+        async def list_collection_names(self):
+            return self._db.list_collection_names()
 
     ai_db = _AsyncDb(db)
     result = await get_ai_participation_map(ai_db)

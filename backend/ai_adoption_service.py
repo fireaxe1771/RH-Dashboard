@@ -118,6 +118,13 @@ async def get_ai_participation_map(
     }
 
     try:
+        collections = await ai_db.list_collection_names()
+        if AI_FEES_COLLECTION not in collections:
+            logger.warning(
+                f"AI participation collection '{AI_FEES_COLLECTION}' not found "
+                f"in database. Treating AI status as unknown."
+            )
+            return None
         rows = await ai_db[AI_FEES_COLLECTION].find(query, projection).to_list(
             length=None
         )
