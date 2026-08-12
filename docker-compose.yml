@@ -37,14 +37,14 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_AZURE_CLIENT_ID: ${FRONTEND_CLIENT_ID}
+        VITE_AZURE_CLIENT_ID: ${VITE_AZURE_CLIENT_ID}
         VITE_AZURE_TENANT_ID: ${AZURE_TENANT_ID}
         VITE_DEV_AUTH_BYPASS: ${VITE_DEV_AUTH_BYPASS}
     container_name: rh-dashboard-frontend
     ports:
       - "3001:80"
     environment:
-      - VITE_AZURE_CLIENT_ID=${FRONTEND_CLIENT_ID}
+      - VITE_AZURE_CLIENT_ID=${VITE_AZURE_CLIENT_ID}
       - VITE_AZURE_TENANT_ID=${AZURE_TENANT_ID}
       # nginx proxies /api/* to the backend container on the shared network
       - BACKEND_URL=http://backend:8001
