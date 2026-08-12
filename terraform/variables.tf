@@ -76,7 +76,13 @@ variable "azure_sql_password" {
 # --- Authentication ---
 variable "azure_client_id" {
   type        = string
-  description = "Azure Entra ID Client ID for MSAL authentication."
+  description = "Azure Entra ID Client ID for the deploy service principal (used for Azure login)."
+}
+
+variable "azure_spa_client_id" {
+  type        = string
+  default     = "d7d4d4d0-5460-4655-ab6d-a9aaac38b578"
+  description = "Azure Entra ID SPA App Registration client ID used by the frontend for MSAL login. The backend validates JWT audience against this value."
 }
 
 variable "azure_tenant_id" {

@@ -7,8 +7,9 @@ import { AuthProvider, useAuth } from '../components/AuthContext';
 const mockLoginPopup = vi.fn().mockResolvedValue(undefined);
 const mockLoginRedirect = vi.fn().mockResolvedValue(undefined);
 const mockLogoutRedirect = vi.fn().mockResolvedValue(undefined);
-const mockAcquireTokenSilent = vi.fn().mockResolvedValue({ accessToken: 'test-token-123' });
+const mockAcquireTokenSilent = vi.fn().mockResolvedValue({ accessToken: 'test-token-123', idToken: 'test-id-token-456' });
 const mockAcquireTokenRedirect = vi.fn();
+const mockHandleRedirectPromise = vi.fn().mockResolvedValue(null);
 
 vi.mock('@azure/msal-react', () => ({
   useMsal: () => ({
@@ -18,6 +19,7 @@ vi.mock('@azure/msal-react', () => ({
       logoutRedirect: mockLogoutRedirect,
       acquireTokenSilent: mockAcquireTokenSilent,
       acquireTokenRedirect: mockAcquireTokenRedirect,
+      handleRedirectPromise: mockHandleRedirectPromise,
     },
     accounts: [] as any[],
     inProgress: 'none',
@@ -126,7 +128,7 @@ describe('AuthContext', () => {
     await act(async () => {
       screen.getByTestId('login-btn').click();
     });
-    expect(mockLoginPopup).not.toHaveBeenCalled();
+    expect(mockLoginRedirect).not.toHaveBeenCalled();
   });
 
   test('logout is a no-op in dev bypass mode', async () => {

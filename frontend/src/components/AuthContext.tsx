@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { useMsal, useIsAuthenticated } from '@azure/msal-react';
 import { loginRequest } from '../authConfig';
 import { setAuthToken } from '../services/api';
@@ -24,6 +24,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const isMsalAuthenticated = useIsAuthenticated();
   const isDevAuthBypass = import.meta.env.VITE_DEV_AUTH_BYPASS === 'true';
   const [configError, setConfigError] = useState<string | null>(null);
+  const hasHandledRedirect = useRef(false);
 
   // Validate environment variables on startup
   useEffect(() => {
@@ -47,6 +48,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    // Capture the token from the redirect promise result (runs once after
+    // the browser is redirected back from login.microsoftonline.com).
+    // handleRedirectPromise is idempotent, but we guard with a ref so the
+    // effect doesn't re-run on every render where instance changes identity.
+    if (hasHandledRedirect.current) return;
+    hasHandledRedirect.current = true;
+
+    instance.handleRedirectPromise()
+      .then((result) => {
+        if (result && result.idToken) {
+          setAuthToken(result.idToken);
+        }
+      })
+      .catch((error) => {
+        console.error("handleRedirectPromise failed:", error);
+      });
+  }, [instance, isDevAuthBypass]);
+
+  // Acquire token silently when authenticated (covers page reloads with
+  // cached session state).
+  useEffect(() => {
+    if (isDevAuthBypass) {
+      setAuthToken(null);
+      return;
+    }
+
     if (isMsalAuthenticated && accounts.length > 0) {
       instance
         .acquireTokenSilent({
@@ -54,13 +81,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           account: accounts[0],
         })
         .then((response) => {
-          setAuthToken(response.accessToken);
+          // Use the idToken (aud=client_id) instead of the accessToken
+          // (aud=Graph for User.Read scope). The backend validates the
+          // token audience against the SPA client ID, so the idToken is
+          // the correct token to send for API authentication.
+          if (!response.idToken) {
+            console.error("acquireTokenSilent response missing idToken, cannot authenticate");
+            setAuthToken(null);
+            return;
+          }
+          setAuthToken(response.idToken);
         })
         .catch((error) => {
           console.error("Acquiring token silently failed, attempting redirect:", error);
           instance.acquireTokenRedirect(loginRequest);
         });
-    } else {
+    } else if (!isMsalAuthenticated) {
       setAuthToken(null);
     }
   }, [isDevAuthBypass, isMsalAuthenticated, accounts, instance]);
@@ -88,12 +124,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.error("Login halted: Application is misconfigured.");
       return;
     }
-    try {
-      await instance.loginPopup(loginRequest);
-    } catch (error) {
-      console.error("MSAL Popup Login failed, falling back to redirect:", error);
-      await instance.loginRedirect(loginRequest);
-    }
+    // Use redirect instead of popup. The popup flow fails in Azure Container
+    // Apps because login.microsoftonline.com sets Cross-Origin-Opener-Policy
+    // headers that block MSAL's window.closed monitor, causing the popup to
+    // hang silently and no token to ever be acquired.
+    await instance.loginRedirect(loginRequest);
   };
 
   const logout = async () => {
