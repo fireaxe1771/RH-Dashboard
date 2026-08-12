@@ -97,7 +97,7 @@ resource "azurerm_container_app" "backend" {
         value = var.azure_billing_client_id
       }
       dynamic "env" {
-        for_each = var.azure_billing_client_secret != "" ? ["x"] : []
+        for_each = var.azure_billing_client_secret != "" ? toset(["x"]) : toset([])
         content {
           name        = "AZURE_BILLING_CLIENT_SECRET"
           secret_name = "billing-client-secret"
@@ -124,7 +124,7 @@ resource "azurerm_container_app" "backend" {
       # Azure OpenAI (Foundry) takes precedence when AZURE_OPENAI_ENDPOINT is set;
       # otherwise the app falls back to OpenAI.com via OPENAI_API_KEY.
       dynamic "env" {
-        for_each = var.openai_api_key != "" ? ["x"] : []
+        for_each = var.openai_api_key != "" ? toset(["x"]) : toset([])
         content {
           name        = "OPENAI_API_KEY"
           secret_name = "openai-api-key"
@@ -135,7 +135,7 @@ resource "azurerm_container_app" "backend" {
         value = var.azure_openai_endpoint
       }
       dynamic "env" {
-        for_each = var.azure_openai_api_key != "" ? ["x"] : []
+        for_each = var.azure_openai_api_key != "" ? toset(["x"]) : toset([])
         content {
           name        = "AZURE_OPENAI_API_KEY"
           secret_name = "azure-openai-api-key"
@@ -195,7 +195,7 @@ resource "azurerm_container_app" "backend" {
   # configured. Azure Container Apps rejects secrets with empty values, so we
   # use dynamic blocks to omit them entirely when the var is blank.
   dynamic "secret" {
-    for_each = var.azure_billing_client_secret != "" ? ["x"] : []
+    for_each = var.azure_billing_client_secret != "" ? toset(["x"]) : toset([])
     content {
       name  = "billing-client-secret"
       value = var.azure_billing_client_secret
@@ -203,7 +203,7 @@ resource "azurerm_container_app" "backend" {
   }
 
   dynamic "secret" {
-    for_each = var.openai_api_key != "" ? ["x"] : []
+    for_each = var.openai_api_key != "" ? toset(["x"]) : toset([])
     content {
       name  = "openai-api-key"
       value = var.openai_api_key
@@ -211,7 +211,7 @@ resource "azurerm_container_app" "backend" {
   }
 
   dynamic "secret" {
-    for_each = var.azure_openai_api_key != "" ? ["x"] : []
+    for_each = var.azure_openai_api_key != "" ? toset(["x"]) : toset([])
     content {
       name  = "azure-openai-api-key"
       value = var.azure_openai_api_key
