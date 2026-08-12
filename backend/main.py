@@ -119,7 +119,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
     )
 
     return {
-        "name": "Claims Calendar-Year Overview",
+        "name": "Claims Breakdown",
         "description": (
             "Year-to-date claims dashboard with dynamic date-range filtering "
             "and automatic prior-period comparison."
@@ -436,8 +436,12 @@ async def _seed_default_dashboards() -> None:
     now = datetime.now(UTC)
     payload = _build_default_claims_dashboard()
 
+    # Match the current name OR any legacy names so that a rename in code
+    # migrates the existing system dashboard in place instead of leaving an
+    # orphaned copy behind.
+    legacy_names = {"Claims Calendar-Year Overview"}
     existing_system = await dashboards.find(
-        {"created_by": "system", "name": payload["name"]}
+        {"created_by": "system", "name": {"$in": [payload["name"], *legacy_names]}}
     ).sort("created_at", 1).to_list(length=100)
     existing = existing_system[0] if existing_system else None
     if existing:
@@ -451,13 +455,13 @@ async def _seed_default_dashboards() -> None:
         if duplicate_ids:
             await dashboards.delete_many({"_id": {"$in": duplicate_ids}})
             logger.info("Removed %d duplicate system dashboards", len(duplicate_ids))
-        logger.info("Updated system dashboard: Claims Calendar-Year Overview")
+        logger.info("Updated system dashboard: %s", payload["name"])
     else:
         payload["created_by"] = "system"
         payload["created_at"] = now
         payload["updated_at"] = now
         await dashboards.insert_one(payload)
-        logger.info("Seeded default claims dashboard: Claims Calendar-Year Overview")
+        logger.info("Seeded default claims dashboard: %s", payload["name"])
 
 # --- DASHBOARD METADATA ENDPOINTS ---
 

@@ -122,7 +122,7 @@ The `dbo.claims_deleted` table (1M+ rows) is a heap with no useful index
 (only `nci_wi_claims_deleted_...` on `(dept_id, run_number)`). Queries against
 it do a full scan but complete in <1s on warm cache.
 
-The system-managed `Claims Calendar-Year Overview` dashboard is built by
+The system-managed `Claims Breakdown` dashboard is built by
 `backend/main.py::_build_default_claims_dashboard()` and upserted on every
 startup in `backend/main.py::_seed_default_dashboards()`. It defines these
 claim buckets:

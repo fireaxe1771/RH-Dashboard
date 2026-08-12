@@ -200,7 +200,7 @@ def test_system_dashboard_cannot_be_updated_or_deleted(test_client: TestClient):
     dashboard_id = ObjectId()
     _insert_dashboard({
         "_id": dashboard_id,
-        "name": "Claims Calendar-Year Overview",
+        "name": "Claims Breakdown",
         "description": "System dashboard",
         "widgets": [],
         "created_by": "system",
@@ -216,7 +216,7 @@ def test_system_dashboard_cannot_be_updated_or_deleted(test_client: TestClient):
     assert response.status_code == 403
 
     stored = asyncio.run(db_manager.db["dashboards"].find_one({"_id": dashboard_id}))
-    assert stored["name"] == "Claims Calendar-Year Overview"
+    assert stored["name"] == "Claims Breakdown"
 
 
 def test_list_dashboards_deduplicates_system_entries_and_places_them_first(
@@ -233,14 +233,14 @@ def test_list_dashboards_deduplicates_system_entries_and_places_them_first(
     })
     _insert_dashboard({
         "_id": ObjectId(),
-        "name": "Claims Calendar-Year Overview",
+        "name": "Claims Breakdown",
         "widgets": [],
         "created_by": "system",
         "created_at": now - timedelta(days=2),
     })
     _insert_dashboard({
         "_id": ObjectId(),
-        "name": "Claims Calendar-Year Overview",
+        "name": "Claims Breakdown",
         "widgets": [],
         "created_by": "system",
         "created_at": now - timedelta(days=1),
@@ -254,13 +254,17 @@ def test_list_dashboards_deduplicates_system_entries_and_places_them_first(
     assert response.status_code == 200
     dashboards = response.json()
     assert [dashboard["name"] for dashboard in dashboards] == [
-        "Claims Calendar-Year Overview",
+        "Claims Breakdown",
         "Saved Dashboard",
     ]
 
 
 def test_seed_default_dashboard_removes_duplicate_system_entries(monkeypatch):
-    """Startup seeding keeps the oldest system dashboard and removes duplicates."""
+    """Startup seeding keeps the oldest system dashboard and removes duplicates.
+
+    Also covers the rename path: dashboards stored under a legacy name are
+    migrated to the current name in place.
+    """
     monkeypatch.setenv("TESTING", "false")
     now = datetime.now(UTC)
     _insert_dashboard({
@@ -282,8 +286,16 @@ def test_seed_default_dashboard_removes_duplicate_system_entries(monkeypatch):
 
     dashboards = asyncio.run(
         db_manager.db["dashboards"].find(
-            {"created_by": "system", "name": "Claims Calendar-Year Overview"}
+            {"created_by": "system", "name": "Claims Breakdown"}
         ).to_list(length=100)
     )
     assert len(dashboards) == 1
     assert dashboards[0]["widgets"] == _build_default_claims_dashboard()["widgets"]
+
+    # Legacy-named documents must all be migrated (no orphans left behind)
+    legacy = asyncio.run(
+        db_manager.db["dashboards"].find(
+            {"created_by": "system", "name": "Claims Calendar-Year Overview"}
+        ).to_list(length=100)
+    )
+    assert legacy == []

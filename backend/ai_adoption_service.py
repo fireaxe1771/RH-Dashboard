@@ -150,11 +150,15 @@ async def get_ai_participation_map(
 def get_department_draft_activity(
     start_date: str,
     end_date: str,
-    limit: int = 50,
 ) -> List[Dict[str, Any]]:
-    """Count drafts submitted during the period, matching the Claims dashboard tile."""
-    sql = f"""
-    SELECT TOP {limit}
+    """Count drafts submitted during the period for every active department.
+
+    Returns ALL departments with activity in the period (sorted by
+    submitted_drafts desc) so that each AI-status tab can build its own
+    independent top-N ranking instead of filtering a single top-N list.
+    """
+    sql = """
+    SELECT
         CAST(c.dept_id AS VARCHAR(50)) AS department_id,
         MAX(d.Name) AS department_name,
         MAX(d.physical_state) AS state,
@@ -182,8 +186,15 @@ async def get_ai_adoption_report(
     limit: int = 50,
     ai_status: str = "all",
 ) -> Dict[str, Any]:
-    """Produce the AI Adoption dashboard payload for the selected period."""
-    activity = get_department_draft_activity(start_date, end_date, limit)
+    """Produce the AI Adoption dashboard payload for the selected period.
+
+    Each AI-status tab (all / using_ai / not_using_ai / unknown) is its own
+    independent top-N ranking.  We fetch every department with activity in the
+    period, classify ALL of them by AI status, then filter to the requested
+    status and take the top *limit* — rather than filtering a single top-N
+    "all" list which would yield fewer than *limit* rows for a filtered tab.
+    """
+    activity = get_department_draft_activity(start_date, end_date)
 
     # Collect department IDs for a single targeted Mongo query.
     dept_ids: List[int] = []
@@ -200,8 +211,9 @@ async def get_ai_adoption_report(
     total_drafts = sum(int(row.get("submitted_drafts", 0) or 0) for row in activity)
     total_drafts = max(total_drafts, 1)  # avoid div/0; 0 still handled below
 
-    departments: List[Dict[str, Any]] = []
-    for rank, row in enumerate(activity, start=1):
+    # Classify every department with activity in the period.
+    classified: List[Dict[str, Any]] = []
+    for row in activity:
         try:
             dept_id = int(row["department_id"])
         except (ValueError, TypeError):
@@ -232,14 +244,10 @@ async def get_ai_adoption_report(
             )
             status = "using_ai" if ai_info["uses_ai"] else "not_using_ai"
 
-        if ai_status != "all" and status != ai_status:
-            continue
-
         drafts = int(row.get("submitted_drafts", 0) or 0)
         pct = (drafts / total_drafts * 100) if total_drafts > 0 else 0.0
-        departments.append(
+        classified.append(
             {
-                "rank_overall": rank,
                 "department_id": row.get("department_id"),
                 "department_name": row.get("department_name"),
                 "state": row.get("state"),
@@ -254,7 +262,7 @@ async def get_ai_adoption_report(
             }
         )
 
-    # Recalculate summary over the full activity set, not the filtered view.
+    # Summary over the full activity set, not the filtered/sliced view.
     using_drafts = 0
     not_using_drafts = 0
     unknown_drafts = 0
@@ -262,28 +270,20 @@ async def get_ai_adoption_report(
     not_using = 0
     unknown = 0
 
-    for row in activity:
-        try:
-            dept_id = int(row["department_id"])
-        except (ValueError, TypeError):
-            continue
-        drafts = int(row.get("submitted_drafts", 0) or 0)
-
-        if participation is None:
-            unknown += 1
-            unknown_drafts += drafts
-        elif dept_id in participation:
-            if participation[dept_id]["uses_ai"]:
-                using += 1
-                using_drafts += drafts
-            else:
-                not_using += 1
-                not_using_drafts += drafts
-        else:
+    for item in classified:
+        drafts = item["submitted_drafts"]
+        status = item["ai_status"]
+        if status == "using_ai":
+            using += 1
+            using_drafts += drafts
+        elif status == "not_using_ai":
             not_using += 1
             not_using_drafts += drafts
+        else:
+            unknown += 1
+            unknown_drafts += drafts
 
-    active_departments = len(activity)
+    active_departments = len(classified)
     total_drafts_for_pct = using_drafts + not_using_drafts + unknown_drafts
 
     ai_coverage = (
@@ -307,6 +307,32 @@ async def get_ai_adoption_report(
         "ai_coverage_percent": round(ai_coverage, 2),
         "remaining_opportunity_percent": round(remaining_opportunity, 2),
     }
+
+    # Each tab is its own independent list: filter to the requested status,
+    # then take the top *limit* and rank 1..N within that tab.
+    if ai_status != "all":
+        classified = [item for item in classified if item["ai_status"] == ai_status]
+
+    classified = classified[:limit]
+
+    departments: List[Dict[str, Any]] = []
+    for rank, item in enumerate(classified, start=1):
+        departments.append(
+            {
+                "rank_overall": rank,
+                "department_id": item["department_id"],
+                "department_name": item["department_name"],
+                "state": item["state"],
+                "submitted_drafts": item["submitted_drafts"],
+                "percent_of_total_volume": item["percent_of_total_volume"],
+                "ai_status": item["ai_status"],
+                "ai_mode": item["ai_mode"],
+                "qualifying_fee_count": item["qualifying_fee_count"],
+                "has_auto": item["has_auto"],
+                "has_queued": item["has_queued"],
+                "has_limited_auto": item["has_limited_auto"],
+            }
+        )
 
     return {
         "period": {"start_date": start_date, "end_date": end_date},

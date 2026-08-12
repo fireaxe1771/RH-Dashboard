@@ -117,7 +117,7 @@ export const AiAdoptionDashboard: React.FC = () => {
     exportToExcel('AI_Adoption_Departments', columns, rows);
   };
 
-  const tabs: string[] = ['all', 'using_ai', 'not_using_ai', 'unknown'];
+  const tabs: string[] = ['all', 'using_ai', 'not_using_ai'];
 
   if (loading && !data) return <LoadingState label="Loading AI adoption data…" />;
   if (error) return <ErrorState message={error} />;

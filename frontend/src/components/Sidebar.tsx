@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from './AuthContext';
 import { 
   LayoutDashboard, 
@@ -61,7 +61,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   aiAdoptionOpen = false,
   onSelectAiAdoption,
 }) => {
-  const [billingExpanded, setBillingExpanded] = useState(true);
+  const [billingExpanded, setBillingExpanded] = useState(false);
+  // AI Analytics folder auto-expands when its AI Adoption child is the active
+  // view, and collapses when the user navigates away to a dashboard.
+  const [aiAnalyticsExpanded, setAiAnalyticsExpanded] = useState(aiAdoptionOpen);
+  useEffect(() => {
+    setAiAnalyticsExpanded(aiAdoptionOpen);
+  }, [aiAdoptionOpen]);
   const { user, logout } = useAuth();
 
   const staticDashboards = dashboards.filter((dashboard, index, all) => (
@@ -100,17 +106,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
 
         <button
-          className={`sidebar-item ${aiAdoptionOpen ? 'active' : ''}`}
-          onClick={onSelectAiAdoption}
+          className="sidebar-item"
+          onClick={() => setAiAnalyticsExpanded((v) => !v)}
           style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left', marginTop: '8px' }}
         >
-          <Zap size={18} style={{ color: 'var(--accent-primary)' }} />
-          <span>AI Adoption</span>
+          <Sparkles size={18} style={{ color: 'var(--accent-primary)' }} />
+          <span style={{ flex: 1, fontWeight: 600 }}>AI Analytics</span>
+          {aiAnalyticsExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </button>
+
+        {aiAnalyticsExpanded && (
+          <button
+            className={`sidebar-item ${aiAdoptionOpen ? 'active' : ''}`}
+            onClick={onSelectAiAdoption}
+            style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left', paddingLeft: '24px' }}
+          >
+            <Zap size={16} />
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              AI Adoption
+            </span>
+          </button>
+        )}
 
         {staticDashboards.map((dash) => {
           const id = dash.id || dash._id || '';
-          const isActive = !isDesignerOpen && selectedId === id;
+          const isActive = !isDesignerOpen && !aiAdoptionOpen && !activeBillingView && selectedId === id;
           return (
             <button
               key={id}
@@ -167,7 +187,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         ) : (
           savedDashboards.map((dash) => {
             const id = dash.id || dash._id || '';
-            const isActive = !isDesignerOpen && selectedId === id;
+            const isActive = !isDesignerOpen && !aiAdoptionOpen && !activeBillingView && selectedId === id;
             return (
               <button
                 key={id}

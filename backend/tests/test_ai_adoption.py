@@ -6,6 +6,7 @@ from ai_adoption_service import (
     _classify_fees,
     get_ai_participation_map,
     get_department_draft_activity,
+    get_ai_adoption_report,
     AI_SEND_OPTIONS,
 )
 
@@ -69,6 +70,7 @@ def test_department_activity_matches_claims_submitted_tile_query():
     assert "c.date_of_submitted BETWEEN %(start_date)s AND %(end_date)s" in query
     assert "created BETWEEN" not in query
     assert "ORDER BY submitted_drafts DESC" in query
+    assert "TOP" not in query  # fetch ALL departments; slicing done in Python
 
 
 @pytest.mark.asyncio
@@ -124,3 +126,95 @@ async def test_get_ai_participation_map_returns_qualifying_departments_only():
     assert 456 not in result
     assert result[123]["uses_ai"] is True
     assert result[123]["ai_mode"] == "auto"
+
+
+def _mock_activity():
+    """6 departments alternating AI / not-AI, sorted by submitted_drafts desc."""
+    return [
+        {"department_id": "1", "department_name": "FD 1", "state": "TX", "submitted_drafts": 100},
+        {"department_id": "2", "department_name": "FD 2", "state": "CA", "submitted_drafts": 90},
+        {"department_id": "3", "department_name": "FD 3", "state": "NY", "submitted_drafts": 80},
+        {"department_id": "4", "department_name": "FD 4", "state": "FL", "submitted_drafts": 70},
+        {"department_id": "5", "department_name": "FD 5", "state": "WA", "submitted_drafts": 60},
+        {"department_id": "6", "department_name": "FD 6", "state": "OH", "submitted_drafts": 50},
+    ]
+
+
+def _mock_participation():
+    """Odd-numbered departments use AI; even-numbered do not."""
+    return {
+        1: {"uses_ai": True, "ai_mode": "auto", "qualifying_fee_count": 1,
+            "has_auto": True, "has_queued": False, "has_limited_auto": False,
+            "department_name": "FD 1"},
+        3: {"uses_ai": True, "ai_mode": "queued", "qualifying_fee_count": 1,
+            "has_auto": False, "has_queued": True, "has_limited_auto": False,
+            "department_name": "FD 3"},
+        5: {"uses_ai": True, "ai_mode": "auto", "qualifying_fee_count": 1,
+            "has_auto": True, "has_queued": False, "has_limited_auto": False,
+            "department_name": "FD 5"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_all_tab_returns_top_n_regardless_of_ai_status():
+    with patch("ai_adoption_service.get_department_draft_activity", return_value=_mock_activity()), \
+         patch("ai_adoption_service.get_ai_participation_map", return_value=_mock_participation()):
+        result = await get_ai_adoption_report(None, "2026-08-04", "2026-08-11", limit=2, ai_status="all")
+
+    depts = result["departments"]
+    assert len(depts) == 2
+    assert depts[0]["department_id"] == "1"
+    assert depts[0]["rank_overall"] == 1
+    assert depts[1]["department_id"] == "2"
+    assert depts[1]["rank_overall"] == 2
+
+
+@pytest.mark.asyncio
+async def test_using_ai_tab_is_independent_top_n():
+    """Using AI tab must return the top N AI-using departments, not a filter
+    of the all-departments top-N list (which would yield only 1 row here)."""
+    with patch("ai_adoption_service.get_department_draft_activity", return_value=_mock_activity()), \
+         patch("ai_adoption_service.get_ai_participation_map", return_value=_mock_participation()):
+        result = await get_ai_adoption_report(None, "2026-08-04", "2026-08-11", limit=2, ai_status="using_ai")
+
+    depts = result["departments"]
+    assert len(depts) == 2
+    # All returned departments must use AI
+    assert all(d["ai_status"] == "using_ai" for d in depts)
+    # Top 2 AI-using departments are #1 (100 drafts) and #3 (80 drafts)
+    assert depts[0]["department_id"] == "1"
+    assert depts[0]["rank_overall"] == 1
+    assert depts[1]["department_id"] == "3"
+    assert depts[1]["rank_overall"] == 2
+
+
+@pytest.mark.asyncio
+async def test_not_using_ai_tab_is_independent_top_n():
+    """Not Using AI tab must return the top N non-AI departments, not a filter
+    of the all-departments top-N list (which would yield only 1 row here)."""
+    with patch("ai_adoption_service.get_department_draft_activity", return_value=_mock_activity()), \
+         patch("ai_adoption_service.get_ai_participation_map", return_value=_mock_participation()):
+        result = await get_ai_adoption_report(None, "2026-08-04", "2026-08-11", limit=2, ai_status="not_using_ai")
+
+    depts = result["departments"]
+    assert len(depts) == 2
+    # All returned departments must NOT use AI
+    assert all(d["ai_status"] == "not_using_ai" for d in depts)
+    # Top 2 non-AI departments are #2 (90 drafts) and #4 (70 drafts)
+    assert depts[0]["department_id"] == "2"
+    assert depts[0]["rank_overall"] == 1
+    assert depts[1]["department_id"] == "4"
+    assert depts[1]["rank_overall"] == 2
+
+
+@pytest.mark.asyncio
+async def test_summary_reflects_all_departments_not_filtered_view():
+    with patch("ai_adoption_service.get_department_draft_activity", return_value=_mock_activity()), \
+         patch("ai_adoption_service.get_ai_participation_map", return_value=_mock_participation()):
+        result = await get_ai_adoption_report(None, "2026-08-04", "2026-08-11", limit=2, ai_status="using_ai")
+
+    summary = result["summary"]
+    # All 6 departments are active, not just the 2 shown
+    assert summary["active_departments"] == 6
+    assert summary["departments_using_ai"] == 3
+    assert summary["departments_not_using_ai"] == 3

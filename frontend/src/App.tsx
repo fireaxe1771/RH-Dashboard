@@ -47,8 +47,8 @@ export const AppContent: React.FC = () => {
 
   // Azure billing view state
   const [activeBillingView, setActiveBillingView] = useState<BillingView | null>(null);
-  // AI Adoption view state
-  const [aiAdoptionOpen, setAiAdoptionOpen] = useState(false);
+  // AI Adoption view state — defaults to open so AI Adoption is the landing view
+  const [aiAdoptionOpen, setAiAdoptionOpen] = useState(true);
 
   // Fetch dashboards on login
   useEffect(() => {
