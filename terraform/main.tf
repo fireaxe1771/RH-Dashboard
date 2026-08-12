@@ -12,6 +12,24 @@ resource "azurerm_container_app_environment" "aca_env" {
   log_analytics_workspace_id = null # Automatically creates default if omitted
 }
 
+# 1a. Create a User-Assigned Managed Identity for ACR pull access.
+# This must exist BEFORE the container apps so they can pull images on first
+# revision. With SystemAssigned the identity only exists after the container app
+# is created, but the first revision needs to pull the image immediately — a
+# chicken-and-egg problem that causes "Operation expired" after 20 minutes.
+resource "azurerm_user_assigned_identity" "acr_pull" {
+  name                = "rh-dashboard-acr-pull"
+  resource_group_name = var.resource_group_name
+  location            = var.location
+}
+
+# 1b. Assign AcrPull to the identity BEFORE creating container apps
+resource "azurerm_role_assignment" "acr_pull_identity" {
+  scope                = data.azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.acr_pull.principal_id
+}
+
 # 2. Deploy Backend Container App (FastAPI API)
 resource "azurerm_container_app" "backend" {
   name                         = "recoveryhub-dashboard-api"
@@ -19,14 +37,15 @@ resource "azurerm_container_app" "backend" {
   resource_group_name          = var.resource_group_name
   revision_mode                = "Single"
 
-  # Access registry via Managed Identity
+  # Use the pre-provisioned user-assigned identity for ACR pull
   identity {
-    type = "SystemAssigned"
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.acr_pull.id]
   }
 
   registry {
     server   = data.azurerm_container_registry.acr.login_server
-    identity = "system"
+    identity = azurerm_user_assigned_identity.acr_pull.id
   }
 
   ingress {
@@ -210,12 +229,13 @@ resource "azurerm_container_app" "frontend" {
   revision_mode                = "Single"
 
   identity {
-    type = "SystemAssigned"
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.acr_pull.id]
   }
 
   registry {
     server   = data.azurerm_container_registry.acr.login_server
-    identity = "system"
+    identity = azurerm_user_assigned_identity.acr_pull.id
   }
 
   ingress {
@@ -255,15 +275,5 @@ resource "azurerm_container_app" "frontend" {
   }
 }
 
-# 4. Assign AcrPull permissions to System Identities on the existing Registry
-resource "azurerm_role_assignment" "acr_pull_backend" {
-  scope                = data.azurerm_container_registry.acr.id
-  role_definition_name = "AcrPull"
-  principal_id         = azurerm_container_app.backend.identity[0].principal_id
-}
-
-resource "azurerm_role_assignment" "acr_pull_frontend" {
-  scope                = data.azurerm_container_registry.acr.id
-  role_definition_name = "AcrPull"
-  principal_id         = azurerm_container_app.frontend.identity[0].principal_id
-}
+# 4. AcrPull is assigned to the shared user-assigned identity in step 1b above,
+# before the container apps are created. No per-app role assignments needed.
