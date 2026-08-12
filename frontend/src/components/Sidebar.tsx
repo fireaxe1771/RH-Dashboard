@@ -17,10 +17,13 @@ import {
   Clock,
   Sparkles,
   Zap,
+  Activity,
   LucideIcon
 } from 'lucide-react';
 import { Dashboard } from '../services/api';
 import { BillingView } from './billing/types';
+
+export type AiAnalyticsView = 'adoption' | 'outcomes' | 'diagnostics';
 
 interface BillingSidebarItem {
   id: BillingView;
@@ -38,6 +41,18 @@ const BILLING_NAV_ITEMS: BillingSidebarItem[] = [
   { id: 'billing-ai',           label: 'AI Cost Analyst', icon: Sparkles },
 ];
 
+interface AiAnalyticsNavItem {
+  id: AiAnalyticsView;
+  label: string;
+  icon: LucideIcon;
+}
+
+const AI_ANALYTICS_NAV_ITEMS: AiAnalyticsNavItem[] = [
+  { id: 'adoption',    label: 'AI Adoption',     icon: Zap },
+  { id: 'outcomes',    label: 'AI Outcomes',     icon: TrendingUp },
+  { id: 'diagnostics', label: 'AI Diagnostics',  icon: Activity },
+];
+
 interface SidebarProps {
   dashboards: Dashboard[];
   selectedId: string | null;
@@ -46,8 +61,8 @@ interface SidebarProps {
   isDesignerOpen: boolean;
   activeBillingView?: BillingView | null;
   onSelectBillingView?: (view: BillingView) => void;
-  aiAdoptionOpen?: boolean;
-  onSelectAiAdoption?: () => void;
+  activeAiAnalyticsView?: AiAnalyticsView | null;
+  onSelectAiAnalyticsView?: (view: AiAnalyticsView) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -58,16 +73,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isDesignerOpen,
   activeBillingView = null,
   onSelectBillingView,
-  aiAdoptionOpen = false,
-  onSelectAiAdoption,
+  activeAiAnalyticsView = null,
+  onSelectAiAnalyticsView,
 }) => {
   const [billingExpanded, setBillingExpanded] = useState(false);
-  // AI Analytics folder auto-expands when its AI Adoption child is the active
-  // view, and collapses when the user navigates away to a dashboard.
-  const [aiAnalyticsExpanded, setAiAnalyticsExpanded] = useState(aiAdoptionOpen);
+  // AI Analytics folder auto-expands when one of its views is active,
+  // and collapses when the user navigates away to a dashboard.
+  const [aiAnalyticsExpanded, setAiAnalyticsExpanded] = useState(activeAiAnalyticsView !== null);
   useEffect(() => {
-    setAiAnalyticsExpanded(aiAdoptionOpen);
-  }, [aiAdoptionOpen]);
+    setAiAnalyticsExpanded(activeAiAnalyticsView !== null);
+  }, [activeAiAnalyticsView]);
   const { user, logout } = useAuth();
 
   const staticDashboards = dashboards.filter((dashboard, index, all) => (
@@ -116,21 +131,28 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
 
         {aiAnalyticsExpanded && (
-          <button
-            className={`sidebar-item ${aiAdoptionOpen ? 'active' : ''}`}
-            onClick={onSelectAiAdoption}
-            style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left', paddingLeft: '24px' }}
-          >
-            <Zap size={16} />
-            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              AI Adoption
-            </span>
-          </button>
+          AI_ANALYTICS_NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeAiAnalyticsView === item.id;
+            return (
+              <button
+                key={item.id}
+                className={`sidebar-item ${isActive ? 'active' : ''}`}
+                onClick={() => onSelectAiAnalyticsView?.(item.id)}
+                style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left', paddingLeft: '24px' }}
+              >
+                <Icon size={16} />
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {item.label}
+                </span>
+              </button>
+            );
+          })
         )}
 
         {staticDashboards.map((dash) => {
           const id = dash.id || dash._id || '';
-          const isActive = !isDesignerOpen && !aiAdoptionOpen && !activeBillingView && selectedId === id;
+          const isActive = !isDesignerOpen && !activeAiAnalyticsView && !activeBillingView && selectedId === id;
           return (
             <button
               key={id}
@@ -187,7 +209,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         ) : (
           savedDashboards.map((dash) => {
             const id = dash.id || dash._id || '';
-            const isActive = !isDesignerOpen && !aiAdoptionOpen && !activeBillingView && selectedId === id;
+            const isActive = !isDesignerOpen && !activeAiAnalyticsView && !activeBillingView && selectedId === id;
             return (
               <button
                 key={id}

@@ -23,6 +23,7 @@ from billing.scheduler import billing_scheduler, setup_billing_jobs
 from billing.sync_service import run_full_backfill
 from billing_routes import billing_router
 from ai_adoption_routes import ai_adoption_router
+from ai_analytics_routes import ai_analytics_router
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -88,6 +89,7 @@ app.add_middleware(
 # Mount the Azure billing analytics router
 app.include_router(billing_router, prefix="/api/billing")
 app.include_router(ai_adoption_router, prefix="/api/ai-adoption")
+app.include_router(ai_analytics_router, prefix="/api")
 
 def serialize_mongo_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Helper to convert MongoDB ObjectId to JSON-serializable string identifier."""
