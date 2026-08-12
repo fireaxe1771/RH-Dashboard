@@ -96,12 +96,9 @@ resource "azurerm_container_app" "backend" {
         name  = "AZURE_BILLING_CLIENT_ID"
         value = var.azure_billing_client_id
       }
-      dynamic "env" {
-        for_each = var.azure_billing_client_secret != "" ? { "x" = "x" } : {}
-        content {
-          name        = "AZURE_BILLING_CLIENT_SECRET"
-          secret_name = "billing-client-secret"
-        }
+      env {
+        name        = "AZURE_BILLING_CLIENT_SECRET"
+        secret_name = "billing-client-secret"
       }
       env {
         name  = "AZURE_SUBSCRIPTION_ID"
@@ -123,23 +120,17 @@ resource "azurerm_container_app" "backend" {
       # --- AI / Embeddings ---
       # Azure OpenAI (Foundry) takes precedence when AZURE_OPENAI_ENDPOINT is set;
       # otherwise the app falls back to OpenAI.com via OPENAI_API_KEY.
-      dynamic "env" {
-        for_each = var.openai_api_key != "" ? { "x" = "x" } : {}
-        content {
-          name        = "OPENAI_API_KEY"
-          secret_name = "openai-api-key"
-        }
+      env {
+        name        = "OPENAI_API_KEY"
+        secret_name = "openai-api-key"
       }
       env {
         name  = "AZURE_OPENAI_ENDPOINT"
         value = var.azure_openai_endpoint
       }
-      dynamic "env" {
-        for_each = var.azure_openai_api_key != "" ? { "x" = "x" } : {}
-        content {
-          name        = "AZURE_OPENAI_API_KEY"
-          secret_name = "azure-openai-api-key"
-        }
+      env {
+        name        = "AZURE_OPENAI_API_KEY"
+        secret_name = "azure-openai-api-key"
       }
       env {
         name  = "AZURE_OPENAI_API_VERSION"
@@ -191,31 +182,23 @@ resource "azurerm_container_app" "backend" {
     value = var.azure_sql_password
   }
 
-  # Optional secrets — only emitted when the corresponding integration is
-  # configured. Azure Container Apps rejects secrets with empty values, so we
-  # use dynamic blocks to omit them entirely when the var is blank.
-  dynamic "secret" {
-    for_each = var.azure_billing_client_secret != "" ? { "x" = "x" } : {}
-    content {
-      name  = "billing-client-secret"
-      value = var.azure_billing_client_secret
-    }
+  # Optional secrets — Azure Container Apps rejects empty secret values, so we
+  # use a placeholder when the integration is not yet configured. The backend
+  # ignores these unless the corresponding feature is enabled (e.g.
+  # BILLING_SYNC_ENABLED=true or AZURE_OPENAI_ENDPOINT is set).
+  secret {
+    name  = "billing-client-secret"
+    value = var.azure_billing_client_secret != "" ? var.azure_billing_client_secret : "not-configured"
   }
 
-  dynamic "secret" {
-    for_each = var.openai_api_key != "" ? { "x" = "x" } : {}
-    content {
-      name  = "openai-api-key"
-      value = var.openai_api_key
-    }
+  secret {
+    name  = "openai-api-key"
+    value = var.openai_api_key != "" ? var.openai_api_key : "not-configured"
   }
 
-  dynamic "secret" {
-    for_each = var.azure_openai_api_key != "" ? { "x" = "x" } : {}
-    content {
-      name  = "azure-openai-api-key"
-      value = var.azure_openai_api_key
-    }
+  secret {
+    name  = "azure-openai-api-key"
+    value = var.azure_openai_api_key != "" ? var.azure_openai_api_key : "not-configured"
   }
 }
 
