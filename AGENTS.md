@@ -1,5 +1,34 @@
 # RecoveryHub Dashboard — Project Notes
 
+## CI: GitHub Actions Deploy Workflow (`.github/workflows/deploy.yml`)
+
+The deploy workflow authenticates to Azure using **OIDC federated identity**
+(not a long-lived `AZURE_CREDENTIALS` client-secret JSON). This requires:
+
+1. **`permissions: id-token: write`** at the top of the workflow (already set)
+   — lets the job request an OIDC token from GitHub.
+2. **GitHub repo secrets** consumed by the `azure/login@v1` step:
+   - `AZURE_CLIENT_ID` — App Registration (clientId)
+   - `AZURE_TENANT_ID` — Entra tenant
+   - `AZURE_SUBSCRIPTION_ID` — target subscription
+   (`AZURE_CLIENT_ID` / `AZURE_TENANT_ID` are also reused for the frontend
+   Vite build args and Terraform vars.)
+3. **Federated credential on the App Registration** (Azure portal → App
+   registrations → the app → Certificates & secrets → Federated credentials):
+   - Issuer: `https://token.actions.githubusercontent.com`
+   - Subject: `repo:<ORG>/<REPO>:ref:refs/heads/main`
+     (use the actual repo owner/name; for branch-scoped deploys)
+   - Audience: `api://AzureADTokenExchange` (default)
+   This is what lets the GitHub OIDC token impersonate the app — without it,
+   `azure/login` fails even when all three secrets are present.
+
+The legacy `creds: ${{ secrets.AZURE_CREDENTIALS }}` JSON form was removed in
+favor of this approach to eliminate client-secret rotation and the
+"Not all values are present" parsing failures.
+
+The test job pins **Node 22 LTS** (bumped from the deprecated Node 20, which
+GitHub Actions runners no longer support as of the 2025-09-19 deprecation).
+
 ## Deferred: Azure Billing Configuration
 
 **Status:** On hold as of 2026-07-17. All Azure billing setup work is deferred
@@ -122,7 +151,7 @@ The `dbo.claims_deleted` table (1M+ rows) is a heap with no useful index
 (only `nci_wi_claims_deleted_...` on `(dept_id, run_number)`). Queries against
 it do a full scan but complete in <1s on warm cache.
 
-The system-managed `Claims Calendar-Year Overview` dashboard is built by
+The system-managed `Claims Breakdown` dashboard is built by
 `backend/main.py::_build_default_claims_dashboard()` and upserted on every
 startup in `backend/main.py::_seed_default_dashboards()`. It defines these
 claim buckets:

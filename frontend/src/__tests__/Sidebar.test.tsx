@@ -54,6 +54,77 @@ describe('Sidebar Component', () => {
     expect(handleSelect).toHaveBeenCalledWith('dash-2');
   });
 
+  test('places static dashboards above saved dashboards and removes duplicate system entries', () => {
+    render(
+      <Sidebar
+        dashboards={[
+          { id: 'system-1', name: 'Claims Breakdown', created_by: 'system', widgets: [] },
+          { id: 'system-2', name: 'Claims Breakdown', created_by: 'system', widgets: [] },
+          { id: 'saved-1', name: 'My Dashboard', widgets: [] },
+        ]}
+        selectedId="system-1"
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        isDesignerOpen={false}
+        onSelectAiAnalyticsView={vi.fn()}
+      />
+    );
+
+    expect(screen.getAllByText('Claims Breakdown')).toHaveLength(1);
+    // Folder headers are always visible
+    expect(screen.getByText('AI Analytics')).toBeInTheDocument();
+    expect(screen.getByText('Azure Billing')).toBeInTheDocument();
+    expect(screen.getByText('Saved Dashboards')).toBeInTheDocument();
+    expect(screen.getByText('My Dashboard')).toBeInTheDocument();
+
+    // Folders are collapsed by default — children must NOT be rendered
+    expect(screen.queryByText('AI Adoption')).not.toBeInTheDocument();
+    expect(screen.queryByText('Cost Overview')).not.toBeInTheDocument();
+
+    const sidebar = screen.getByTestId('sidebar');
+    const sidebarText = sidebar.textContent ?? '';
+    expect(sidebarText.indexOf('AI Analytics')).toBeLessThan(sidebarText.indexOf('Saved Dashboards'));
+    expect(sidebarText.indexOf('Azure Billing')).toBeLessThan(sidebarText.indexOf('Saved Dashboards'));
+    expect(sidebarText.indexOf('Claims Breakdown')).toBeLessThan(sidebarText.indexOf('Saved Dashboards'));
+  });
+
+  test('expanding the AI Analytics folder reveals the AI Adoption child item', () => {
+    render(
+      <Sidebar
+        dashboards={[]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        isDesignerOpen={false}
+        onSelectAiAnalyticsView={vi.fn()}
+      />
+    );
+
+    // Collapsed by default (activeAiAnalyticsView defaults to null)
+    expect(screen.queryByText('AI Adoption')).not.toBeInTheDocument();
+
+    // Click the folder header to expand
+    fireEvent.click(screen.getByText('AI Analytics'));
+    expect(screen.getByText('AI Adoption')).toBeInTheDocument();
+  });
+
+  test('AI Analytics folder auto-expands when activeAiAnalyticsView is set', () => {
+    render(
+      <Sidebar
+        dashboards={[]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        isDesignerOpen={false}
+        activeAiAnalyticsView={'adoption'}
+        onSelectAiAnalyticsView={vi.fn()}
+      />
+    );
+
+    // Folder auto-expands so the active AI Adoption item is visible
+    expect(screen.getByText('AI Adoption')).toBeInTheDocument();
+  });
+
   test('triggers onNew when clicking New Dashboard button', () => {
     const handleNew = vi.fn();
     render(

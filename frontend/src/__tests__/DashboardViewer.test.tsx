@@ -63,10 +63,13 @@ describe('DashboardViewer', () => {
   });
 
   test('falls back to browser date when server date fetch fails', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     (api.getServerDate as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network error'));
     render(<DashboardViewer dashboard={MOCK_DASHBOARD} />);
     // Should still render widgets despite the error
     await waitFor(() => expect(screen.getByTestId('widget-w1')).toBeInTheDocument());
+    expect(warnSpy).toHaveBeenCalledOnce();
+    warnSpy.mockRestore();
   });
 
   test('renders FilterBar component', async () => {

@@ -350,7 +350,12 @@ class SQLConnection:
             "archived": pick("archived", "Archived", "IsArchived") or "archived",
             "user_id": pick("user_id", "UserID", "UserId", "AssignedUserID", "OwnerUserID", "ProcessorUserID") or "user_id",
             "Status": pick("Status", "ClaimStatus", "CurrentStatus") or "Status",
-            "DepartmentID": pick("DepartmentID", "DepartmentId") or "DepartmentID",
+            # Claims stores the department key as `dept_id` (snake_case); the
+            # Departments master table uses `ID`.  Listing dept_id here lets
+            # `_prepare_claims_query` rewrite legacy `DepartmentID` references
+            # and, critically, makes `_inject_claim_filters` emit the correct
+            # column when the Fire Department filter is applied.
+            "DepartmentID": pick("dept_id", "DepartmentID", "DepartmentId") or "DepartmentID",
             "DepartmentName": pick("DepartmentName", "Department", "DeptName") or "DepartmentName",
             "ProcessorID": pick("ProcessorID", "ProcessorId") or "ProcessorID",
             "ProcessorName": pick("ProcessorName", "Processor", "AssignedToName") or "ProcessorName",

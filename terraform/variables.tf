@@ -40,6 +40,18 @@ variable "mongodb_uri" {
   description = "MongoDB Connection String for application metadata storage."
 }
 
+variable "mongodb_db_name" {
+  type        = string
+  default     = "recoveryhub_dashboard"
+  description = "MongoDB database name for the dashboard's own metadata."
+}
+
+variable "recoveryhub_ai_mongodb_db_name" {
+  type        = string
+  default     = "AI_FEE_CALC_MULTI_AGENT_PROD"
+  description = "MongoDB database name for the RecoveryHub AI fee/resource configuration."
+}
+
 variable "azure_sql_host" {
   type        = string
   description = "Target Azure SQL Database host address."

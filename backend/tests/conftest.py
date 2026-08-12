@@ -133,6 +133,7 @@ def mock_db_manager(monkeypatch, mock_mongo_db):
     db_manager.disconnect = MagicMock()
     db_manager.init_indexes = AsyncMock()
     db_manager.db = mock_mongo_db
+    db_manager.ai_db = mock_mongo_db
 
     # Force get_db dependency to yield the mock db
     monkeypatch.setattr("database.db_manager.db", mock_mongo_db)

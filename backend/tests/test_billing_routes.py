@@ -84,7 +84,7 @@ def test_trigger_sync_rejects_invalid_type(test_client: TestClient):
 
 def test_trigger_sync_queues_valid_type(test_client: TestClient, monkeypatch):
     import billing_routes
-    monkeypatch.setitem(billing_routes._SYNC_DISPATCH, "daily", lambda db: AsyncMock()())
+    monkeypatch.setitem(billing_routes._SYNC_DISPATCH, "daily", lambda db: None)
     resp = test_client.post("/api/billing/sync/trigger", json={"sync_type": "daily"}, headers=AUTH)
     assert resp.status_code == 200
     assert resp.json() == {"status": "queued", "sync_type": "daily"}
