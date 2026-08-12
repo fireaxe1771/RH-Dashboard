@@ -13,6 +13,7 @@ import { AdvisorPanel } from './components/billing/AdvisorPanel';
 import { InvoiceList } from './components/billing/InvoiceList';
 import { ReservationDashboard } from './components/billing/ReservationDashboard';
 import { AICostAnalyst } from './components/billing/AICostAnalyst';
+import { AiAdoptionDashboard } from './components/ai/AiAdoptionDashboard';
 import { 
   Database, 
   ShieldAlert, 
@@ -46,6 +47,8 @@ export const AppContent: React.FC = () => {
 
   // Azure billing view state
   const [activeBillingView, setActiveBillingView] = useState<BillingView | null>(null);
+  // AI Adoption view state — defaults to open so AI Adoption is the landing view
+  const [aiAdoptionOpen, setAiAdoptionOpen] = useState(true);
 
   // Fetch dashboards on login
   useEffect(() => {
@@ -98,18 +101,21 @@ export const AppContent: React.FC = () => {
     setIsDesignerOpen(false);
     setEditDashboard(null);
     setActiveBillingView(null);
+    setAiAdoptionOpen(false);
     setSelectedId(id);
   };
 
   const handleSelectBillingView = (view: BillingView) => {
     setIsDesignerOpen(false);
     setEditDashboard(null);
+    setAiAdoptionOpen(false);
     setActiveBillingView(view);
   };
 
   const handleNewDashboard = () => {
     setEditDashboard(null);
     setActiveBillingView(null);
+    setAiAdoptionOpen(false);
     setIsDesignerOpen(true);
   };
 
@@ -117,8 +123,17 @@ export const AppContent: React.FC = () => {
     const current = dashboards.find(d => (d.id || d._id) === selectedId);
     if (current) {
       setEditDashboard(current);
+      setAiAdoptionOpen(false);
       setIsDesignerOpen(true);
     }
+  };
+
+  const handleSelectAiAdoption = () => {
+    setIsDesignerOpen(false);
+    setEditDashboard(null);
+    setActiveBillingView(null);
+    setSelectedId(null);
+    setAiAdoptionOpen(true);
   };
 
   const handleDeleteDashboard = async () => {
@@ -254,6 +269,22 @@ export const AppContent: React.FC = () => {
     }
   };
 
+  const title = aiAdoptionOpen
+    ? 'AI Adoption'
+    : activeBillingView
+      ? BILLING_VIEW_TITLES[activeBillingView].title
+      : isDesignerOpen
+        ? (editDashboard ? `Editing: ${editDashboard.name}` : "Create New Dashboard")
+        : (selectedDashboard ? selectedDashboard.name : "No Dashboard Selected");
+
+  const description = aiAdoptionOpen
+    ? 'Rank fire departments by draft activity and identify the highest-volume non-AI onboarding opportunities.'
+    : activeBillingView
+      ? BILLING_VIEW_TITLES[activeBillingView].description
+      : isDesignerOpen
+        ? "Design widgets using SQL queries or embed external reporting widgets"
+        : (selectedDashboard?.description || "Select a dashboard or create one to start mapping claims logs");
+
   return (
     <div className="app-container">
       {/* Sidebar navigation */}
@@ -265,6 +296,8 @@ export const AppContent: React.FC = () => {
         isDesignerOpen={isDesignerOpen}
         activeBillingView={activeBillingView}
         onSelectBillingView={handleSelectBillingView}
+        aiAdoptionOpen={aiAdoptionOpen}
+        onSelectAiAdoption={handleSelectAiAdoption}
       />
 
       {/* Main app body area */}
@@ -272,22 +305,10 @@ export const AppContent: React.FC = () => {
         
         {/* Top Navbar */}
         <Navbar
-          title={
-            activeBillingView
-              ? BILLING_VIEW_TITLES[activeBillingView].title
-              : isDesignerOpen 
-                ? (editDashboard ? `Editing: ${editDashboard.name}` : "Create New Dashboard")
-                : (selectedDashboard ? selectedDashboard.name : "No Dashboard Selected")
-          }
-          description={
-            activeBillingView
-              ? BILLING_VIEW_TITLES[activeBillingView].description
-              : isDesignerOpen
-                ? "Design widgets using SQL queries or embed external reporting widgets"
-                : (selectedDashboard?.description || "Select a dashboard or create one to start mapping claims logs")
-          }
+          title={title}
+          description={description}
           isConnecting={dashboardsLoading}
-          onRefresh={!isDesignerOpen && !activeBillingView ? loadDashboards : undefined}
+          onRefresh={!isDesignerOpen && !activeBillingView && !aiAdoptionOpen ? loadDashboards : undefined}
           dbStatus={dashboardsError ? 'error' : 'connected'}
         />
 
@@ -313,7 +334,9 @@ export const AppContent: React.FC = () => {
             </div>
           )}
 
-          {activeBillingView ? (
+          {aiAdoptionOpen ? (
+            <AiAdoptionDashboard />
+          ) : activeBillingView ? (
             renderBillingView()
           ) : isDesignerOpen ? (
             <DashboardDesigner
@@ -332,14 +355,16 @@ export const AppContent: React.FC = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
               
               {/* Dashboard operational buttons (edit / delete) */}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-                <button className="btn" onClick={handleEditDashboard} style={{ padding: '8px 14px', fontSize: '13px' }}>
-                  <span>Edit Layout</span>
-                </button>
-                <button className="btn btn-danger" onClick={handleDeleteDashboard} style={{ padding: '8px 14px', fontSize: '13px' }}>
-                  <span>Delete Dashboard</span>
-                </button>
-              </div>
+              {selectedDashboard.created_by !== 'system' && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                  <button className="btn" onClick={handleEditDashboard} style={{ padding: '8px 14px', fontSize: '13px' }}>
+                    <span>Edit Layout</span>
+                  </button>
+                  <button className="btn btn-danger" onClick={handleDeleteDashboard} style={{ padding: '8px 14px', fontSize: '13px' }}>
+                    <span>Delete Dashboard</span>
+                  </button>
+                </div>
+              )}
 
               {/* Renders widgets and grid */}
               <DashboardViewer dashboard={selectedDashboard} />

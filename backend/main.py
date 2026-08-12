@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from bson import ObjectId
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import List, Dict, Any
 
 from config import settings
@@ -22,6 +22,7 @@ from models import (
 from billing.scheduler import billing_scheduler, setup_billing_jobs
 from billing.sync_service import run_full_backfill
 from billing_routes import billing_router
+from ai_adoption_routes import ai_adoption_router
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -86,6 +87,7 @@ app.add_middleware(
 
 # Mount the Azure billing analytics router
 app.include_router(billing_router, prefix="/api/billing")
+app.include_router(ai_adoption_router, prefix="/api/ai-adoption")
 
 def serialize_mongo_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Helper to convert MongoDB ObjectId to JSON-serializable string identifier."""
@@ -117,7 +119,7 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
     )
 
     return {
-        "name": "Claims Calendar-Year Overview",
+        "name": "Claims Breakdown",
         "description": (
             "Year-to-date claims dashboard with dynamic date-range filtering "
             "and automatic prior-period comparison."
@@ -412,6 +414,9 @@ def _build_default_claims_dashboard() -> Dict[str, Any]:
                 "layout": {"x": 0, "y": 18, "w": 12, "h": 4},
                 "config": {"xAxisKey": "Month", "yAxisKeys": ["Claims"], "colors": ["#6366f1"]},
             },
+
+            # NOTE: The "Top Fire Departments by Drafts" grid has been moved
+            # to the standalone AI Adoption dashboard (see /api/ai-adoption/departments).
         ],
     }
 
@@ -428,10 +433,17 @@ async def _seed_default_dashboards() -> None:
         return
 
     dashboards = db_manager.db["dashboards"]
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     payload = _build_default_claims_dashboard()
 
-    existing = await dashboards.find_one({"created_by": "system"})
+    # Match the current name OR any legacy names so that a rename in code
+    # migrates the existing system dashboard in place instead of leaving an
+    # orphaned copy behind.
+    legacy_names = {"Claims Calendar-Year Overview"}
+    existing_system = await dashboards.find(
+        {"created_by": "system", "name": {"$in": [payload["name"], *legacy_names]}}
+    ).sort("created_at", 1).to_list(length=100)
+    existing = existing_system[0] if existing_system else None
     if existing:
         # Preserve original creation timestamp, update everything else
         payload["updated_at"] = now
@@ -439,13 +451,17 @@ async def _seed_default_dashboards() -> None:
             {"_id": existing["_id"]},
             {"$set": payload},
         )
-        logger.info("Updated system dashboard: Claims Calendar-Year Overview")
+        duplicate_ids = [dashboard["_id"] for dashboard in existing_system[1:]]
+        if duplicate_ids:
+            await dashboards.delete_many({"_id": {"$in": duplicate_ids}})
+            logger.info("Removed %d duplicate system dashboards", len(duplicate_ids))
+        logger.info("Updated system dashboard: %s", payload["name"])
     else:
         payload["created_by"] = "system"
         payload["created_at"] = now
         payload["updated_at"] = now
         await dashboards.insert_one(payload)
-        logger.info("Seeded default claims dashboard: Claims Calendar-Year Overview")
+        logger.info("Seeded default claims dashboard: %s", payload["name"])
 
 # --- DASHBOARD METADATA ENDPOINTS ---
 
@@ -455,10 +471,25 @@ async def _seed_default_dashboards() -> None:
     dependencies=[Depends(get_current_user)]
 )
 async def list_dashboards(db = Depends(get_db)):
-    """Retrieves all saved dashboard layout configurations from MongoDB."""
+    """Retrieves system dashboards once, followed by user-saved dashboards."""
     cursor = db["dashboards"].find().sort("created_at", -1)
     dashboards = await cursor.to_list(length=100)
-    return [serialize_mongo_doc(dash) for dash in dashboards]
+    seen_system_names = set()
+    system_dashboards = []
+    saved_dashboards = []
+    for dashboard in dashboards:
+        if dashboard.get("created_by") == "system":
+            name = dashboard.get("name")
+            if name in seen_system_names:
+                continue
+            seen_system_names.add(name)
+            system_dashboards.append(dashboard)
+        else:
+            saved_dashboards.append(dashboard)
+    return [
+        serialize_mongo_doc(dash)
+        for dash in [*system_dashboards, *saved_dashboards]
+    ]
 
 @app.get(
     "/api/dashboards/{dashboard_id}", 
@@ -490,8 +521,8 @@ async def create_dashboard(
     
     # Inject metadata
     doc["created_by"] = user.get("preferred_username") or user.get("upn") or "anonymous"
-    doc["created_at"] = datetime.utcnow()
-    doc["updated_at"] = datetime.utcnow()
+    doc["created_at"] = datetime.now(UTC)
+    doc["updated_at"] = datetime.now(UTC)
     
     result = await db["dashboards"].insert_one(doc)
     doc["_id"] = result.inserted_id
@@ -512,8 +543,14 @@ async def update_dashboard(
     if not ObjectId.is_valid(dashboard_id):
         raise HTTPException(status_code=400, detail="Invalid dashboard ID format.")
         
+    existing = await db["dashboards"].find_one({"_id": ObjectId(dashboard_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Dashboard not found.")
+    if existing.get("created_by") == "system":
+        raise HTTPException(status_code=403, detail="System dashboards cannot be changed.")
+
     doc = dashboard.model_dump()
-    doc["updated_at"] = datetime.utcnow()
+    doc["updated_at"] = datetime.now(UTC)
     
     result = await db["dashboards"].find_one_and_update(
         {"_id": ObjectId(dashboard_id)},
@@ -535,6 +572,12 @@ async def delete_dashboard(dashboard_id: str, db = Depends(get_db)):
     if not ObjectId.is_valid(dashboard_id):
         raise HTTPException(status_code=400, detail="Invalid dashboard ID format.")
         
+    existing = await db["dashboards"].find_one({"_id": ObjectId(dashboard_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Dashboard not found.")
+    if existing.get("created_by") == "system":
+        raise HTTPException(status_code=403, detail="System dashboards cannot be deleted.")
+
     result = await db["dashboards"].delete_one({"_id": ObjectId(dashboard_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Dashboard not found.")

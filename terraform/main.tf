@@ -56,7 +56,11 @@ resource "azurerm_container_app" "backend" {
       }
       env {
         name  = "MONGODB_DB_NAME"
-        value = "recoveryhub_dashboard"
+        value = var.mongodb_db_name
+      }
+      env {
+        name  = "RECOVERYHUB_AI_MONGODB_DB_NAME"
+        value = var.recoveryhub_ai_mongodb_db_name
       }
       env {
         name  = "AZURE_SQL_HOST"

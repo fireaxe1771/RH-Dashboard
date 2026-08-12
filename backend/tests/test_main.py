@@ -1,6 +1,12 @@
+import asyncio
+from datetime import UTC, datetime, timedelta
+
 import pytest
+from bson import ObjectId
 from fastapi.testclient import TestClient
-from main import _build_default_claims_dashboard
+
+from database import db_manager
+from main import _build_default_claims_dashboard, _seed_default_dashboards
 
 def test_unauthorized_access(test_client: TestClient):
     """Asserts that requests lacking header tokens return 401 Unauthorized."""
@@ -182,3 +188,114 @@ def test_default_dashboard_widget_ids():
         "claims-monthly-trend",
     }
     assert expected_ids == widget_ids
+
+
+def _insert_dashboard(document):
+    asyncio.run(db_manager.db["dashboards"].insert_one(document))
+    return str(document["_id"])
+
+
+def test_system_dashboard_cannot_be_updated_or_deleted(test_client: TestClient):
+    """System-managed dashboards remain immutable through the CRUD API."""
+    dashboard_id = ObjectId()
+    _insert_dashboard({
+        "_id": dashboard_id,
+        "name": "Claims Breakdown",
+        "description": "System dashboard",
+        "widgets": [],
+        "created_by": "system",
+        "created_at": datetime.now(UTC),
+    })
+    headers = {"Authorization": "Bearer valid-mock-token"}
+    payload = {"name": "Changed", "description": "Changed", "widgets": []}
+
+    response = test_client.put(f"/api/dashboards/{dashboard_id}", json=payload, headers=headers)
+    assert response.status_code == 403
+
+    response = test_client.delete(f"/api/dashboards/{dashboard_id}", headers=headers)
+    assert response.status_code == 403
+
+    stored = asyncio.run(db_manager.db["dashboards"].find_one({"_id": dashboard_id}))
+    assert stored["name"] == "Claims Breakdown"
+
+
+def test_list_dashboards_deduplicates_system_entries_and_places_them_first(
+    test_client: TestClient,
+):
+    """The API returns one system dashboard before user-saved dashboards."""
+    now = datetime.now(UTC)
+    _insert_dashboard({
+        "_id": ObjectId(),
+        "name": "Saved Dashboard",
+        "widgets": [],
+        "created_by": "john.doe@streamlineas.com",
+        "created_at": now,
+    })
+    _insert_dashboard({
+        "_id": ObjectId(),
+        "name": "Claims Breakdown",
+        "widgets": [],
+        "created_by": "system",
+        "created_at": now - timedelta(days=2),
+    })
+    _insert_dashboard({
+        "_id": ObjectId(),
+        "name": "Claims Breakdown",
+        "widgets": [],
+        "created_by": "system",
+        "created_at": now - timedelta(days=1),
+    })
+
+    response = test_client.get(
+        "/api/dashboards",
+        headers={"Authorization": "Bearer valid-mock-token"},
+    )
+
+    assert response.status_code == 200
+    dashboards = response.json()
+    assert [dashboard["name"] for dashboard in dashboards] == [
+        "Claims Breakdown",
+        "Saved Dashboard",
+    ]
+
+
+def test_seed_default_dashboard_removes_duplicate_system_entries(monkeypatch):
+    """Startup seeding keeps the oldest system dashboard and removes duplicates.
+
+    Also covers the rename path: dashboards stored under a legacy name are
+    migrated to the current name in place.
+    """
+    monkeypatch.setenv("TESTING", "false")
+    now = datetime.now(UTC)
+    _insert_dashboard({
+        "_id": ObjectId(),
+        "name": "Claims Calendar-Year Overview",
+        "widgets": [],
+        "created_by": "system",
+        "created_at": now - timedelta(days=2),
+    })
+    _insert_dashboard({
+        "_id": ObjectId(),
+        "name": "Claims Calendar-Year Overview",
+        "widgets": [],
+        "created_by": "system",
+        "created_at": now - timedelta(days=1),
+    })
+
+    asyncio.run(_seed_default_dashboards())
+
+    dashboards = asyncio.run(
+        db_manager.db["dashboards"].find(
+            {"created_by": "system", "name": "Claims Breakdown"}
+        ).to_list(length=100)
+    )
+    assert len(dashboards) == 1
+    assert dashboards[0]["widgets"] == _build_default_claims_dashboard()["widgets"]
+
+    # Legacy-named documents must all be migrated (no orphans left behind)
+    legacy = asyncio.run(
+        db_manager.db["dashboards"].find(
+            {"created_by": "system", "name": "Claims Calendar-Year Overview"}
+        ).to_list(length=100)
+    )
+    assert legacy == []

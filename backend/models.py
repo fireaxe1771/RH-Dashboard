@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, ConfigDict, Field, EmailStr
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
@@ -47,11 +47,7 @@ class DashboardResponse(DashboardBase):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    class Config:
-        populate_by_name = True
-        json_encoders = {
-            datetime: lambda dt: dt.isoformat()
-        }
+    model_config = ConfigDict(populate_by_name=True)
 
 # --- QUERY & FILTER MODELS ---
 
@@ -89,5 +85,4 @@ class UserResponse(UserBase):
     role: str = "viewer"
     created_at: datetime
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)

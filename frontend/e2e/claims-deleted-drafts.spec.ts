@@ -17,7 +17,7 @@ const CLAIMS_DASHBOARD_WITH_DELETED_DRAFTS = [
   {
     _id: 'dash-claims',
     id: 'dash-claims',
-    name: 'Claims Calendar-Year Overview',
+    name: 'Claims Breakdown',
     description: 'Year-to-date claims dashboard',
     created_by: 'dev.local@streamlineas.com',
     created_at: '2026-01-01T00:00:00Z',
@@ -60,7 +60,7 @@ test.describe('Claims dashboard: Deleted Drafts YTD widget', () => {
 
     // Open the Claims dashboard from the sidebar.
     const sidebar = page.getByTestId('sidebar');
-    await sidebar.getByText('Claims Calendar-Year Overview').click();
+    await sidebar.getByText('Claims Breakdown').click();
 
     // Wait for the dashboard viewer to mount its widget grid.
     const viewer = page.getByTestId('dashboard-viewer');
@@ -83,7 +83,7 @@ test.describe('Claims dashboard: Deleted Drafts YTD widget', () => {
     await page.goto('/');
 
     const sidebar = page.getByTestId('sidebar');
-    await sidebar.getByText('Claims Calendar-Year Overview').click();
+    await sidebar.getByText('Claims Breakdown').click();
 
     const viewer = page.getByTestId('dashboard-viewer');
     await expect(viewer).toBeVisible({ timeout: 10000 });
