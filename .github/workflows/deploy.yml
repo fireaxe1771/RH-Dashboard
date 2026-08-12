@@ -89,7 +89,7 @@ jobs:
       - name: Build & Push Frontend Image
         run: |
           docker build \
-            --build-arg VITE_AZURE_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }} \
+            --build-arg VITE_AZURE_CLIENT_ID=${{ secrets.FRONTEND_CLIENT_ID }} \
             --build-arg VITE_AZURE_TENANT_ID=${{ secrets.AZURE_TENANT_ID }} \
             -t ${{ secrets.ACR_NAME }}.azurecr.io/rh-dashboard-frontend:${{ github.sha }} \
             ./frontend
