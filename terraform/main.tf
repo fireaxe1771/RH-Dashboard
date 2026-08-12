@@ -116,7 +116,7 @@ resource "azurerm_container_app" "backend" {
       }
       env {
         name  = "AZURE_CLIENT_ID"
-        value = var.azure_client_id
+        value = var.azure_spa_client_id
       }
       env {
         name  = "AZURE_TENANT_ID"

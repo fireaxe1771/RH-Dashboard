@@ -31,9 +31,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy backend files
 COPY . .
 
-EXPOSE 8001
+EXPOSE 8000
 
 # Run FastAPI app via Uvicorn server with multiple workers so concurrent
 # widget queries are dispatched to separate OS-level processes instead of
-# all sharing one thread-pool.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "4"]
+# all sharing one thread-pool. PORT is injected by the Container App runtime
+# and must match the ingress target_port (8000 in Terraform).
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 4"]

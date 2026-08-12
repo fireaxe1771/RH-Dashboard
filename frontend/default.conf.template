@@ -9,10 +9,22 @@ server {
     location /api/ {
         proxy_pass ${BACKEND_URL};
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        # Send the backend's own FQDN as Host so the shared Azure Container Apps
+        # ingress routes the request to the backend app. Sending the frontend
+        # host ($host) causes the ACA ingress to reset the TLS connection
+        # because no container app matches that host on the backend's IP.
+        # The original frontend host is preserved via X-Forwarded-Host.
+        proxy_set_header Host $proxy_host;
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+
+        # The ACA ingress (Envoy) requires SNI to route HTTPS upstreams.
+        # Without proxy_ssl_server_name, nginx omits SNI and Envoy resets the
+        # connection during the TLS handshake (502 Bad Gateway).
+        proxy_ssl_server_name on;
+        proxy_ssl_verify off;
 
         # SQL queries against Azure temporal tables can take 10-30s each;
         # with 12 widgets loading in parallel the backend needs headroom.
