@@ -24,10 +24,10 @@ variable "azure_billing_account_id" {
 variable "azure_billing_account_type" {
   type        = string
   default     = "MOSP"
-  description = "Billing account agreement type: EA, MCA, or MOSP."
+  description = "Billing account agreement type: EA, MCA, or MOSP. Leave empty when billing is not configured."
   validation {
-    condition     = contains(["EA", "MCA", "MOSP"], var.azure_billing_account_type)
-    error_message = "azure_billing_account_type must be EA, MCA, or MOSP."
+    condition     = var.azure_billing_account_type == "" || contains(["EA", "MCA", "MOSP"], var.azure_billing_account_type)
+    error_message = "azure_billing_account_type must be EA, MCA, or MOSP (or empty when billing is not configured)."
   }
 }
 
