@@ -86,11 +86,7 @@ variable "azure_sql_authentication" {
 variable "azure_sql_tenant_id" {
   type        = string
   default     = ""
-  description = "Azure AD tenant ID for Azure AD SQL authentication. Required when azure_sql_authentication is 'azure-ad'."
-  validation {
-    condition     = var.azure_sql_authentication != "azure-ad" || var.azure_sql_tenant_id != ""
-    error_message = "azure_sql_tenant_id is required when azure_sql_authentication is 'azure-ad'."
-  }
+  description = "Azure AD tenant ID for Azure AD SQL authentication. Required when azure_sql_authentication is 'azure-ad'. Backend config.py validates this at startup."
 }
 
 # --- Authentication ---
