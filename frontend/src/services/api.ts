@@ -2,6 +2,9 @@
  * API client service for talking to the FastAPI backend.
  */
 
+import { AccountInfo, IPublicClientApplication } from '@azure/msal-browser';
+import { loginRequest } from '../authConfig';
+
 export interface WidgetLayout {
   x: number;
   y: number;
@@ -60,6 +63,20 @@ export interface SQLTableSchema {
 
 let activeToken: string | null = null;
 
+// Reference to the MSAL instance, set by setMsalInstance(). Used to
+// silently refresh expired tokens when the API returns 401.
+let msalInstance: IPublicClientApplication | null = null;
+let msalAccount: AccountInfo | null = null;
+
+/**
+ * Sets the MSAL instance and active account so the API layer can
+ * silently refresh expired tokens on 401 responses.
+ */
+export function setMsalInstance(instance: IPublicClientApplication, account: AccountInfo | null): void {
+  msalInstance = instance;
+  msalAccount = account;
+}
+
 /**
  * Sets the active OAuth bearer token for MSAL authenticated queries.
  */
@@ -72,6 +89,27 @@ export function setAuthToken(token: string | null): void {
  */
 export function getAuthToken(): string | null {
   return activeToken;
+}
+
+/**
+ * Attempts to silently refresh the idToken via MSAL. Returns the new token
+ * or null if refresh fails (caller should let the 401 propagate).
+ */
+async function refreshToken(): Promise<string | null> {
+  if (!msalInstance || !msalAccount) return null;
+  try {
+    const response = await msalInstance.acquireTokenSilent({
+      ...loginRequest,
+      account: msalAccount,
+    });
+    if (response.idToken) {
+      activeToken = response.idToken;
+      return response.idToken;
+    }
+  } catch (error) {
+    console.error("Silent token refresh failed on 401:", error);
+  }
+  return null;
 }
 
 /**
@@ -91,15 +129,30 @@ function getHeaders(): HeadersInit {
 
 /**
  * Custom fetch wrapper to handle errors consistently.
+ * On 401, attempts a silent token refresh and retries the request once.
  */
 async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      ...getHeaders(),
-      ...options.headers,
-    },
-  });
+  const doFetch = async (): Promise<Response> => {
+    return fetch(url, {
+      ...options,
+      headers: {
+        ...getHeaders(),
+        ...options.headers,
+      },
+    });
+  };
+
+  let response = await doFetch();
+
+  // If we got a 401 and we have an MSAL instance, try refreshing the token
+  // and retrying once. This handles expired tokens gracefully without
+  // bouncing the user to a full re-login.
+  if (response.status === 401 && msalInstance) {
+    const newToken = await refreshToken();
+    if (newToken) {
+      response = await doFetch();
+    }
+  }
 
   if (!response.ok) {
     let errorMessage = `HTTP Error ${response.status}`;

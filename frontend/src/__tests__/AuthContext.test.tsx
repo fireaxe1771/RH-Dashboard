@@ -29,6 +29,7 @@ vi.mock('@azure/msal-react', () => ({
 
 vi.mock('../services/api', () => ({
   setAuthToken: vi.fn(),
+  setMsalInstance: vi.fn(),
 }));
 
 import { setAuthToken } from '../services/api';

@@ -18,7 +18,11 @@ export const msalConfig: Configuration = {
     postLogoutRedirectUri: window.location.origin,
   },
   cache: {
-    cacheLocation: "sessionStorage", // This configures where your cache will be stored
+    // Use localStorage so the MSAL cache (account, tokens, auth state)
+    // survives tab close/reopen. sessionStorage is wiped when the tab
+    // closes, forcing a full re-login on every new tab — which causes
+    // the flaky authentication behavior on refresh/reopen.
+    cacheLocation: "localStorage",
     storeAuthStateInCookie: false, // Set this to "true" if you are having issues on IE11 or Edge
   }
 };
