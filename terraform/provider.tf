@@ -10,6 +10,14 @@ terraform {
       version = "~> 0.9"
     }
   }
+
+  backend "azurerm" {
+    resource_group_name  = "ContainerApplications"
+    storage_account_name = "rhtfstate001"
+    container_name       = "tfstate"
+    key                  = "rh-dashboard.tfstate"
+    use_oidc             = true
+  }
 }
 
 provider "azurerm" {
