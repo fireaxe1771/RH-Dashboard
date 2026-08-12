@@ -115,6 +115,14 @@ resource "azurerm_container_app" "backend" {
         secret_name = "sql-password"
       }
       env {
+        name  = "AZURE_SQL_AUTHENTICATION"
+        value = var.azure_sql_authentication
+      }
+      env {
+        name  = "AZURE_SQL_TENANT_ID"
+        value = var.azure_sql_tenant_id
+      }
+      env {
         name  = "AZURE_CLIENT_ID"
         value = var.azure_spa_client_id
       }

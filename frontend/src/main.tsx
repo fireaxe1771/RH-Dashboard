@@ -7,10 +7,6 @@ import { AuthProvider } from './components/AuthContext';
 import { App } from './App';
 import './index.css';
 
-// MSAL.js v3 requires async initialization before any other API call.
-// We create the instance, await initialize(), then render the React tree.
-const msalInstance = new PublicClientApplication(msalConfig);
-
 function renderFatalError(message: string, detail?: string) {
   const root = document.getElementById('root');
   if (!root) return;
@@ -26,8 +22,15 @@ function renderFatalError(message: string, detail?: string) {
   `;
 }
 
+// MSAL.js v3 requires async initialization before any other API call.
+// The PublicClientApplication constructor can also throw if the config is
+// invalid (e.g. empty clientId), so we construct it inside the try block
+// rather than at module scope — otherwise the throw bypasses bootstrap()
+// and the user gets a blank page instead of the fatal error screen.
 async function bootstrap() {
+  let msalInstance: PublicClientApplication;
   try {
+    msalInstance = new PublicClientApplication(msalConfig);
     await msalInstance.initialize();
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

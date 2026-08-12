@@ -73,6 +73,26 @@ variable "azure_sql_password" {
   description = "Password credentials for target SQL database."
 }
 
+variable "azure_sql_authentication" {
+  type        = string
+  default     = "azure-ad"
+  description = "SQL auth mode: 'basic' (SQL username/password) or 'azure-ad' (service principal token auth)."
+  validation {
+    condition     = contains(["basic", "azure-ad"], var.azure_sql_authentication)
+    error_message = "azure_sql_authentication must be 'basic' or 'azure-ad'."
+  }
+}
+
+variable "azure_sql_tenant_id" {
+  type        = string
+  default     = ""
+  description = "Azure AD tenant ID for Azure AD SQL authentication. Required when azure_sql_authentication is 'azure-ad'."
+  validation {
+    condition     = var.azure_sql_authentication != "azure-ad" || var.azure_sql_tenant_id != ""
+    error_message = "azure_sql_tenant_id is required when azure_sql_authentication is 'azure-ad'."
+  }
+}
+
 # --- Authentication ---
 variable "azure_client_id" {
   type        = string
