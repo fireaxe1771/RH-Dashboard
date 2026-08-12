@@ -66,7 +66,7 @@ describe('Sidebar Component', () => {
         onSelect={vi.fn()}
         onNew={vi.fn()}
         isDesignerOpen={false}
-        onSelectAiAdoption={vi.fn()}
+        onSelectAiAnalyticsView={vi.fn()}
       />
     );
 
@@ -96,11 +96,11 @@ describe('Sidebar Component', () => {
         onSelect={vi.fn()}
         onNew={vi.fn()}
         isDesignerOpen={false}
-        onSelectAiAdoption={vi.fn()}
+        onSelectAiAnalyticsView={vi.fn()}
       />
     );
 
-    // Collapsed by default (aiAdoptionOpen defaults to false)
+    // Collapsed by default (activeAiAnalyticsView defaults to null)
     expect(screen.queryByText('AI Adoption')).not.toBeInTheDocument();
 
     // Click the folder header to expand
@@ -108,7 +108,7 @@ describe('Sidebar Component', () => {
     expect(screen.getByText('AI Adoption')).toBeInTheDocument();
   });
 
-  test('AI Analytics folder auto-expands when aiAdoptionOpen is true', () => {
+  test('AI Analytics folder auto-expands when activeAiAnalyticsView is set', () => {
     render(
       <Sidebar
         dashboards={[]}
@@ -116,8 +116,8 @@ describe('Sidebar Component', () => {
         onSelect={vi.fn()}
         onNew={vi.fn()}
         isDesignerOpen={false}
-        aiAdoptionOpen={true}
-        onSelectAiAdoption={vi.fn()}
+        activeAiAnalyticsView={'adoption'}
+        onSelectAiAnalyticsView={vi.fn()}
       />
     );
 

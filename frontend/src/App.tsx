@@ -14,6 +14,9 @@ import { InvoiceList } from './components/billing/InvoiceList';
 import { ReservationDashboard } from './components/billing/ReservationDashboard';
 import { AICostAnalyst } from './components/billing/AICostAnalyst';
 import { AiAdoptionDashboard } from './components/ai/AiAdoptionDashboard';
+import { AiOutcomesDashboard } from './components/ai/AiOutcomesDashboard';
+import { AiDiagnosticsDashboard } from './components/ai/AiDiagnosticsDashboard';
+import { AiAnalyticsView } from './components/Sidebar';
 import { 
   Database, 
   ShieldAlert, 
@@ -47,8 +50,8 @@ export const AppContent: React.FC = () => {
 
   // Azure billing view state
   const [activeBillingView, setActiveBillingView] = useState<BillingView | null>(null);
-  // AI Adoption view state — defaults to open so AI Adoption is the landing view
-  const [aiAdoptionOpen, setAiAdoptionOpen] = useState(true);
+  // AI Analytics view state — defaults to 'adoption' so AI Adoption is the landing view
+  const [activeAiAnalyticsView, setActiveAiAnalyticsView] = useState<AiAnalyticsView | null>('adoption');
 
   // Fetch dashboards on login
   useEffect(() => {
@@ -101,21 +104,21 @@ export const AppContent: React.FC = () => {
     setIsDesignerOpen(false);
     setEditDashboard(null);
     setActiveBillingView(null);
-    setAiAdoptionOpen(false);
+    setActiveAiAnalyticsView(null);
     setSelectedId(id);
   };
 
   const handleSelectBillingView = (view: BillingView) => {
     setIsDesignerOpen(false);
     setEditDashboard(null);
-    setAiAdoptionOpen(false);
+    setActiveAiAnalyticsView(null);
     setActiveBillingView(view);
   };
 
   const handleNewDashboard = () => {
     setEditDashboard(null);
     setActiveBillingView(null);
-    setAiAdoptionOpen(false);
+    setActiveAiAnalyticsView(null);
     setIsDesignerOpen(true);
   };
 
@@ -123,17 +126,17 @@ export const AppContent: React.FC = () => {
     const current = dashboards.find(d => (d.id || d._id) === selectedId);
     if (current) {
       setEditDashboard(current);
-      setAiAdoptionOpen(false);
+      setActiveAiAnalyticsView(null);
       setIsDesignerOpen(true);
     }
   };
 
-  const handleSelectAiAdoption = () => {
+  const handleSelectAiAnalyticsView = (view: AiAnalyticsView) => {
     setIsDesignerOpen(false);
     setEditDashboard(null);
     setActiveBillingView(null);
     setSelectedId(null);
-    setAiAdoptionOpen(true);
+    setActiveAiAnalyticsView(view);
   };
 
   const handleDeleteDashboard = async () => {
@@ -269,16 +272,31 @@ export const AppContent: React.FC = () => {
     }
   };
 
-  const title = aiAdoptionOpen
-    ? 'AI Adoption'
+  const AI_ANALYTICS_TITLES: Record<AiAnalyticsView, { title: string; description: string }> = {
+    adoption: {
+      title: 'AI Adoption',
+      description: 'Rank fire departments by draft activity and identify the highest-volume non-AI onboarding opportunities.',
+    },
+    outcomes: {
+      title: 'AI Outcomes & Success',
+      description: 'Track AI invoice lifecycle outcomes, release rates, rejection reasons, and billability evaluation.',
+    },
+    diagnostics: {
+      title: 'AI Diagnostics',
+      description: 'Monitor AI execution health, confidence calibration, retry patterns, writeback failures, and agent stats.',
+    },
+  };
+
+  const title = activeAiAnalyticsView
+    ? AI_ANALYTICS_TITLES[activeAiAnalyticsView].title
     : activeBillingView
       ? BILLING_VIEW_TITLES[activeBillingView].title
       : isDesignerOpen
         ? (editDashboard ? `Editing: ${editDashboard.name}` : "Create New Dashboard")
         : (selectedDashboard ? selectedDashboard.name : "No Dashboard Selected");
 
-  const description = aiAdoptionOpen
-    ? 'Rank fire departments by draft activity and identify the highest-volume non-AI onboarding opportunities.'
+  const description = activeAiAnalyticsView
+    ? AI_ANALYTICS_TITLES[activeAiAnalyticsView].description
     : activeBillingView
       ? BILLING_VIEW_TITLES[activeBillingView].description
       : isDesignerOpen
@@ -296,8 +314,8 @@ export const AppContent: React.FC = () => {
         isDesignerOpen={isDesignerOpen}
         activeBillingView={activeBillingView}
         onSelectBillingView={handleSelectBillingView}
-        aiAdoptionOpen={aiAdoptionOpen}
-        onSelectAiAdoption={handleSelectAiAdoption}
+        activeAiAnalyticsView={activeAiAnalyticsView}
+        onSelectAiAnalyticsView={handleSelectAiAnalyticsView}
       />
 
       {/* Main app body area */}
@@ -308,7 +326,7 @@ export const AppContent: React.FC = () => {
           title={title}
           description={description}
           isConnecting={dashboardsLoading}
-          onRefresh={!isDesignerOpen && !activeBillingView && !aiAdoptionOpen ? loadDashboards : undefined}
+          onRefresh={!isDesignerOpen && !activeBillingView && !activeAiAnalyticsView ? loadDashboards : undefined}
           dbStatus={dashboardsError ? 'error' : 'connected'}
         />
 
@@ -334,8 +352,12 @@ export const AppContent: React.FC = () => {
             </div>
           )}
 
-          {aiAdoptionOpen ? (
+          {activeAiAnalyticsView === 'adoption' ? (
             <AiAdoptionDashboard />
+          ) : activeAiAnalyticsView === 'outcomes' ? (
+            <AiOutcomesDashboard />
+          ) : activeAiAnalyticsView === 'diagnostics' ? (
+            <AiDiagnosticsDashboard />
           ) : activeBillingView ? (
             renderBillingView()
           ) : isDesignerOpen ? (
