@@ -96,9 +96,12 @@ resource "azurerm_container_app" "backend" {
         name  = "AZURE_BILLING_CLIENT_ID"
         value = var.azure_billing_client_id
       }
-      env {
-        name        = "AZURE_BILLING_CLIENT_SECRET"
-        secret_name = "billing-client-secret"
+      dynamic "env" {
+        for_each = var.azure_billing_client_secret != "" ? [1] : []
+        content {
+          name        = "AZURE_BILLING_CLIENT_SECRET"
+          secret_name = "billing-client-secret"
+        }
       }
       env {
         name  = "AZURE_SUBSCRIPTION_ID"
@@ -120,17 +123,23 @@ resource "azurerm_container_app" "backend" {
       # --- AI / Embeddings ---
       # Azure OpenAI (Foundry) takes precedence when AZURE_OPENAI_ENDPOINT is set;
       # otherwise the app falls back to OpenAI.com via OPENAI_API_KEY.
-      env {
-        name        = "OPENAI_API_KEY"
-        secret_name = "openai-api-key"
+      dynamic "env" {
+        for_each = var.openai_api_key != "" ? [1] : []
+        content {
+          name        = "OPENAI_API_KEY"
+          secret_name = "openai-api-key"
+        }
       }
       env {
         name  = "AZURE_OPENAI_ENDPOINT"
         value = var.azure_openai_endpoint
       }
-      env {
-        name        = "AZURE_OPENAI_API_KEY"
-        secret_name = "azure-openai-api-key"
+      dynamic "env" {
+        for_each = var.azure_openai_api_key != "" ? [1] : []
+        content {
+          name        = "AZURE_OPENAI_API_KEY"
+          secret_name = "azure-openai-api-key"
+        }
       }
       env {
         name  = "AZURE_OPENAI_API_VERSION"
@@ -182,19 +191,31 @@ resource "azurerm_container_app" "backend" {
     value = var.azure_sql_password
   }
 
-  secret {
-    name  = "billing-client-secret"
-    value = var.azure_billing_client_secret
+  # Optional secrets — only emitted when the corresponding integration is
+  # configured. Azure Container Apps rejects secrets with empty values, so we
+  # use dynamic blocks to omit them entirely when the var is blank.
+  dynamic "secret" {
+    for_each = var.azure_billing_client_secret != "" ? [1] : []
+    content {
+      name  = "billing-client-secret"
+      value = var.azure_billing_client_secret
+    }
   }
 
-  secret {
-    name  = "openai-api-key"
-    value = var.openai_api_key
+  dynamic "secret" {
+    for_each = var.openai_api_key != "" ? [1] : []
+    content {
+      name  = "openai-api-key"
+      value = var.openai_api_key
+    }
   }
 
-  secret {
-    name  = "azure-openai-api-key"
-    value = var.azure_openai_api_key
+  dynamic "secret" {
+    for_each = var.azure_openai_api_key != "" ? [1] : []
+    content {
+      name  = "azure-openai-api-key"
+      value = var.azure_openai_api_key
+    }
   }
 }
 
