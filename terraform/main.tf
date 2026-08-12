@@ -30,12 +30,25 @@ resource "azurerm_role_assignment" "acr_pull_identity" {
   principal_id         = azurerm_user_assigned_identity.acr_pull.principal_id
 }
 
+# 1c. Wait for Azure AD role assignment propagation before creating container
+# apps. Without this delay, the container app's first revision tries to pull
+# the image before AAD has replicated the AcrPull role, causing an immediate
+# "unable to pull image using Managed identity" failure.
+resource "time_sleep" "acr_pull_propagation" {
+  depends_on      = [azurerm_role_assignment.acr_pull_identity]
+  create_duration = "60s"
+}
+
 # 2. Deploy Backend Container App (FastAPI API)
 resource "azurerm_container_app" "backend" {
   name                         = "recoveryhub-dashboard-api"
   container_app_environment_id = azurerm_container_app_environment.aca_env.id
   resource_group_name          = var.resource_group_name
   revision_mode                = "Single"
+
+  # Wait for AcrPull role propagation before creating the container app,
+  # otherwise the first revision can't pull the image.
+  depends_on = [time_sleep.acr_pull_propagation]
 
   # Use the pre-provisioned user-assigned identity for ACR pull
   identity {
@@ -227,6 +240,8 @@ resource "azurerm_container_app" "frontend" {
   container_app_environment_id = azurerm_container_app_environment.aca_env.id
   resource_group_name          = var.resource_group_name
   revision_mode                = "Single"
+
+  depends_on = [time_sleep.acr_pull_propagation, azurerm_container_app.backend]
 
   identity {
     type         = "UserAssigned"
