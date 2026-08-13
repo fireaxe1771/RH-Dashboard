@@ -9,12 +9,19 @@ vi.mock('../services/aiAdoptionApi', () => ({
   },
 }));
 
+vi.mock('../services/api', () => ({
+  api: {
+    getServerDate: vi.fn().mockResolvedValue('2026-08-13'),
+  },
+}));
+
 vi.mock('../utils/export', () => ({
   exportToCsv: vi.fn(),
   exportToExcel: vi.fn(),
 }));
 
 import { aiAdoptionApi } from '../services/aiAdoptionApi';
+import { api } from '../services/api';
 import { exportToCsv, exportToExcel } from '../utils/export';
 
 const ADOPTION_RESPONSE = {

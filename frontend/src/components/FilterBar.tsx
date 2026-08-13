@@ -92,7 +92,7 @@ export function computeDateRange(
 }
 
 // Build dropdown options for each range type
-function periodOptions(rangeType: RangeType): { value: number; label: string }[] {
+export function periodOptions(rangeType: RangeType): { value: number; label: string }[] {
   if (rangeType === 'week') {
     return [
       { value: 0, label: 'Current Week' },

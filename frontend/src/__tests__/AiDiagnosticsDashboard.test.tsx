@@ -14,6 +14,12 @@ vi.mock('../services/aiAnalyticsApi', () => ({
   },
 }));
 
+vi.mock('../services/api', () => ({
+  api: {
+    getServerDate: vi.fn().mockResolvedValue('2026-08-13'),
+  },
+}));
+
 import { aiAnalyticsApi } from '../services/aiAnalyticsApi';
 
 const DIAGNOSTICS_SUMMARY = {
@@ -152,7 +158,7 @@ describe('AiDiagnosticsDashboard', () => {
 
   test('renders filter bar without business outcome filter', async () => {
     render(<AiDiagnosticsDashboard />);
-    await waitFor(() => expect(screen.getByText('Start Date')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Range')).toBeInTheDocument());
     // showOutcomeFilter=false, so business outcome filter should not appear
     expect(screen.queryByText('Business Outcome')).not.toBeInTheDocument();
   });

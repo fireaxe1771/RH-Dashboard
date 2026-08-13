@@ -15,6 +15,12 @@ vi.mock('../services/aiAnalyticsApi', () => ({
   },
 }));
 
+vi.mock('../services/api', () => ({
+  api: {
+    getServerDate: vi.fn().mockResolvedValue('2026-08-13'),
+  },
+}));
+
 import { aiAnalyticsApi } from '../services/aiAnalyticsApi';
 
 const SUMMARY = {
@@ -196,9 +202,9 @@ describe('AiOutcomesDashboard', () => {
     expect(screen.queryByText('Billing Not Enabled')).not.toBeInTheDocument();
   });
 
-  test('renders filter bar with date inputs', async () => {
+  test('renders filter bar with range type selector', async () => {
     render(<AiOutcomesDashboard />);
-    await waitFor(() => expect(screen.getByText('Start Date')).toBeInTheDocument());
-    expect(screen.getByText('End Date')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Range')).toBeInTheDocument());
+    expect(screen.getByText('Period')).toBeInTheDocument();
   });
 });

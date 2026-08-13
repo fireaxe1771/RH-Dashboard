@@ -3,17 +3,17 @@ import {
   BarChart3,
   Users,
   Download,
-  Calendar,
   Loader2,
   CheckCircle2,
   XCircle,
   HelpCircle,
 } from 'lucide-react';
 import { aiAdoptionApi, AiAdoptionResponse } from '../../services/aiAdoptionApi';
+import { api } from '../../services/api';
 import { exportToCsv, exportToExcel } from '../../utils/export';
 import { billingStyles, LoadingState, ErrorState } from '../billing/shared';
-
-const fmt = (d: Date): string => d.toISOString().split('T')[0];
+import { computeDateRange } from '../FilterBar';
+import { AiAnalyticsFilterBar } from './AiAnalyticsFilterBar';
 
 const statusLabels: Record<string, string> = {
   all: 'All Departments',
@@ -43,22 +43,41 @@ const kpiCardStyle: React.CSSProperties = {
 };
 
 export const AiAdoptionDashboard: React.FC = () => {
-  const today = useMemo(() => fmt(new Date()), []);
-  const weekAgo = useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 7);
-    return fmt(d);
-  }, []);
-
-  const [startDate, setStartDate] = useState(weekAgo);
-  const [endDate, setEndDate] = useState(today);
+  const [serverDate, setServerDate] = useState<string | undefined>(undefined);
+  const [dateReady, setDateReady] = useState(false);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [limit, setLimit] = useState(50);
   const [aiStatus, setAiStatus] = useState<string>('all');
   const [data, setData] = useState<AiAdoptionResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Fetch the database server date once on mount, then compute the initial
+  // date range (current week) so queries align with SQL Server's GETDATE().
   useEffect(() => {
+    let active = true;
+    api.getServerDate()
+      .then((dateStr) => {
+        if (!active) return;
+        setServerDate(dateStr);
+        const dates = computeDateRange('week', 0, dateStr);
+        setStartDate(dates.start_date);
+        setEndDate(dates.end_date);
+        setDateReady(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        const dates = computeDateRange('week', 0);
+        setStartDate(dates.start_date);
+        setEndDate(dates.end_date);
+        setDateReady(true);
+      });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!dateReady) return;
     let active = true;
     setLoading(true);
     setError(null);
@@ -79,7 +98,7 @@ export const AiAdoptionDashboard: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [startDate, endDate, limit, aiStatus]);
+  }, [startDate, endDate, limit, aiStatus, dateReady]);
 
   const columns = useMemo(
     () => [
@@ -119,7 +138,7 @@ export const AiAdoptionDashboard: React.FC = () => {
 
   const tabs: string[] = ['all', 'using_ai', 'not_using_ai'];
 
-  if (loading && !data) return <LoadingState label="Loading AI adoption data…" />;
+  if (!dateReady || (loading && !data)) return <LoadingState label="Loading AI adoption data…" />;
   if (error) return <ErrorState message={error} />;
   if (!data) return null;
 
@@ -127,6 +146,16 @@ export const AiAdoptionDashboard: React.FC = () => {
 
   return (
     <div style={billingStyles.page}>
+      <AiAnalyticsFilterBar
+        startDate={startDate}
+        endDate={endDate}
+        onStartDateChange={setStartDate}
+        onEndDateChange={setEndDate}
+        serverDate={serverDate}
+        defaultRangeType="week"
+        defaultPeriodsBack={0}
+      />
+
       <div style={billingStyles.card}>
         <div
           style={{
@@ -136,30 +165,6 @@ export const AiAdoptionDashboard: React.FC = () => {
             alignItems: 'flex-end',
           }}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-              <Calendar size={10} /> Start Date
-            </span>
-            <input
-              type="date"
-              className="input"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              style={{ padding: '7px 12px', fontSize: '13px' }}
-            />
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-              <Calendar size={10} /> End Date
-            </span>
-            <input
-              type="date"
-              className="input"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              style={{ padding: '7px 12px', fontSize: '13px' }}
-            />
-          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
             <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
               Top N

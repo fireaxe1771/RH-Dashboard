@@ -1,15 +1,25 @@
-import React, { useMemo } from 'react';
-import { Calendar } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Calendar, Clock } from 'lucide-react';
 import { billingStyles } from '../billing/shared';
 import { AiAnalyticsFilters } from '../../services/aiAnalyticsApi';
-
-const fmt = (d: Date): string => d.toISOString().split('T')[0];
+import {
+  RangeType,
+  computeDateRange,
+  periodOptions,
+} from '../FilterBar';
 
 interface Props {
   startDate: string;
   endDate: string;
   onStartDateChange: (date: string) => void;
   onEndDateChange: (date: string) => void;
+  /** ISO date string from the database server (GETDATE()). When set, all
+   *  date-range calculations use this instead of the browser clock. */
+  serverDate?: string;
+  /** Initial range type for the selector. Defaults to 'month'. */
+  defaultRangeType?: RangeType;
+  /** Initial periods-back value. Defaults to 0 (current period). */
+  defaultPeriodsBack?: number;
   departmentId?: number;
   onDepartmentIdChange?: (id: number | undefined) => void;
   businessOutcome?: string;
@@ -40,28 +50,36 @@ export const AiAnalyticsFilterBar: React.FC<Props> = ({
   endDate,
   onStartDateChange,
   onEndDateChange,
+  serverDate,
+  defaultRangeType = 'month',
+  defaultPeriodsBack = 0,
   departmentId,
   onDepartmentIdChange,
   businessOutcome,
   onBusinessOutcomeChange,
   showOutcomeFilter = true,
 }) => {
-  const quickRanges = useMemo(
-    () => [
-      { label: '7D', days: 7 },
-      { label: '30D', days: 30 },
-      { label: '90D', days: 90 },
-      { label: '1Y', days: 365 },
-    ],
-    [],
-  );
+  const [rangeType, setRangeType] = useState<RangeType>(defaultRangeType);
+  const [periodsBack, setPeriodsBack] = useState<number>(defaultPeriodsBack);
 
-  const applyQuickRange = (days: number) => {
-    const end = new Date();
-    const start = new Date();
-    start.setDate(start.getDate() - days);
-    onStartDateChange(fmt(start));
-    onEndDateChange(fmt(end));
+  const periods = useMemo(() => periodOptions(rangeType), [rangeType]);
+
+  const handleRangeTypeChange = (newType: RangeType) => {
+    setRangeType(newType);
+    setPeriodsBack(0);
+    if (newType !== 'day') {
+      const dates = computeDateRange(newType, 0, serverDate);
+      onStartDateChange(dates.start_date);
+      onEndDateChange(dates.end_date);
+    }
+    // For 'day' (Custom), keep current dates — user will pick manually
+  };
+
+  const handlePeriodsBackChange = (pb: number) => {
+    setPeriodsBack(pb);
+    const dates = computeDateRange(rangeType, pb, serverDate);
+    onStartDateChange(dates.start_date);
+    onEndDateChange(dates.end_date);
   };
 
   return (
@@ -74,46 +92,87 @@ export const AiAnalyticsFilterBar: React.FC<Props> = ({
           alignItems: 'flex-end',
         }}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-          <span style={labelStyle}>Start Date</span>
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => onStartDateChange(e.target.value)}
+        {/* Range Type Selector */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '130px' }}>
+          <span style={labelStyle}>
+            <Clock size={10} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} />
+            Range
+          </span>
+          <select
+            value={rangeType}
+            onChange={(e) => handleRangeTypeChange(e.target.value as RangeType)}
             style={inputStyle}
-          />
+          >
+            <option value="day">Custom</option>
+            <option value="week">Week</option>
+            <option value="month">Month</option>
+            <option value="year">Year</option>
+          </select>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-          <span style={labelStyle}>End Date</span>
-          <input
-            type="date"
-            value={endDate}
-            onChange={(e) => onEndDateChange(e.target.value)}
-            style={inputStyle}
-          />
-        </div>
-
-        <div style={{ display: 'flex', gap: '4px' }}>
-          {quickRanges.map((r) => (
-            <button
-              key={r.label}
-              onClick={() => applyQuickRange(r.days)}
-              style={{
-                padding: '6px 12px',
-                fontSize: '12px',
-                fontWeight: 600,
-                border: '1px solid var(--border-color)',
-                borderRadius: 'var(--border-radius-md)',
-                backgroundColor: 'var(--bg-primary)',
-                color: 'var(--text-secondary)',
-                cursor: 'pointer',
-              }}
+        {/* Period Selector (for week/month/year) or Date Pickers (for custom) */}
+        {rangeType === 'day' ? (
+          <div style={{ display: 'flex', gap: '12px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <span style={labelStyle}>
+                <Calendar size={10} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} />
+                Start Date
+              </span>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => onStartDateChange(e.target.value)}
+                style={inputStyle}
+              />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <span style={labelStyle}>
+                <Calendar size={10} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} />
+                End Date
+              </span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => onEndDateChange(e.target.value)}
+                style={inputStyle}
+              />
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '180px' }}>
+            <span style={labelStyle}>
+              <Calendar size={10} style={{ verticalAlign: 'text-bottom', marginRight: '4px' }} />
+              Period
+            </span>
+            <select
+              value={periodsBack}
+              onChange={(e) => handlePeriodsBackChange(Number(e.target.value))}
+              style={inputStyle}
             >
-              {r.label}
-            </button>
-          ))}
-        </div>
+              {periods.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Date range display (read-only summary for week/month/year) */}
+        {rangeType !== 'day' && startDate && endDate && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            fontSize: '12px',
+            color: 'var(--text-muted)',
+            padding: '6px 12px',
+            backgroundColor: 'rgba(99, 102, 241, 0.08)',
+            borderRadius: 'var(--border-radius-md)',
+            border: '1px solid rgba(99, 102, 241, 0.15)',
+          }}>
+            <Calendar size={12} style={{ color: 'var(--accent-primary)' }} />
+            <span>{startDate} &mdash; {endDate}</span>
+          </div>
+        )}
 
         {onDepartmentIdChange && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>

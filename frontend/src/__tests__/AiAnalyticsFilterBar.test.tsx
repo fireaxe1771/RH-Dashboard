@@ -11,33 +11,60 @@ describe('AiAnalyticsFilterBar', () => {
     onEndDateChange: vi.fn(),
   };
 
-  test('renders date inputs and quick range buttons', () => {
+  test('renders range type selector with Custom/Week/Month/Year options', () => {
     render(<AiAnalyticsFilterBar {...defaultProps} />);
-    expect(screen.getByText('Start Date')).toBeInTheDocument();
-    expect(screen.getByText('End Date')).toBeInTheDocument();
-    expect(screen.getByText('7D')).toBeInTheDocument();
-    expect(screen.getByText('30D')).toBeInTheDocument();
-    expect(screen.getByText('90D')).toBeInTheDocument();
-    expect(screen.getByText('1Y')).toBeInTheDocument();
+    const select = screen.getByDisplayValue('Month');
+    expect(select).toBeInTheDocument();
+    // Verify all options exist
+    const options = Array.from(select.querySelectorAll('option')).map((o) => o.textContent);
+    expect(options).toContain('Custom');
+    expect(options).toContain('Week');
+    expect(options).toContain('Month');
+    expect(options).toContain('Year');
   });
 
-  test('calls onStartDateChange when start date input changes', () => {
+  test('shows period selector (not date inputs) in month mode', () => {
+    render(<AiAnalyticsFilterBar {...defaultProps} />);
+    expect(screen.getByText('Period')).toBeInTheDocument();
+    expect(screen.queryByText('Start Date')).not.toBeInTheDocument();
+    expect(screen.queryByText('End Date')).not.toBeInTheDocument();
+  });
+
+  test('shows date inputs when range type is Custom', () => {
+    render(<AiAnalyticsFilterBar {...defaultProps} defaultRangeType="day" />);
+    expect(screen.getByText('Start Date')).toBeInTheDocument();
+    expect(screen.getByText('End Date')).toBeInTheDocument();
+  });
+
+  test('calls onStartDateChange when custom start date input changes', () => {
     const onStartDateChange = vi.fn();
-    render(<AiAnalyticsFilterBar {...defaultProps} onStartDateChange={onStartDateChange} />);
+    render(
+      <AiAnalyticsFilterBar
+        {...defaultProps}
+        defaultRangeType="day"
+        onStartDateChange={onStartDateChange}
+      />
+    );
     const inputs = screen.getAllByDisplayValue('2026-01-01');
     fireEvent.change(inputs[0], { target: { value: '2026-02-01' } });
     expect(onStartDateChange).toHaveBeenCalledWith('2026-02-01');
   });
 
-  test('calls onEndDateChange when end date input changes', () => {
+  test('calls onEndDateChange when custom end date input changes', () => {
     const onEndDateChange = vi.fn();
-    render(<AiAnalyticsFilterBar {...defaultProps} onEndDateChange={onEndDateChange} />);
+    render(
+      <AiAnalyticsFilterBar
+        {...defaultProps}
+        defaultRangeType="day"
+        onEndDateChange={onEndDateChange}
+      />
+    );
     const inputs = screen.getAllByDisplayValue('2026-01-31');
     fireEvent.change(inputs[0], { target: { value: '2026-02-28' } });
     expect(onEndDateChange).toHaveBeenCalledWith('2026-02-28');
   });
 
-  test('quick range buttons set both start and end dates', () => {
+  test('switching to week range type calls date change handlers with computed range', () => {
     const onStartDateChange = vi.fn();
     const onEndDateChange = vi.fn();
     render(
@@ -45,16 +72,34 @@ describe('AiAnalyticsFilterBar', () => {
         {...defaultProps}
         onStartDateChange={onStartDateChange}
         onEndDateChange={onEndDateChange}
+        serverDate="2026-08-13"
       />
     );
-    fireEvent.click(screen.getByText('30D'));
+    const select = screen.getByDisplayValue('Month');
+    fireEvent.change(select, { target: { value: 'week' } });
     expect(onStartDateChange).toHaveBeenCalledTimes(1);
     expect(onEndDateChange).toHaveBeenCalledTimes(1);
-    // The start date should be 30 days before today (YYYY-MM-DD format)
-    const startArg = onStartDateChange.mock.calls[0][0];
-    const endArg = onEndDateChange.mock.calls[0][0];
-    expect(startArg).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(endArg).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // Computed dates should be YYYY-MM-DD
+    expect(onStartDateChange.mock.calls[0][0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(onEndDateChange.mock.calls[0][0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  test('changing period calls date change handlers with computed range', () => {
+    const onStartDateChange = vi.fn();
+    const onEndDateChange = vi.fn();
+    render(
+      <AiAnalyticsFilterBar
+        {...defaultProps}
+        onStartDateChange={onStartDateChange}
+        onEndDateChange={onEndDateChange}
+        serverDate="2026-08-13"
+      />
+    );
+    // Default is month mode — find the period select (Current Month)
+    const periodSelect = screen.getByDisplayValue('Current Month');
+    fireEvent.change(periodSelect, { target: { value: '1' } });
+    expect(onStartDateChange).toHaveBeenCalledTimes(1);
+    expect(onEndDateChange).toHaveBeenCalledTimes(1);
   });
 
   test('renders department filter when onDepartmentIdChange is provided', () => {
@@ -85,10 +130,7 @@ describe('AiAnalyticsFilterBar', () => {
         onDepartmentIdChange={onDepartmentIdChange}
       />
     );
-    // Use placeholderText instead of displayValue — number inputs in jsdom
-    // don't reliably expose their value via getByDisplayValue.
     const deptInput = screen.getByPlaceholderText('All');
-    // Simulate clearing the number input
     fireEvent.change(deptInput, { target: { value: '' } });
     expect(onDepartmentIdChange).toHaveBeenCalled();
     const lastCall = onDepartmentIdChange.mock.calls[onDepartmentIdChange.mock.calls.length - 1];
@@ -99,7 +141,6 @@ describe('AiAnalyticsFilterBar', () => {
     const onBusinessOutcomeChange = vi.fn();
     render(<AiAnalyticsFilterBar {...defaultProps} onBusinessOutcomeChange={onBusinessOutcomeChange} />);
     expect(screen.getByText('Business Outcome')).toBeInTheDocument();
-    // Options: All, Released, Cancelled / Rejected, Pending, Unknown
     expect(screen.getByText('Released')).toBeInTheDocument();
     expect(screen.getByText('Pending')).toBeInTheDocument();
   });
