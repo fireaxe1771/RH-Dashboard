@@ -77,10 +77,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for React frontend requests
+# Enable CORS for React frontend requests.
+# Restricted to the configured frontend origin (FRONTEND_URL) to avoid the
+# CSRF risk of allow_origins=["*"] combined with allow_credentials=True.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict to FQDN domain of container app
+    allow_origins=[settings.FRONTEND_URL],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

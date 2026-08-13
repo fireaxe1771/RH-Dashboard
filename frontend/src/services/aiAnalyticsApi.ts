@@ -1,4 +1,4 @@
-import { getAuthToken } from './api';
+import { createApiFetch } from './fetchWrapper';
 
 // ---------------------------------------------------------------------------
 // Types — mirror the backend Pydantic models
@@ -293,29 +293,9 @@ export interface AiInvoiceTrace {
 
 const BASE_URL = '/api/ai-analytics';
 
-async function aiAnalyticsFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = getAuthToken();
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...((options.headers as Record<string, string>) || {}),
-  };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
-  const response = await fetch(`${BASE_URL}${path}`, { ...options, headers });
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      const err = await response.json();
-      detail = err.detail || detail;
-    } catch {
-      // keep default message
-    }
-    throw new Error(detail);
-  }
-  return response.json() as Promise<T>;
-}
+// Shared fetch wrapper bound to the AI analytics base path, with 401
+// silent-refresh-retry and consistent error parsing.
+const aiAnalyticsFetch = createApiFetch(BASE_URL);
 
 function buildQueryParams(filters: AiAnalyticsFilters): URLSearchParams {
   const params = new URLSearchParams();

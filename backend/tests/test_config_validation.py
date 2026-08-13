@@ -90,6 +90,49 @@ class TestSettingsValidation:
         with pytest.raises(ValueError, match="AZURE_TENANT_ID"):
             s.validate_settings()
 
+    def test_validate_settings_raises_on_frontend_url_missing_scheme(self):
+        s = SettingsStub(FRONTEND_URL="example.com")
+        with pytest.raises(ValueError, match="FRONTEND_URL"):
+            s.validate_settings()
+
+    def test_validate_settings_raises_on_frontend_url_trailing_slash(self):
+        s = SettingsStub(FRONTEND_URL="https://example.com/")
+        with pytest.raises(ValueError, match="FRONTEND_URL"):
+            s.validate_settings()
+
+    def test_validate_settings_raises_on_frontend_url_with_path(self):
+        s = SettingsStub(FRONTEND_URL="https://example.com/app")
+        with pytest.raises(ValueError, match="FRONTEND_URL"):
+            s.validate_settings()
+
+    def test_validate_settings_accepts_valid_frontend_url(self):
+        s = SettingsStub(FRONTEND_URL="https://example.com")
+        s.validate_settings()
+
+    def test_validate_settings_accepts_frontend_url_with_port(self):
+        s = SettingsStub(FRONTEND_URL="http://localhost:3000")
+        s.validate_settings()
+
+    def test_validate_settings_raises_on_frontend_url_empty_host(self):
+        s = SettingsStub(FRONTEND_URL="http://")
+        with pytest.raises(ValueError, match="FRONTEND_URL"):
+            s.validate_settings()
+
+    def test_validate_settings_raises_on_jwks_max_attempts_invalid(self):
+        s = SettingsStub(JWKS_FETCH_MAX_ATTEMPTS=0)
+        with pytest.raises(ValueError, match="JWKS_FETCH_MAX_ATTEMPTS"):
+            s.validate_settings()
+
+    def test_validate_settings_raises_on_jwks_timeout_invalid(self):
+        s = SettingsStub(JWKS_FETCH_TIMEOUT=0)
+        with pytest.raises(ValueError, match="JWKS_FETCH_TIMEOUT"):
+            s.validate_settings()
+
+    def test_validate_settings_raises_on_jwks_backoff_invalid(self):
+        s = SettingsStub(JWKS_FETCH_BACKOFF=-1)
+        with pytest.raises(ValueError, match="JWKS_FETCH_BACKOFF"):
+            s.validate_settings()
+
 
 class TestBillingSettingsValidation:
     def test_billing_validation_raises_on_missing_billing_client_id(self):
@@ -183,6 +226,10 @@ class SettingsStub:
     DEV_AUTH_BYPASS = True
     AZURE_CLIENT_ID = "client"
     AZURE_TENANT_ID = "tenant"
+    FRONTEND_URL = "http://localhost:3000"
+    JWKS_FETCH_MAX_ATTEMPTS = 2
+    JWKS_FETCH_TIMEOUT = 15
+    JWKS_FETCH_BACKOFF = 1
     AZURE_BILLING_CLIENT_ID = "billing-client"
     AZURE_BILLING_CLIENT_SECRET = "secret"
     AZURE_SUBSCRIPTION_ID = "sub"

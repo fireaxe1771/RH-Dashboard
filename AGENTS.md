@@ -29,6 +29,25 @@ favor of this approach to eliminate client-secret rotation and the
 The test job pins **Node 22 LTS** (bumped from the deprecated Node 20, which
 GitHub Actions runners no longer support as of the 2025-09-19 deprecation).
 
+### Required GitHub Secrets (Auth Hardening)
+
+The deploy workflow requires these additional secrets beyond the OIDC login
+secrets above. **The deploy will fail if these are not created before the next
+push to `main`.**
+
+- **`AZURE_SPA_CLIENT_ID`** — The Entra ID SPA App Registration client ID used
+  by the frontend for MSAL login (`d7d4d4d0-5460-4655-ab6d-a9aaac38b578` for
+  the streamlineas.com tenant). This is the single source of truth: it feeds
+  both the frontend Vite build arg (`VITE_AZURE_CLIENT_ID`) and the backend's
+  JWT audience (`AZURE_CLIENT_ID` via `TF_VAR_azure_spa_client_id`). Although
+  this is a public value (baked into browser-visible JS), storing it as a
+  secret ensures the frontend build and backend config can't drift apart.
+- **`FRONTEND_URL`** — The fully-qualified origin (scheme + host, no path, no
+  trailing slash) of the deployed frontend Container App, e.g.
+  `https://rh-dashboard-web.<env>.<region>.azurecontainerapps.io`. The backend
+  uses this to restrict CORS. Must match the frontend Container App's external
+  FQDN exactly. Validated at Terraform apply time and backend startup.
+
 ## Deferred: Azure Billing Configuration
 
 **Status:** On hold as of 2026-07-17. All Azure billing setup work is deferred

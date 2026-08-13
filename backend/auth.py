@@ -1,4 +1,5 @@
 import logging
+import time
 import urllib.request
 import json
 from jose import jwt
@@ -32,16 +33,32 @@ class TokenVerifier:
         }
 
     def _fetch_jwks(self) -> dict:
-        """Retrieves active Microsoft public key sets from discovery endpoint."""
+        """Retrieves active Microsoft public key sets from discovery endpoint.
+
+        Retries on transient failure with a short backoff. The attempt count,
+        timeout, and backoff are configurable via JWKS_FETCH_MAX_ATTEMPTS,
+        JWKS_FETCH_TIMEOUT, and JWKS_FETCH_BACKOFF env vars to accommodate
+        high-latency regions. Fails loudly (no mock keys) on persistent
+        unreachability.
+        """
         url = "https://login.microsoftonline.com/common/discovery/v2.0/keys"
-        try:
-            logger.info("Downloading active Microsoft JWKS public key set...")
-            with urllib.request.urlopen(url, timeout=5) as response:
-                return json.loads(response.read().decode())
-        except Exception as e:
-            logger.error(f"Failed to fetch Microsoft signing keys from AAD: {e}")
-            # Fail loudly on configuration/network failure (don't return empty mock keys)
-            raise RuntimeError(f"Entra ID Security Catalog Unreachable: {e}")
+        max_attempts = settings.JWKS_FETCH_MAX_ATTEMPTS
+        timeout = settings.JWKS_FETCH_TIMEOUT
+        backoff = settings.JWKS_FETCH_BACKOFF
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                logger.info(f"Downloading Microsoft JWKS (attempt {attempt}/{max_attempts})...")
+                with urllib.request.urlopen(url, timeout=timeout) as response:
+                    return json.loads(response.read().decode())
+            except Exception as e:
+                last_error = e
+                logger.warning(f"JWKS fetch attempt {attempt} failed: {e}")
+                if attempt < max_attempts:
+                    time.sleep(backoff)
+        logger.error(f"Failed to fetch Microsoft signing keys from AAD after {max_attempts} attempts: {last_error}")
+        # Fail loudly on configuration/network failure (don't return empty mock keys)
+        raise RuntimeError(f"Entra ID Security Catalog Unreachable: {last_error}")
 
     def get_public_key(self, kid: str) -> dict:
         """Retrieves public key corresponding to key ID (kid) from cached JWKS."""
@@ -92,20 +109,18 @@ class TokenVerifier:
         ]
 
         try:
-            # Decode and verify token
+            # Decode and verify token. python-jose's `issuer` parameter accepts
+            # an iterable of acceptable issuers, so library issuer verification
+            # is enabled directly (no manual post-decode check needed).
             payload = jwt.decode(
                 token,
                 public_key,
                 algorithms=["RS256"],
                 audience=self.client_id,
-                options={"verify_aud": True, "verify_iss": False, "verify_exp": True}
+                issuer=issuers,
+                options={"verify_aud": True, "verify_iss": True, "verify_exp": True}
             )
-            
-            # Manually verify issuer list
-            iss = payload.get("iss")
-            if iss not in issuers:
-                raise JWTError(f"Issuer '{iss}' does not match expected tenant options.")
-                
+
             return payload
         except JWTError as e:
             logger.error(f"JWT Verification failed: {e}")

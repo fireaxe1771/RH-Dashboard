@@ -87,13 +87,15 @@ jobs:
 
       # Build and Push Frontend Docker Image (injecting Entra client IDs)
       # The frontend client ID is a PUBLIC value (baked into browser-visible JS,
-      # visible to every site visitor). It is NOT a secret and does not need to
-      # be stored in GitHub Secrets. It is the Entra ID SPA app registration
+      # visible to every site visitor). It is the Entra ID SPA app registration
       # used for MSAL user login — separate from the deploy service principal.
+      # It is sourced from the AZURE_SPA_CLIENT_ID GitHub secret so there is a
+      # single source of truth shared with the backend's JWT audience (via
+      # TF_VAR_azure_spa_client_id below).
       - name: Build & Push Frontend Image
         run: |
           docker build \
-            --build-arg VITE_AZURE_CLIENT_ID=d7d4d4d0-5460-4655-ab6d-a9aaac38b578 \
+            --build-arg VITE_AZURE_CLIENT_ID=${{ secrets.AZURE_SPA_CLIENT_ID }} \
             --build-arg VITE_AZURE_TENANT_ID=${{ secrets.AZURE_TENANT_ID }} \
             -t ${{ secrets.ACR_NAME }}.azurecr.io/rh-dashboard-frontend:${{ github.sha }} \
             ./frontend
@@ -133,6 +135,12 @@ jobs:
           TF_VAR_azure_sql_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
           TF_VAR_azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
           TF_VAR_azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+          # SPA client ID (single source of truth): the frontend build arg
+          # VITE_AZURE_CLIENT_ID and the backend's AZURE_CLIENT_ID (JWT
+          # audience) both derive from this secret.
+          TF_VAR_azure_spa_client_id: ${{ secrets.AZURE_SPA_CLIENT_ID }}
+          # Frontend origin used by the backend to restrict CORS.
+          TF_VAR_frontend_url: ${{ secrets.FRONTEND_URL }}
           # Billing integration secrets
           TF_VAR_azure_billing_client_id: ${{ secrets.AZURE_BILLING_CLIENT_ID }}
           TF_VAR_azure_billing_client_secret: ${{ secrets.AZURE_BILLING_CLIENT_SECRET }}

@@ -38,6 +38,19 @@ class Settings:
     AZURE_CLIENT_ID: str = os.getenv("AZURE_CLIENT_ID", "")
     AZURE_TENANT_ID: str = os.getenv("AZURE_TENANT_ID", "")
 
+    # Frontend origin used to restrict CORS in production. Defaults to the
+    # local dev origin; must be set to the deployed frontend FQDN in prod.
+    # Must be a valid origin (scheme + host, no path, no trailing slash).
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+    # --- JWKS fetch resilience ---
+    # Configurable so deployments in high-latency regions can tune without
+    # code changes. Defaults are conservative (2 attempts, 15s timeout, 1s
+    # backoff) and suit most Azure Container Apps environments.
+    JWKS_FETCH_MAX_ATTEMPTS: int = int(os.getenv("JWKS_FETCH_MAX_ATTEMPTS", "2"))
+    JWKS_FETCH_TIMEOUT: int = int(os.getenv("JWKS_FETCH_TIMEOUT", "15"))
+    JWKS_FETCH_BACKOFF: int = int(os.getenv("JWKS_FETCH_BACKOFF", "1"))
+
     # --- Azure Billing Integration ---
     AZURE_BILLING_CLIENT_ID: str = os.getenv("AZURE_BILLING_CLIENT_ID", "")
     AZURE_BILLING_CLIENT_SECRET: str = os.getenv("AZURE_BILLING_CLIENT_SECRET", "")
@@ -97,7 +110,30 @@ class Settings:
                 missing.append("AZURE_CLIENT_ID")
             if not self.AZURE_TENANT_ID:
                 missing.append("AZURE_TENANT_ID")
-            
+
+        # Validate FRONTEND_URL format: must be a valid origin (scheme + host,
+        # no path, no trailing slash). A malformed value would silently break
+        # CORS at runtime, which is hard to debug.
+        if self.FRONTEND_URL:
+            if not (self.FRONTEND_URL.startswith("http://") or self.FRONTEND_URL.startswith("https://")):
+                missing.append("FRONTEND_URL (must start with http:// or https://)")
+            else:
+                # Strip the scheme and check that no path or trailing slash
+                # remains — a bare origin is "host" only, not "host/" or "host/path".
+                stripped = self.FRONTEND_URL.split("://", 1)[1]
+                if not stripped:
+                    missing.append("FRONTEND_URL (must include a host after the scheme)")
+                elif "/" in stripped:
+                    missing.append("FRONTEND_URL (must be origin only: scheme + host, no path or trailing slash)")
+
+        # Validate JWKS fetch resilience parameters: must be positive integers.
+        if self.JWKS_FETCH_MAX_ATTEMPTS < 1:
+            missing.append("JWKS_FETCH_MAX_ATTEMPTS (must be >= 1)")
+        if self.JWKS_FETCH_TIMEOUT < 1:
+            missing.append("JWKS_FETCH_TIMEOUT (must be >= 1 second)")
+        if self.JWKS_FETCH_BACKOFF < 0:
+            missing.append("JWKS_FETCH_BACKOFF (must be >= 0 seconds)")
+
         if missing:
             error_msg = (
                 f"\nFATAL CONFIGURATION ERROR: The following required environment variables are missing:\n"

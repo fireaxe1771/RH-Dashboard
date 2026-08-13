@@ -123,12 +123,23 @@ resource "azurerm_container_app" "backend" {
         value = var.azure_sql_tenant_id
       }
       env {
+        # The backend validates the SPA's idToken audience against this client
+        # ID. This is intentional — the frontend sends the idToken
+        # (aud=SPA client ID) as the bearer token, and the backend verifies
+        # that same audience. This must match VITE_AZURE_CLIENT_ID baked into
+        # the frontend image.
         name  = "AZURE_CLIENT_ID"
         value = var.azure_spa_client_id
       }
       env {
         name  = "AZURE_TENANT_ID"
         value = var.azure_tenant_id
+      }
+      env {
+        # Restricts backend CORS to the deployed frontend origin. Must match
+        # the frontend Container App's external FQDN (scheme + host).
+        name  = "FRONTEND_URL"
+        value = var.frontend_url
       }
 
       # --- Azure Billing Integration ---

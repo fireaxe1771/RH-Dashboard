@@ -1,8 +1,10 @@
 /**
  * API client for the Azure Billing analytics endpoints (/api/billing/*).
- * Mirrors the structure of services/api.ts and reuses its bearer-token state.
+ * Auth-header injection, 401 silent-refresh-retry, and error parsing are
+ * provided by the shared fetchWrapper so expired tokens are handled
+ * consistently across all API clients.
  */
-import { getAuthToken } from './api';
+import { createApiFetch } from './fetchWrapper';
 
 // --- Sync ---
 
@@ -170,29 +172,9 @@ export interface AIQueryResponse {
 
 const BASE_URL = '/api/billing';
 
-async function billingFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = getAuthToken();
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...((options.headers as Record<string, string>) || {}),
-  };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
-  const response = await fetch(`${BASE_URL}${path}`, { ...options, headers });
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      const err = await response.json();
-      detail = err.detail || detail;
-    } catch {
-      // keep default message
-    }
-    throw new Error(detail);
-  }
-  return response.json() as Promise<T>;
-}
+// Shared fetch wrapper bound to the billing base path, with 401
+// silent-refresh-retry and consistent error parsing.
+const billingFetch = createApiFetch(BASE_URL);
 
 export const billingApi = {
   getSyncStatus: () => billingFetch<SyncStatusResponse>('/sync/status'),
