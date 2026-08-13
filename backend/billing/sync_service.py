@@ -157,10 +157,25 @@ async def _write_sync_log_failed(db, log_id: str, error_message: str) -> None:
 # Cost details
 # --------------------------------------------------------------------------- #
 
-def _clean_cost_row(row: dict, billing_period: str) -> dict:
-    """Maps a raw CSV cost-detail row to the azure_cost_details schema."""
-    resource_id = row.get("ResourceId", "") or ""
+def _clean_cost_row(row: dict, billing_period: str) -> dict | None:
+    """Maps a raw CSV cost-detail row to the azure_cost_details schema.
+
+    Returns None if the row is missing critical fields (Date, MeterId),
+    indicating it should be skipped rather than upserted with empty values.
+    ResourceId is allowed to be empty (some charge types don't have one).
+    """
     date_raw = row.get("Date", "") or ""
+    meter_id = row.get("MeterId", "") or ""
+
+    # Critical fields — skip rows missing these to prevent silent data corruption
+    if not date_raw:
+        logger.warning("Skipping cost row: missing Date field.")
+        return None
+    if not meter_id:
+        logger.warning("Skipping cost row: missing MeterId field.")
+        return None
+
+    resource_id = row.get("ResourceId", "") or ""
     return {
         "billing_period": billing_period,
         "date": date_raw,
@@ -174,7 +189,7 @@ def _clean_cost_row(row: dict, billing_period: str) -> dict:
         "meter_category": row.get("MeterCategory", ""),
         "meter_subcategory": row.get("MeterSubCategory", ""),
         "meter_name": row.get("MeterName", ""),
-        "meter_id": row.get("MeterId", ""),
+        "meter_id": meter_id,
         "quantity": _to_float(row.get("Quantity")),
         "unit_of_measure": row.get("UnitOfMeasure", ""),
         "unit_price": _to_float(row.get("UnitPrice")),
@@ -292,7 +307,10 @@ async def sync_cost_details(db, billing_period: str, triggered_by: str = "manual
             for metric in ("ActualCost", "AmortizedCost"):
                 rows = await cost_management.generate_cost_details_report(scope, start, end, metric)
                 for row in rows:
-                    await _upsert_cost_row(db, _clean_cost_row(row, billing_period))
+                    cleaned = _clean_cost_row(row, billing_period)
+                    if cleaned is None:
+                        continue
+                    await _upsert_cost_row(db, cleaned)
                     count += 1
             await _rebuild_cost_summary(db, billing_period)
             await _write_sync_log_complete(db, log_id, count)
@@ -306,8 +324,21 @@ async def sync_cost_details(db, billing_period: str, triggered_by: str = "manual
 # Advisor
 # --------------------------------------------------------------------------- #
 
-def _map_advisor(rec: dict) -> dict:
+def _map_advisor(rec: dict) -> dict | None:
+    """Maps a raw Advisor recommendation to the azure_advisor_recommendations schema.
+
+    Returns None if the record is missing critical fields (recommendation_id, category).
+    """
+    rec_id = rec.get("name", "")
     props = rec.get("properties", {})
+    category = props.get("category", "")
+
+    if not rec_id:
+        return None
+    if not category:
+        logger.warning(f"Skipping advisor recommendation: missing category (id={rec_id}).")
+        return None
+
     ext = props.get("extendedProperties", {})
     short = props.get("shortDescription", {})
     monthly, currency = advisor._extract_savings(ext)
@@ -361,6 +392,8 @@ async def sync_advisor_recommendations(db, triggered_by: str = "manual_api") -> 
             seen_ids: list[str] = []
             for rec in recs:
                 mapped = _map_advisor(rec)
+                if mapped is None:
+                    continue
                 if not mapped["recommendation_id"]:
                     continue
                 seen_ids.append(mapped["recommendation_id"])

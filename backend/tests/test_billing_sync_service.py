@@ -137,3 +137,78 @@ async def test_run_full_backfill_skips_when_populated(monkeypatch, mock_mongo_db
     await mock_mongo_db["azure_cost_details"].insert_one({"x": 1})
     result = await sync_service.run_full_backfill(mock_mongo_db, 3, "startup_backfill")
     assert result == {"skipped": True}
+
+
+def test_clean_cost_row_returns_none_for_missing_date():
+    """Rows missing the Date field are rejected (return None)."""
+    row = _csv_row()
+    row["Date"] = ""
+    result = sync_service._clean_cost_row(row, "2026-05")
+    assert result is None
+
+
+def test_clean_cost_row_returns_none_for_missing_meter_id():
+    """Rows missing the MeterId field are rejected (return None)."""
+    row = _csv_row()
+    row["MeterId"] = ""
+    result = sync_service._clean_cost_row(row, "2026-05")
+    assert result is None
+
+
+def test_clean_cost_row_allows_empty_resource_id():
+    """ResourceId is optional (some charge types don't have one) — should not reject."""
+    row = _csv_row()
+    row["ResourceId"] = ""
+    result = sync_service._clean_cost_row(row, "2026-05")
+    assert result is not None
+    assert result["resource_id"] == ""
+
+
+def test_map_advisor_returns_none_for_missing_category():
+    """Advisor records missing category are rejected (return None)."""
+    rec = {
+        "name": "rec-1",
+        "id": "/arm/rec-1",
+        "properties": {
+            "category": "",  # Missing
+            "impact": "High",
+            "impactedField": "Microsoft.Compute/virtualMachines",
+            "impactedValue": "vm1",
+            "shortDescription": {"problem": "Idle VM", "solution": "Resize"},
+            "extendedProperties": {"savingsAmount": "100", "savingsCurrency": "USD"},
+            "resourceMetadata": {"resourceId": "/subscriptions/sub1/resourceGroups/rg1/x"},
+        },
+    }
+    result = sync_service._map_advisor(rec)
+    assert result is None
+
+
+def test_map_advisor_returns_none_for_missing_id():
+    """Advisor records missing recommendation_id (name) are rejected."""
+    rec = {
+        "name": "",
+        "id": "/arm/rec-1",
+        "properties": {
+            "category": "Cost",
+            "impact": "High",
+        },
+    }
+    result = sync_service._map_advisor(rec)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_sync_cost_details_skips_invalid_rows(monkeypatch, mock_mongo_db):
+    """Invalid rows (missing Date/MeterId) are skipped during sync, valid ones are upserted."""
+    async def fake_report(scope, start, end, metric="ActualCost"):
+        return [
+            _csv_row(),                              # valid
+            _csv_row(MeterId="meter2", Cost="5.00"),  # valid
+            _csv_row(Date=""),                        # invalid (no date)
+            _csv_row(MeterId=""),                     # invalid (no meter_id)
+        ]
+    monkeypatch.setattr(sync_service.cost_management, "generate_cost_details_report", fake_report)
+
+    count = await sync_service.sync_cost_details(mock_mongo_db, "2026-05", "manual_api")
+    # 2 valid rows x 2 metrics = 4 upserts (invalid rows skipped)
+    assert count == 4

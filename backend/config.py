@@ -70,6 +70,21 @@ class Settings:
     AZURE_OPENAI_API_KEY: str = os.getenv("AZURE_OPENAI_API_KEY", "")
     AZURE_OPENAI_API_VERSION: str = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
 
+    # --- Vectorizer rate limiting and cost controls ---
+    # Max documents to embed in a single run_vectorization call. Prevents
+    # runaway costs on large billing periods. 0 = no limit.
+    VECTORIZER_MAX_DOCUMENTS: int = int(os.getenv("VECTORIZER_MAX_DOCUMENTS", "5000"))
+    # Batch size for embedding API calls. OpenAI supports up to 2048 inputs
+    # per request, but 100 is conservative for token-limit safety.
+    VECTORIZER_BATCH_SIZE: int = int(os.getenv("VECTORIZER_BATCH_SIZE", "100"))
+    # Seconds to sleep between batches (rate limiting). Set to 0 to disable.
+    VECTORIZER_BATCH_DELAY: float = float(os.getenv("VECTORIZER_BATCH_DELAY", "0.5"))
+    # Max retries on transient embedding API errors (429, 500, 503, timeout).
+    VECTORIZER_MAX_RETRIES: int = int(os.getenv("VECTORIZER_MAX_RETRIES", "3"))
+    # Minimum text length (chars) to warrant embedding. Shorter texts produce
+    # low-quality vectors and waste API quota.
+    VECTORIZER_MIN_TEXT_LENGTH: int = int(os.getenv("VECTORIZER_MIN_TEXT_LENGTH", "10"))
+
     # --- Billing Sync Configuration ---
     BILLING_SYNC_ENABLED: bool = os.getenv("BILLING_SYNC_ENABLED", "false").lower() == "true"
     BILLING_DAILY_SYNC_HOUR: int = int(os.getenv("BILLING_DAILY_SYNC_HOUR", "2"))
@@ -133,6 +148,18 @@ class Settings:
             missing.append("JWKS_FETCH_TIMEOUT (must be >= 1 second)")
         if self.JWKS_FETCH_BACKOFF < 0:
             missing.append("JWKS_FETCH_BACKOFF (must be >= 0 seconds)")
+
+        # Validate vectorizer parameters
+        if self.VECTORIZER_MAX_DOCUMENTS < 0:
+            missing.append("VECTORIZER_MAX_DOCUMENTS (must be >= 0)")
+        if self.VECTORIZER_BATCH_SIZE < 1:
+            missing.append("VECTORIZER_BATCH_SIZE (must be >= 1)")
+        if self.VECTORIZER_BATCH_DELAY < 0:
+            missing.append("VECTORIZER_BATCH_DELAY (must be >= 0)")
+        if self.VECTORIZER_MAX_RETRIES < 0:
+            missing.append("VECTORIZER_MAX_RETRIES (must be >= 0)")
+        if self.VECTORIZER_MIN_TEXT_LENGTH < 0:
+            missing.append("VECTORIZER_MIN_TEXT_LENGTH (must be >= 0)")
 
         if missing:
             error_msg = (
