@@ -55,8 +55,9 @@ async def lifespan(app: FastAPI):
     
     # Clean disconnect on shutdown
     if settings.BILLING_SYNC_ENABLED and billing_scheduler.running:
-        billing_scheduler.shutdown(wait=False)
-        logger.info("Billing sync scheduler stopped.")
+        logger.info("Shutting down billing scheduler, waiting for in-flight jobs to complete...")
+        billing_scheduler.shutdown(wait=True)
+        logger.info("Billing sync scheduler stopped cleanly.")
     db_manager.disconnect()
 
 

@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 # Router mounted under the "/api/billing" prefix in main.py
 billing_router = APIRouter(tags=["Azure Billing"])
 
+# All billing read endpoints cap at 1000 rows to prevent unbounded memory
+# consumption. If a collection grows beyond this, pagination should be added.
+
 # Allowed manual sync types -> sync_service coroutine
 _SYNC_DISPATCH = {
     "full": lambda db: sync_service.run_full_backfill(db, settings.BILLING_HISTORY_MONTHS, "manual_api"),
@@ -115,7 +118,7 @@ async def cost_summary(
 ):
     rows = await db["azure_cost_summary"].find(
         {"period": period, "dimension": dimension}
-    ).sort("total_cost", -1).to_list(length=None)
+    ).sort("total_cost", -1).to_list(length=1000)
     items = [_serialize(r) for r in rows]
     total = sum(r.get("total_cost", 0.0) for r in rows)
     currency = rows[0].get("currency", "USD") if rows else "USD"
@@ -132,7 +135,7 @@ async def cost_trend(
     query: dict = {"dimension": dimension}
     if dimension_value:
         query["dimension_value"] = dimension_value
-    rows = await db["azure_cost_summary"].find(query).sort("period", 1).to_list(length=None)
+    rows = await db["azure_cost_summary"].find(query).sort("period", 1).to_list(length=1000)
     return [_serialize(r) for r in rows][-months * 50:]
 
 
@@ -156,7 +159,7 @@ async def cost_by_tag(
     tag_key: str = "",
     limit: int = 20,
 ):
-    rows = await db["azure_cost_details"].find({"billing_period": period}).to_list(length=None)
+    rows = await db["azure_cost_details"].find({"billing_period": period}).to_list(length=1000)
     buckets: dict[str, float] = {}
     for row in rows:
         value = (row.get("tags") or {}).get(tag_key, "untagged")
@@ -177,7 +180,7 @@ async def cost_daily(
         query["date"] = {"$gte": start_date, "$lte": end_date}
     if service_name:
         query["service_name"] = service_name
-    rows = await db["azure_cost_details"].find(query).to_list(length=None)
+    rows = await db["azure_cost_details"].find(query).to_list(length=1000)
     buckets: dict[str, float] = {}
     for row in rows:
         day = row.get("date", "")
@@ -187,7 +190,7 @@ async def cost_daily(
 
 @billing_router.get("/cost/forecast", dependencies=[Depends(get_current_user)])
 async def cost_forecast(db=Depends(get_db)):
-    rows = await db["azure_cost_summary"].find({"dimension": "Forecast"}).to_list(length=None)
+    rows = await db["azure_cost_summary"].find({"dimension": "Forecast"}).to_list(length=1000)
     return [_serialize(r) for r in rows]
 
 
@@ -197,13 +200,13 @@ async def cost_forecast(db=Depends(get_db)):
 
 @billing_router.get("/budgets", dependencies=[Depends(get_current_user)])
 async def list_budgets(db=Depends(get_db)):
-    rows = await db["azure_budgets"].find({}).sort("utilization_pct", -1).to_list(length=None)
+    rows = await db["azure_budgets"].find({}).sort("utilization_pct", -1).to_list(length=1000)
     return [_serialize(r) for r in rows]
 
 
 @billing_router.get("/alerts", dependencies=[Depends(get_current_user)])
 async def list_alerts(db=Depends(get_db)):
-    rows = await db["azure_cost_alerts"].find({"status": "Active"}).sort("creation_time", -1).to_list(length=None)
+    rows = await db["azure_cost_alerts"].find({"status": "Active"}).sort("creation_time", -1).to_list(length=1000)
     return [_serialize(r) for r in rows]
 
 
@@ -223,7 +226,7 @@ async def advisor_recommendations(
         query["category"] = category
     if impact:
         query["impact"] = impact
-    rows = await db["azure_advisor_recommendations"].find(query).sort("estimated_monthly_savings", -1).to_list(length=None)
+    rows = await db["azure_advisor_recommendations"].find(query).sort("estimated_monthly_savings", -1).to_list(length=1000)
     return [_serialize(r) for r in rows]
 
 
@@ -231,7 +234,7 @@ async def advisor_recommendations(
 async def advisor_cost_savings(db=Depends(get_db)):
     rows = await db["azure_advisor_recommendations"].find(
         {"category": "Cost", "status": "Active"}
-    ).sort("estimated_monthly_savings", -1).to_list(length=None)
+    ).sort("estimated_monthly_savings", -1).to_list(length=1000)
     return [_serialize(r) for r in rows]
 
 
@@ -241,7 +244,7 @@ async def advisor_cost_savings(db=Depends(get_db)):
     dependencies=[Depends(get_current_user)],
 )
 async def advisor_summary(db=Depends(get_db)):
-    rows = await db["azure_advisor_recommendations"].find({"status": "Active"}).to_list(length=None)
+    rows = await db["azure_advisor_recommendations"].find({"status": "Active"}).to_list(length=1000)
     by_impact: dict[str, int] = {}
     total_savings = 0.0
     cost_count = 0
@@ -268,7 +271,7 @@ async def advisor_summary(db=Depends(get_db)):
 
 @billing_router.get("/invoices", dependencies=[Depends(get_current_user)])
 async def list_invoices(db=Depends(get_db)):
-    rows = await db["azure_invoices"].find({}).sort("billing_period_start", -1).to_list(length=None)
+    rows = await db["azure_invoices"].find({}).sort("billing_period_start", -1).to_list(length=1000)
     return [_serialize(r) for r in rows]
 
 
@@ -289,13 +292,13 @@ async def reservation_details(
     db=Depends(get_db),
     billing_period: str = Query(default_factory=_current_period),
 ):
-    rows = await db["azure_reservation_details"].find({"billing_period": billing_period}).to_list(length=None)
+    rows = await db["azure_reservation_details"].find({"billing_period": billing_period}).to_list(length=1000)
     return [_serialize(r) for r in rows]
 
 
 @billing_router.get("/reservations/recommendations", dependencies=[Depends(get_current_user)])
 async def reservation_recommendations(db=Depends(get_db)):
-    rows = await db["azure_reservation_recommendations"].find({}).sort("net_savings", -1).to_list(length=None)
+    rows = await db["azure_reservation_recommendations"].find({}).sort("net_savings", -1).to_list(length=1000)
     return [_serialize(r) for r in rows]
 
 

@@ -52,7 +52,7 @@ async def _generate_cost_documents(db, billing_period: str) -> list[dict]:
     docs: list[dict] = []
     service_rows = await db["azure_cost_summary"].find(
         {"period": billing_period, "dimension": "ServiceName"}
-    ).to_list(length=None)
+    ).to_list(length=1000)
     if not service_rows:
         return docs
 
@@ -64,7 +64,7 @@ async def _generate_cost_documents(db, billing_period: str) -> list[dict]:
 
     rg_rows = await db["azure_cost_summary"].find(
         {"period": billing_period, "dimension": "ResourceGroupName"}
-    ).to_list(length=None)
+    ).to_list(length=1000)
     rg_rows.sort(key=lambda r: r.get("total_cost", 0.0), reverse=True)
 
     lines = [
@@ -127,7 +127,7 @@ async def _generate_cost_documents(db, billing_period: str) -> list[dict]:
 
 async def _generate_advisor_documents(db, billing_period: str) -> list[dict]:
     docs: list[dict] = []
-    recs = await db["azure_advisor_recommendations"].find({"status": "Active"}).to_list(length=None)
+    recs = await db["azure_advisor_recommendations"].find({"status": "Active"}).to_list(length=1000)
     for rec in recs:
         impacted_field = rec.get("impacted_field", "")
         field_short = impacted_field.split("/")[-1] if impacted_field else ""
@@ -166,7 +166,7 @@ async def _generate_advisor_documents(db, billing_period: str) -> list[dict]:
 
 async def _generate_budget_documents(db, billing_period: str) -> list[dict]:
     docs: list[dict] = []
-    budgets = await db["azure_budgets"].find({}).to_list(length=None)
+    budgets = await db["azure_budgets"].find({}).to_list(length=1000)
     for b in budgets:
         util = b.get("utilization_pct", 0.0)
         amount = b.get("amount", 0.0)
@@ -201,7 +201,7 @@ async def _generate_budget_documents(db, billing_period: str) -> list[dict]:
 
 async def _generate_reservation_documents(db, billing_period: str) -> list[dict]:
     docs: list[dict] = []
-    recs = await db["azure_reservation_recommendations"].find({"net_savings": {"$gt": 0}}).to_list(length=None)
+    recs = await db["azure_reservation_recommendations"].find({"net_savings": {"$gt": 0}}).to_list(length=1000)
     for r in recs:
         term = r.get("term", "")
         term_friendly = "1-year" if term == "P1Y" else "3-year" if term == "P3Y" else term
@@ -240,7 +240,7 @@ async def _generate_invoice_documents(db, billing_period: str) -> list[dict]:
     docs: list[dict] = []
     invoices = await db["azure_invoices"].find(
         {"billing_period_start": {"$regex": f"^{billing_period}"}}
-    ).to_list(length=None)
+    ).to_list(length=1000)
     for inv in invoices:
         text = (
             "Azure Invoice Summary:\n\n"

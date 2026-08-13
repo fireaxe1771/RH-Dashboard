@@ -75,8 +75,8 @@ resource "azurerm_container_app" "backend" {
     container {
       name   = "api"
       image  = "${data.azurerm_container_registry.acr.login_server}/rh-dashboard-backend:${var.backend_image_tag}"
-      cpu    = "0.25"
-      memory = "0.5Gi"
+      cpu    = "0.5"
+      memory = "1.0Gi"
 
       env {
         name  = "PORT"
@@ -298,8 +298,9 @@ resource "azurerm_container_app" "frontend" {
       }
     }
 
-    # SCALE TO ZERO RULES
-    min_replicas = 0
+    # Minimum 1 replica ensures the app is always warm (no cold-start
+    # latency that would compound with MSAL redirect timing).
+    min_replicas = 1
     max_replicas = 5
 
     http_scale_rule {

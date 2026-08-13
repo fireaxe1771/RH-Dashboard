@@ -18,6 +18,22 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
+# Concurrency control — prevents overlapping sync runs of the same type.
+# A scheduled sync and a manual API trigger for the same sync_type cannot
+# run simultaneously. The lock is per sync_type (not global) so different
+# sync types can run in parallel.
+# --------------------------------------------------------------------------- #
+_sync_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_sync_lock(sync_type: str) -> asyncio.Lock:
+    """Returns (creating if needed) the asyncio.Lock for the given sync type."""
+    if sync_type not in _sync_locks:
+        _sync_locks[sync_type] = asyncio.Lock()
+    return _sync_locks[sync_type]
+
+
+# --------------------------------------------------------------------------- #
 # Small parsing/coercion helpers
 # --------------------------------------------------------------------------- #
 
@@ -203,25 +219,45 @@ async def _upsert_cost_row(db, record: dict) -> None:
 
 
 async def _rebuild_cost_summary(db, billing_period: str) -> None:
-    """Aggregates azure_cost_details by dimension and upserts azure_cost_summary."""
+    """Aggregates azure_cost_details by dimension and upserts azure_cost_summary.
+
+    Streams cost details in batches of 1000 to avoid loading an entire billing
+    period (potentially tens of thousands of rows) into memory at once.
+    """
     dimensions = {
         "ServiceName": "service_name",
         "ResourceGroupName": "resource_group",
         "Location": "location",
         "ChargeType": "charge_type",
     }
+
+    # Accumulate buckets across all dimensions in a single pass through the
+    # cursor, so we only stream the collection once regardless of dimension count.
+    # Structure: { dimension: { dimension_value: {total_cost, usage_quantity, count, currency} } }
+    all_buckets: dict[str, dict[str, dict]] = {
+        dim: {} for dim in dimensions
+    }
+
+    BATCH_SIZE = 1000
     cursor = db["azure_cost_details"].find({"billing_period": billing_period})
-    rows = await cursor.to_list(length=None)
+    while True:
+        batch = await cursor.to_list(length=BATCH_SIZE)
+        if not batch:
+            break
+        for row in batch:
+            for dimension, field in dimensions.items():
+                value = row.get(field) or "Unknown"
+                bucket = all_buckets[dimension].setdefault(value, {
+                    "total_cost": 0.0,
+                    "usage_quantity": 0.0,
+                    "count": 0,
+                    "currency": row.get("billing_currency", "USD"),
+                })
+                bucket["total_cost"] += _to_float(row.get("pre_tax_cost"))
+                bucket["usage_quantity"] += _to_float(row.get("quantity"))
+                bucket["count"] += 1
 
-    for dimension, field in dimensions.items():
-        buckets: dict[str, dict] = {}
-        for row in rows:
-            value = row.get(field) or "Unknown"
-            bucket = buckets.setdefault(value, {"total_cost": 0.0, "usage_quantity": 0.0, "count": 0, "currency": row.get("billing_currency", "USD")})
-            bucket["total_cost"] += _to_float(row.get("pre_tax_cost"))
-            bucket["usage_quantity"] += _to_float(row.get("quantity"))
-            bucket["count"] += 1
-
+    for dimension, buckets in all_buckets.items():
         for value, bucket in buckets.items():
             key = {
                 "period": billing_period,
@@ -243,22 +279,27 @@ async def _rebuild_cost_summary(db, billing_period: str) -> None:
 
 async def sync_cost_details(db, billing_period: str, triggered_by: str = "manual_api") -> int:
     """Syncs unaggregated cost line items for one billing period, then rebuilds summaries."""
-    log_id = await _write_sync_log_start(db, "cost_details_daily", billing_period, triggered_by)
-    try:
-        scope = _scope()
-        start, end = _period_dates(billing_period)
-        count = 0
-        for metric in ("ActualCost", "AmortizedCost"):
-            rows = await cost_management.generate_cost_details_report(scope, start, end, metric)
-            for row in rows:
-                await _upsert_cost_row(db, _clean_cost_row(row, billing_period))
-                count += 1
-        await _rebuild_cost_summary(db, billing_period)
-        await _write_sync_log_complete(db, log_id, count)
-        return count
-    except Exception as exc:  # noqa: BLE001 — log and record failure, then re-raise
-        await _write_sync_log_failed(db, log_id, str(exc))
-        raise
+    lock = _get_sync_lock(f"cost_details_{billing_period}")
+    if lock.locked():
+        logger.warning(f"Sync cost_details_{billing_period} already in progress, skipping.")
+        return 0
+    async with lock:
+        log_id = await _write_sync_log_start(db, "cost_details_daily", billing_period, triggered_by)
+        try:
+            scope = _scope()
+            start, end = _period_dates(billing_period)
+            count = 0
+            for metric in ("ActualCost", "AmortizedCost"):
+                rows = await cost_management.generate_cost_details_report(scope, start, end, metric)
+                for row in rows:
+                    await _upsert_cost_row(db, _clean_cost_row(row, billing_period))
+                    count += 1
+            await _rebuild_cost_summary(db, billing_period)
+            await _write_sync_log_complete(db, log_id, count)
+            return count
+        except Exception as exc:  # noqa: BLE001 — log and record failure, then re-raise
+            await _write_sync_log_failed(db, log_id, str(exc))
+            raise
 
 
 # --------------------------------------------------------------------------- #
@@ -309,30 +350,35 @@ def _rg_from_id(resource_id: str) -> str:
 
 
 async def sync_advisor_recommendations(db, triggered_by: str = "manual_api") -> int:
-    log_id = await _write_sync_log_start(db, "advisor", None, triggered_by)
-    try:
-        recs = await advisor.get_all_recommendations(settings.AZURE_SUBSCRIPTION_ID)
-        seen_ids: list[str] = []
-        for rec in recs:
-            mapped = _map_advisor(rec)
-            if not mapped["recommendation_id"]:
-                continue
-            seen_ids.append(mapped["recommendation_id"])
-            await db["azure_advisor_recommendations"].update_one(
-                {"recommendation_id": mapped["recommendation_id"]},
-                {"$set": mapped},
-                upsert=True,
+    lock = _get_sync_lock("advisor")
+    if lock.locked():
+        logger.warning("Sync advisor already in progress, skipping.")
+        return 0
+    async with lock:
+        log_id = await _write_sync_log_start(db, "advisor", None, triggered_by)
+        try:
+            recs = await advisor.get_all_recommendations(settings.AZURE_SUBSCRIPTION_ID)
+            seen_ids: list[str] = []
+            for rec in recs:
+                mapped = _map_advisor(rec)
+                if not mapped["recommendation_id"]:
+                    continue
+                seen_ids.append(mapped["recommendation_id"])
+                await db["azure_advisor_recommendations"].update_one(
+                    {"recommendation_id": mapped["recommendation_id"]},
+                    {"$set": mapped},
+                    upsert=True,
+                )
+            # Mark recommendations that disappeared as Inactive
+            await db["azure_advisor_recommendations"].update_many(
+                {"recommendation_id": {"$nin": seen_ids}, "status": "Active"},
+                {"$set": {"status": "Inactive", "sync_timestamp": _now()}},
             )
-        # Mark recommendations that disappeared as Inactive
-        await db["azure_advisor_recommendations"].update_many(
-            {"recommendation_id": {"$nin": seen_ids}, "status": "Active"},
-            {"$set": {"status": "Inactive", "sync_timestamp": _now()}},
-        )
-        await _write_sync_log_complete(db, log_id, len(seen_ids))
-        return len(seen_ids)
-    except Exception as exc:  # noqa: BLE001
-        await _write_sync_log_failed(db, log_id, str(exc))
-        raise
+            await _write_sync_log_complete(db, log_id, len(seen_ids))
+            return len(seen_ids)
+        except Exception as exc:  # noqa: BLE001
+            await _write_sync_log_failed(db, log_id, str(exc))
+            raise
 
 
 # --------------------------------------------------------------------------- #
@@ -368,21 +414,26 @@ def _map_budget(raw: dict) -> dict:
 
 
 async def sync_budgets(db, triggered_by: str = "manual_api") -> int:
-    log_id = await _write_sync_log_start(db, "budgets", None, triggered_by)
-    try:
-        budgets = await cost_management.get_budgets(_scope())
-        for raw in budgets:
-            mapped = _map_budget(raw)
-            if not mapped["budget_id"]:
-                continue
-            await db["azure_budgets"].update_one(
-                {"budget_id": mapped["budget_id"]}, {"$set": mapped}, upsert=True
-            )
-        await _write_sync_log_complete(db, log_id, len(budgets))
-        return len(budgets)
-    except Exception as exc:  # noqa: BLE001
-        await _write_sync_log_failed(db, log_id, str(exc))
-        raise
+    lock = _get_sync_lock("budgets")
+    if lock.locked():
+        logger.warning("Sync budgets already in progress, skipping.")
+        return 0
+    async with lock:
+        log_id = await _write_sync_log_start(db, "budgets", None, triggered_by)
+        try:
+            budgets = await cost_management.get_budgets(_scope())
+            for raw in budgets:
+                mapped = _map_budget(raw)
+                if not mapped["budget_id"]:
+                    continue
+                await db["azure_budgets"].update_one(
+                    {"budget_id": mapped["budget_id"]}, {"$set": mapped}, upsert=True
+                )
+            await _write_sync_log_complete(db, log_id, len(budgets))
+            return len(budgets)
+        except Exception as exc:  # noqa: BLE001
+            await _write_sync_log_failed(db, log_id, str(exc))
+            raise
 
 
 def _map_alert(raw: dict) -> dict:
@@ -427,21 +478,26 @@ def _parse_dt(value) -> datetime | None:
 
 
 async def sync_alerts(db, triggered_by: str = "manual_api") -> int:
-    log_id = await _write_sync_log_start(db, "alerts", None, triggered_by)
-    try:
-        alerts = await cost_management.get_alerts(_scope())
-        for raw in alerts:
-            mapped = _map_alert(raw)
-            if not mapped["alert_id"]:
-                continue
-            await db["azure_cost_alerts"].update_one(
-                {"alert_id": mapped["alert_id"]}, {"$set": mapped}, upsert=True
-            )
-        await _write_sync_log_complete(db, log_id, len(alerts))
-        return len(alerts)
-    except Exception as exc:  # noqa: BLE001
-        await _write_sync_log_failed(db, log_id, str(exc))
-        raise
+    lock = _get_sync_lock("alerts")
+    if lock.locked():
+        logger.warning("Sync alerts already in progress, skipping.")
+        return 0
+    async with lock:
+        log_id = await _write_sync_log_start(db, "alerts", None, triggered_by)
+        try:
+            alerts = await cost_management.get_alerts(_scope())
+            for raw in alerts:
+                mapped = _map_alert(raw)
+                if not mapped["alert_id"]:
+                    continue
+                await db["azure_cost_alerts"].update_one(
+                    {"alert_id": mapped["alert_id"]}, {"$set": mapped}, upsert=True
+                )
+            await _write_sync_log_complete(db, log_id, len(alerts))
+            return len(alerts)
+        except Exception as exc:  # noqa: BLE001
+            await _write_sync_log_failed(db, log_id, str(exc))
+            raise
 
 
 # --------------------------------------------------------------------------- #
@@ -475,23 +531,28 @@ def _map_invoice(raw: dict) -> dict:
 
 
 async def sync_invoices(db, triggered_by: str = "manual_api") -> int:
-    log_id = await _write_sync_log_start(db, "invoices", None, triggered_by)
-    try:
-        invoices = await billing_accounts.get_invoices(
-            settings.AZURE_BILLING_ACCOUNT_ID, settings.AZURE_BILLING_ACCOUNT_TYPE
-        )
-        for raw in invoices:
-            mapped = _map_invoice(raw)
-            if not mapped["invoice_id"]:
-                continue
-            await db["azure_invoices"].update_one(
-                {"invoice_id": mapped["invoice_id"]}, {"$set": mapped}, upsert=True
+    lock = _get_sync_lock("invoices")
+    if lock.locked():
+        logger.warning("Sync invoices already in progress, skipping.")
+        return 0
+    async with lock:
+        log_id = await _write_sync_log_start(db, "invoices", None, triggered_by)
+        try:
+            invoices = await billing_accounts.get_invoices(
+                settings.AZURE_BILLING_ACCOUNT_ID, settings.AZURE_BILLING_ACCOUNT_TYPE
             )
-        await _write_sync_log_complete(db, log_id, len(invoices))
-        return len(invoices)
-    except Exception as exc:  # noqa: BLE001
-        await _write_sync_log_failed(db, log_id, str(exc))
-        raise
+            for raw in invoices:
+                mapped = _map_invoice(raw)
+                if not mapped["invoice_id"]:
+                    continue
+                await db["azure_invoices"].update_one(
+                    {"invoice_id": mapped["invoice_id"]}, {"$set": mapped}, upsert=True
+                )
+            await _write_sync_log_complete(db, log_id, len(invoices))
+            return len(invoices)
+        except Exception as exc:  # noqa: BLE001
+            await _write_sync_log_failed(db, log_id, str(exc))
+            raise
 
 
 # --------------------------------------------------------------------------- #
@@ -547,43 +608,48 @@ def _map_reservation_recommendation(raw: dict) -> dict:
 
 
 async def sync_reservations(db, triggered_by: str = "manual_api") -> int:
-    log_id = await _write_sync_log_start(db, "reservations", None, triggered_by)
-    try:
-        scope = _scope()
-        count = 0
-        now = _now()
-        start, end = _period_dates(f"{now.year:04d}-{now.month:02d}")
-        details = await consumption.get_reservation_details(scope, start, end)
-        for raw in details:
-            mapped = _map_reservation_detail(raw)
-            if not mapped["reservation_id"] or not mapped["usage_date"]:
-                continue
-            await db["azure_reservation_details"].update_one(
-                {"reservation_id": mapped["reservation_id"], "usage_date": mapped["usage_date"]},
-                {"$set": mapped},
-                upsert=True,
-            )
-            count += 1
+    lock = _get_sync_lock("reservations")
+    if lock.locked():
+        logger.warning("Sync reservations already in progress, skipping.")
+        return 0
+    async with lock:
+        log_id = await _write_sync_log_start(db, "reservations", None, triggered_by)
+        try:
+            scope = _scope()
+            count = 0
+            now = _now()
+            start, end = _period_dates(f"{now.year:04d}-{now.month:02d}")
+            details = await consumption.get_reservation_details(scope, start, end)
+            for raw in details:
+                mapped = _map_reservation_detail(raw)
+                if not mapped["reservation_id"] or not mapped["usage_date"]:
+                    continue
+                await db["azure_reservation_details"].update_one(
+                    {"reservation_id": mapped["reservation_id"], "usage_date": mapped["usage_date"]},
+                    {"$set": mapped},
+                    upsert=True,
+                )
+                count += 1
 
-        for term in ("P1Y", "P3Y"):
-            for look_back in ("Last30Days", "Last60Days"):
-                recs = await consumption.get_reservation_recommendations(scope, term, look_back)
-                for raw in recs:
-                    mapped = _map_reservation_recommendation(raw)
-                    key = {
-                        "subscription_id": mapped["subscription_id"],
-                        "sku_name": mapped["sku_name"],
-                        "term": mapped["term"],
-                        "scope": mapped["scope"],
-                        "location": mapped["location"],
-                    }
-                    await db["azure_reservation_recommendations"].update_one(key, {"$set": mapped}, upsert=True)
-                    count += 1
-        await _write_sync_log_complete(db, log_id, count)
-        return count
-    except Exception as exc:  # noqa: BLE001
-        await _write_sync_log_failed(db, log_id, str(exc))
-        raise
+            for term in ("P1Y", "P3Y"):
+                for look_back in ("Last30Days", "Last60Days"):
+                    recs = await consumption.get_reservation_recommendations(scope, term, look_back)
+                    for raw in recs:
+                        mapped = _map_reservation_recommendation(raw)
+                        key = {
+                            "subscription_id": mapped["subscription_id"],
+                            "sku_name": mapped["sku_name"],
+                            "term": mapped["term"],
+                            "scope": mapped["scope"],
+                            "location": mapped["location"],
+                        }
+                        await db["azure_reservation_recommendations"].update_one(key, {"$set": mapped}, upsert=True)
+                        count += 1
+            await _write_sync_log_complete(db, log_id, count)
+            return count
+        except Exception as exc:  # noqa: BLE001
+            await _write_sync_log_failed(db, log_id, str(exc))
+            raise
 
 
 # --------------------------------------------------------------------------- #
@@ -609,27 +675,32 @@ def _map_resource(raw: dict) -> dict:
 
 
 async def sync_resource_inventory(db, triggered_by: str = "manual_api") -> int:
-    log_id = await _write_sync_log_start(db, "resource_inventory", None, triggered_by)
-    try:
-        subs = [settings.AZURE_SUBSCRIPTION_ID]
-        resources = await resource_graph.query_resources(subs, resource_graph.KQL_ALL_RESOURCES)
-        deallocated = await resource_graph.query_resources(subs, resource_graph.KQL_DEALLOCATED_VMS)
-        power_map = {d.get("id"): d.get("powerState") for d in deallocated}
+    lock = _get_sync_lock("resource_inventory")
+    if lock.locked():
+        logger.warning("Sync resource_inventory already in progress, skipping.")
+        return 0
+    async with lock:
+        log_id = await _write_sync_log_start(db, "resource_inventory", None, triggered_by)
+        try:
+            subs = [settings.AZURE_SUBSCRIPTION_ID]
+            resources = await resource_graph.query_resources(subs, resource_graph.KQL_ALL_RESOURCES)
+            deallocated = await resource_graph.query_resources(subs, resource_graph.KQL_DEALLOCATED_VMS)
+            power_map = {d.get("id"): d.get("powerState") for d in deallocated}
 
-        for raw in resources:
-            mapped = _map_resource(raw)
-            if not mapped["resource_id"]:
-                continue
-            if mapped["resource_id"] in power_map:
-                mapped["power_state"] = power_map[mapped["resource_id"]]
-            await db["azure_resource_inventory"].update_one(
-                {"resource_id": mapped["resource_id"]}, {"$set": mapped}, upsert=True
-            )
-        await _write_sync_log_complete(db, log_id, len(resources))
-        return len(resources)
-    except Exception as exc:  # noqa: BLE001
-        await _write_sync_log_failed(db, log_id, str(exc))
-        raise
+            for raw in resources:
+                mapped = _map_resource(raw)
+                if not mapped["resource_id"]:
+                    continue
+                if mapped["resource_id"] in power_map:
+                    mapped["power_state"] = power_map[mapped["resource_id"]]
+                await db["azure_resource_inventory"].update_one(
+                    {"resource_id": mapped["resource_id"]}, {"$set": mapped}, upsert=True
+                )
+            await _write_sync_log_complete(db, log_id, len(resources))
+            return len(resources)
+        except Exception as exc:  # noqa: BLE001
+            await _write_sync_log_failed(db, log_id, str(exc))
+            raise
 
 
 # --------------------------------------------------------------------------- #
@@ -664,24 +735,29 @@ def _map_retail_price(raw: dict) -> dict:
 
 
 async def sync_retail_prices(db, triggered_by: str = "manual_api") -> int:
-    log_id = await _write_sync_log_start(db, "retail_prices", None, triggered_by)
-    try:
-        prices = await retail_prices.sync_common_service_prices()
-        for raw in prices:
-            mapped = _map_retail_price(raw)
-            if not mapped["meter_id"]:
-                continue
-            key = {
-                "meter_id": mapped["meter_id"],
-                "arm_region_name": mapped["arm_region_name"],
-                "type": mapped["type"],
-            }
-            await db["azure_retail_prices"].update_one(key, {"$set": mapped}, upsert=True)
-        await _write_sync_log_complete(db, log_id, len(prices))
-        return len(prices)
-    except Exception as exc:  # noqa: BLE001
-        await _write_sync_log_failed(db, log_id, str(exc))
-        raise
+    lock = _get_sync_lock("retail_prices")
+    if lock.locked():
+        logger.warning("Sync retail_prices already in progress, skipping.")
+        return 0
+    async with lock:
+        log_id = await _write_sync_log_start(db, "retail_prices", None, triggered_by)
+        try:
+            prices = await retail_prices.sync_common_service_prices()
+            for raw in prices:
+                mapped = _map_retail_price(raw)
+                if not mapped["meter_id"]:
+                    continue
+                key = {
+                    "meter_id": mapped["meter_id"],
+                    "arm_region_name": mapped["arm_region_name"],
+                    "type": mapped["type"],
+                }
+                await db["azure_retail_prices"].update_one(key, {"$set": mapped}, upsert=True)
+            await _write_sync_log_complete(db, log_id, len(prices))
+            return len(prices)
+        except Exception as exc:  # noqa: BLE001
+            await _write_sync_log_failed(db, log_id, str(exc))
+            raise
 
 
 # --------------------------------------------------------------------------- #
