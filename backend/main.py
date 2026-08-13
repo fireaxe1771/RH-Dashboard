@@ -1,3 +1,10 @@
+"""FastAPI application entry point for the RecoveryHub Dashboard backend.
+
+Configures CORS, mounts all route groups (claims dashboards, AI analytics,
+AI adoption, billing), seeds default dashboards on startup, and manages the
+APScheduler-based billing sync scheduler lifecycle (start on startup,
+graceful shutdown on stop).
+"""
 import asyncio
 import logging
 import os

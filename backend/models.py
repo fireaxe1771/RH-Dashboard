@@ -1,3 +1,9 @@
+"""Pydantic models for the RecoveryHub Dashboard API.
+
+Defines request/response schemas for dashboards, widgets, filters, and
+user preferences. These models mirror the MongoDB document structure and
+provide validation + serialization for the FastAPI route handlers.
+"""
 from pydantic import BaseModel, ConfigDict, Field, EmailStr
 from typing import List, Optional, Dict, Any
 from datetime import datetime

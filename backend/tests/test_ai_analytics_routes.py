@@ -315,3 +315,61 @@ class TestDateSpanValidation:
                 "/api/ai-analytics/outcomes/summary?start_date=2026-01-01&end_date=2026-01-31"
             , headers=AUTH)
             assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Shared route error handling (_handle_route_errors decorator)
+# ---------------------------------------------------------------------------
+
+class TestRouteErrorHandling:
+    """The decorator must preserve a handler's own HTTPException status codes
+    while converting ValueError to 400 and anything else to a generic 500."""
+
+    def test_handler_raised_http_exception_keeps_its_status(self, test_client):
+        # The trend handler validates `grain` itself and raises HTTPException(400)
+        # from inside the decorated function body. A decorator that caught this
+        # as a generic error would report 500 instead.
+        response = test_client.get(
+            "/api/ai-analytics/outcomes/trend?grain=bogus", headers=AUTH
+        )
+        assert response.status_code == 400
+        assert "grain must be one of" in response.json()["detail"]
+
+    def test_value_error_becomes_400_with_message(self, test_client):
+        # Patch the service function in the routes module namespace — that's
+        # the symbol the decorated handler actually calls, so the ValueError
+        # propagates straight up to _handle_route_errors (the underlying
+        # outcome_service swallows repo errors, so patching the repo wouldn't
+        # exercise the decorator's ValueError branch).
+        with patch(
+            "ai_analytics_routes.get_outcome_summary",
+            side_effect=ValueError("bad filter value"),
+        ):
+            response = test_client.get(
+                "/api/ai-analytics/outcomes/summary", headers=AUTH
+            )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "bad filter value"
+
+    def test_unexpected_error_becomes_generic_500(self, test_client):
+        with patch(
+            "ai_analytics_routes.get_outcome_summary",
+            side_effect=RuntimeError("connection reset by peer"),
+        ):
+            response = test_client.get(
+                "/api/ai-analytics/outcomes/summary", headers=AUTH
+            )
+        assert response.status_code == 500
+        # Internal details must not leak to the client
+        assert response.json()["detail"] == "Internal server error"
+        assert "connection reset" not in response.text
+
+    def test_decorated_handlers_keep_their_query_params(self, test_client):
+        """functools.wraps preserves __wrapped__, so FastAPI still resolves the
+        original signature — query params and their validation stay intact."""
+        # page_size has le=250; exceeding it must still be a 422 from FastAPI,
+        # which proves the decorator did not erase the parameter metadata.
+        response = test_client.get(
+            "/api/ai-analytics/outcomes/invoices?page_size=9999", headers=AUTH
+        )
+        assert response.status_code == 422

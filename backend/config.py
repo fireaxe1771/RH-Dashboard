@@ -1,3 +1,10 @@
+"""Application configuration loaded from environment variables.
+
+Defines the ``Settings`` class that centralises all runtime configuration
+(database connections, Entra ID auth, Azure billing credentials, AI provider
+settings, vectorizer limits) with validation at startup. Environment
+variables are loaded from ``.env`` for local development.
+"""
 import os
 import sys
 from dotenv import load_dotenv

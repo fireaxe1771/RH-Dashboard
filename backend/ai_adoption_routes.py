@@ -1,3 +1,9 @@
+"""FastAPI routes for the AI Adoption report (/api/ai-adoption/*).
+
+Provides department-level AI adoption metrics: which departments are using AI,
+which aren't, and what percentage of total draft volume flows through AI-enabled
+departments. Used by the frontend AiAdoptionDashboard component.
+"""
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth import get_current_user

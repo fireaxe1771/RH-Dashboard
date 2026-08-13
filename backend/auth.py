@@ -1,3 +1,9 @@
+"""Entra ID (Azure AD) JWT authentication for the FastAPI backend.
+
+Validates bearer tokens from the frontend MSAL SPA by fetching the Entra ID
+JWKS, checking issuer and audience, and extracting the authenticated user's
+identity. Supports a DEV_AUTH_BYPASS mode for local testing without Entra.
+"""
 import logging
 import time
 import urllib.request

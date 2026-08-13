@@ -1,3 +1,10 @@
+"""Service layer for the AI Adoption report.
+
+Queries the RecoveryHub SQL Server for department submission counts and
+joins them with AI configuration status to produce an adoption summary:
+how many departments use AI, how many drafts flow through AI, and what
+the coverage gap is. Results are returned as ``AiAdoptionResponse``.
+"""
 import logging
 from typing import Any, Dict, List, Optional
 

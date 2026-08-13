@@ -1,3 +1,10 @@
+"""FastAPI routes for Azure Billing analytics (/api/billing/*).
+
+Exposes cost summaries, trends, top spenders, budgets, alerts, Advisor
+recommendations, invoices, reservations, and the AI cost-analyst Q&A
+endpoint. Also provides sync trigger/status endpoints for the billing
+data slave process.
+"""
 import logging
 from datetime import datetime, timezone
 
