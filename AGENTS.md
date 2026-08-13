@@ -185,3 +185,39 @@ claim buckets:
 `Claims` metadata (`_resolve_claims_column_map()`), and resolves the best date
 column (`_resolve_claims_date_column()`) by preferring the temporal
 `AS_ROW_START` column and falling back to `DateCreated` or similar.
+
+## AI Analytics Worker — Phase 0
+
+The AI Analytics Worker is an event-driven projection service that reads
+RecoveryHub_AI MongoDB and writes dashboard-oriented analytics projections.
+Phase 0 (source audit + contract freeze) is documented in
+`docs/ai-analytics/PHASE_0_IMPLEMENTATION_PLAN.md` — this is the single
+authoritative source for the verified data contract, projection schema, and
+worker architecture.
+
+### Shared Normalization Module (DRY)
+
+`backend/ai_analytics/normalization_core.py` is the single source of truth for
+all normalization logic (business outcome classification, writeback
+normalization, retry detection, billability classification, confidence
+bucketing, processing duration). Both the existing direct-read analytics
+services and the future AI Analytics Worker import from this module.
+
+`backend/ai_analytics/normalization.py` is a re-export shim that preserves
+backward compatibility with existing imports. New code should import from
+`normalization_core.py` directly.
+
+### Verified Production Schema (2026-08-13)
+
+- MongoDB Atlas: replica set `atlas-3oe9kl-shard-0` (3 members, v8.0.29)
+- Change Streams: confirmed available and tested
+- `ai_line_items`: indexed on `claim_id`, 17,732 docs
+- `ai_agent_conversations`: indexed on `claim_id` and `line_item_record_id`,
+  18,048 docs
+- Conversation coverage: 100% (every ai_line_items has a linked conversation)
+- Reconciliation by `updated_at`: viable (0.087s for 1-day query, no dedicated
+  index needed at current scale)
+- `is_billable`, `thread_id`, `retry_thread_id`: still 0% populated (use
+  `billing_category` and `retry_count` instead)
+- Recent records (last 30 days): `billing_category` dropped to 21% populated
+  (was 99.8% historically) — `classify_billability()` handles this correctly
