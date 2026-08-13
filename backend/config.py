@@ -1,3 +1,10 @@
+"""Application configuration loaded from environment variables.
+
+Defines the ``Settings`` class that centralises all runtime configuration
+(database connections, Entra ID auth, Azure billing credentials, AI provider
+settings, vectorizer limits) with validation at startup. Environment
+variables are loaded from ``.env`` for local development.
+"""
 import os
 import sys
 from dotenv import load_dotenv
@@ -38,6 +45,19 @@ class Settings:
     AZURE_CLIENT_ID: str = os.getenv("AZURE_CLIENT_ID", "")
     AZURE_TENANT_ID: str = os.getenv("AZURE_TENANT_ID", "")
 
+    # Frontend origin used to restrict CORS in production. Defaults to the
+    # local dev origin; must be set to the deployed frontend FQDN in prod.
+    # Must be a valid origin (scheme + host, no path, no trailing slash).
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+    # --- JWKS fetch resilience ---
+    # Configurable so deployments in high-latency regions can tune without
+    # code changes. Defaults are conservative (2 attempts, 15s timeout, 1s
+    # backoff) and suit most Azure Container Apps environments.
+    JWKS_FETCH_MAX_ATTEMPTS: int = int(os.getenv("JWKS_FETCH_MAX_ATTEMPTS", "2"))
+    JWKS_FETCH_TIMEOUT: int = int(os.getenv("JWKS_FETCH_TIMEOUT", "15"))
+    JWKS_FETCH_BACKOFF: int = int(os.getenv("JWKS_FETCH_BACKOFF", "1"))
+
     # --- Azure Billing Integration ---
     AZURE_BILLING_CLIENT_ID: str = os.getenv("AZURE_BILLING_CLIENT_ID", "")
     AZURE_BILLING_CLIENT_SECRET: str = os.getenv("AZURE_BILLING_CLIENT_SECRET", "")
@@ -56,6 +76,21 @@ class Settings:
     AZURE_OPENAI_ENDPOINT: str = os.getenv("AZURE_OPENAI_ENDPOINT", "")
     AZURE_OPENAI_API_KEY: str = os.getenv("AZURE_OPENAI_API_KEY", "")
     AZURE_OPENAI_API_VERSION: str = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+
+    # --- Vectorizer rate limiting and cost controls ---
+    # Max documents to embed in a single run_vectorization call. Prevents
+    # runaway costs on large billing periods. 0 = no limit.
+    VECTORIZER_MAX_DOCUMENTS: int = int(os.getenv("VECTORIZER_MAX_DOCUMENTS", "5000"))
+    # Batch size for embedding API calls. OpenAI supports up to 2048 inputs
+    # per request, but 100 is conservative for token-limit safety.
+    VECTORIZER_BATCH_SIZE: int = int(os.getenv("VECTORIZER_BATCH_SIZE", "100"))
+    # Seconds to sleep between batches (rate limiting). Set to 0 to disable.
+    VECTORIZER_BATCH_DELAY: float = float(os.getenv("VECTORIZER_BATCH_DELAY", "0.5"))
+    # Max retries on transient embedding API errors (429, 500, 503, timeout).
+    VECTORIZER_MAX_RETRIES: int = int(os.getenv("VECTORIZER_MAX_RETRIES", "3"))
+    # Minimum text length (chars) to warrant embedding. Shorter texts produce
+    # low-quality vectors and waste API quota.
+    VECTORIZER_MIN_TEXT_LENGTH: int = int(os.getenv("VECTORIZER_MIN_TEXT_LENGTH", "10"))
 
     # --- Billing Sync Configuration ---
     BILLING_SYNC_ENABLED: bool = os.getenv("BILLING_SYNC_ENABLED", "false").lower() == "true"
@@ -97,7 +132,42 @@ class Settings:
                 missing.append("AZURE_CLIENT_ID")
             if not self.AZURE_TENANT_ID:
                 missing.append("AZURE_TENANT_ID")
-            
+
+        # Validate FRONTEND_URL format: must be a valid origin (scheme + host,
+        # no path, no trailing slash). A malformed value would silently break
+        # CORS at runtime, which is hard to debug.
+        if self.FRONTEND_URL:
+            if not (self.FRONTEND_URL.startswith("http://") or self.FRONTEND_URL.startswith("https://")):
+                missing.append("FRONTEND_URL (must start with http:// or https://)")
+            else:
+                # Strip the scheme and check that no path or trailing slash
+                # remains — a bare origin is "host" only, not "host/" or "host/path".
+                stripped = self.FRONTEND_URL.split("://", 1)[1]
+                if not stripped:
+                    missing.append("FRONTEND_URL (must include a host after the scheme)")
+                elif "/" in stripped:
+                    missing.append("FRONTEND_URL (must be origin only: scheme + host, no path or trailing slash)")
+
+        # Validate JWKS fetch resilience parameters: must be positive integers.
+        if self.JWKS_FETCH_MAX_ATTEMPTS < 1:
+            missing.append("JWKS_FETCH_MAX_ATTEMPTS (must be >= 1)")
+        if self.JWKS_FETCH_TIMEOUT < 1:
+            missing.append("JWKS_FETCH_TIMEOUT (must be >= 1 second)")
+        if self.JWKS_FETCH_BACKOFF < 0:
+            missing.append("JWKS_FETCH_BACKOFF (must be >= 0 seconds)")
+
+        # Validate vectorizer parameters
+        if self.VECTORIZER_MAX_DOCUMENTS < 0:
+            missing.append("VECTORIZER_MAX_DOCUMENTS (must be >= 0)")
+        if self.VECTORIZER_BATCH_SIZE < 1:
+            missing.append("VECTORIZER_BATCH_SIZE (must be >= 1)")
+        if self.VECTORIZER_BATCH_DELAY < 0:
+            missing.append("VECTORIZER_BATCH_DELAY (must be >= 0)")
+        if self.VECTORIZER_MAX_RETRIES < 0:
+            missing.append("VECTORIZER_MAX_RETRIES (must be >= 0)")
+        if self.VECTORIZER_MIN_TEXT_LENGTH < 0:
+            missing.append("VECTORIZER_MIN_TEXT_LENGTH (must be >= 0)")
+
         if missing:
             error_msg = (
                 f"\nFATAL CONFIGURATION ERROR: The following required environment variables are missing:\n"

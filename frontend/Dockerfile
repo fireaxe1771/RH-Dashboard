@@ -8,6 +8,11 @@ ARG VITE_AZURE_TENANT_ID
 ENV VITE_AZURE_CLIENT_ID=$VITE_AZURE_CLIENT_ID
 ENV VITE_AZURE_TENANT_ID=$VITE_AZURE_TENANT_ID
 
+# SECURITY NOTE: VITE_DEV_AUTH_BYPASS is intentionally NOT declared as a
+# build arg here, so it cannot be baked into production images. It should
+# only be used in local development via docker-compose or direct npm run dev.
+# Do NOT add it as an ARG without explicit security review.
+
 COPY package*.json ./
 RUN npm ci
 COPY . .

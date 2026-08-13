@@ -1,3 +1,10 @@
+"""MongoDB connection management for the RecoveryHub Dashboard backend.
+
+Manages async Motor clients for two databases: the app-metadata database
+(dashboards, widgets, user prefs) and the AI analytics database
+(ai_line_items, conversations, process logs). Connections are initialised
+on startup and closed on shutdown via the FastAPI lifespan handler.
+"""
 import logging
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import settings

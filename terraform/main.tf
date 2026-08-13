@@ -75,8 +75,8 @@ resource "azurerm_container_app" "backend" {
     container {
       name   = "api"
       image  = "${data.azurerm_container_registry.acr.login_server}/rh-dashboard-backend:${var.backend_image_tag}"
-      cpu    = "0.25"
-      memory = "0.5Gi"
+      cpu    = "0.5"
+      memory = "1.0Gi"
 
       env {
         name  = "PORT"
@@ -123,12 +123,23 @@ resource "azurerm_container_app" "backend" {
         value = var.azure_sql_tenant_id
       }
       env {
+        # The backend validates the SPA's idToken audience against this client
+        # ID. This is intentional — the frontend sends the idToken
+        # (aud=SPA client ID) as the bearer token, and the backend verifies
+        # that same audience. This must match VITE_AZURE_CLIENT_ID baked into
+        # the frontend image.
         name  = "AZURE_CLIENT_ID"
         value = var.azure_spa_client_id
       }
       env {
         name  = "AZURE_TENANT_ID"
         value = var.azure_tenant_id
+      }
+      env {
+        # Restricts backend CORS to the deployed frontend origin. Must match
+        # the frontend Container App's external FQDN (scheme + host).
+        name  = "FRONTEND_URL"
+        value = var.frontend_url
       }
 
       # --- Azure Billing Integration ---
@@ -287,8 +298,9 @@ resource "azurerm_container_app" "frontend" {
       }
     }
 
-    # SCALE TO ZERO RULES
-    min_replicas = 0
+    # Minimum 1 replica ensures the app is always warm (no cold-start
+    # latency that would compound with MSAL redirect timing).
+    min_replicas = 1
     max_replicas = 5
 
     http_scale_rule {

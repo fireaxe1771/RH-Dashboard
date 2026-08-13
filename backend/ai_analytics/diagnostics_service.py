@@ -310,7 +310,7 @@ async def get_agent_stats(
             {"$sort": {"count": -1}},
         ]
         cursor = collection.aggregate(pipeline)
-        results = await cursor.to_list(length=None)
+        results = await cursor.to_list(length=1000)
     except Exception as e:
         logger.error(f"Failed to fetch agent stats: {e}")
         return []

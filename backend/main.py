@@ -1,3 +1,10 @@
+"""FastAPI application entry point for the RecoveryHub Dashboard backend.
+
+Configures CORS, mounts all route groups (claims dashboards, AI analytics,
+AI adoption, billing), seeds default dashboards on startup, and manages the
+APScheduler-based billing sync scheduler lifecycle (start on startup,
+graceful shutdown on stop).
+"""
 import asyncio
 import logging
 import os
@@ -55,8 +62,9 @@ async def lifespan(app: FastAPI):
     
     # Clean disconnect on shutdown
     if settings.BILLING_SYNC_ENABLED and billing_scheduler.running:
-        billing_scheduler.shutdown(wait=False)
-        logger.info("Billing sync scheduler stopped.")
+        logger.info("Shutting down billing scheduler, waiting for in-flight jobs to complete...")
+        billing_scheduler.shutdown(wait=True)
+        logger.info("Billing sync scheduler stopped cleanly.")
     db_manager.disconnect()
 
 
@@ -77,10 +85,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for React frontend requests
+# Enable CORS for React frontend requests.
+# Restricted to the configured frontend origin (FRONTEND_URL) to avoid the
+# CSRF risk of allow_origins=["*"] combined with allow_credentials=True.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict to FQDN domain of container app
+    allow_origins=[settings.FRONTEND_URL],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

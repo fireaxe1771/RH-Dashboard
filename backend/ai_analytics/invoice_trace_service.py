@@ -243,6 +243,28 @@ async def get_invoice_trace(ai_db, claim_id: int) -> AiInvoiceTrace:
     # 9. Build comparison
     comparison = _build_comparison(ai_line_items, final_line_items)
 
+    # 9a. Sanitize the raw AI record for JSON serialization.
+    # MongoDB documents contain BSON-specific types (ObjectId, datetime, etc.)
+    # that Pydantic cannot serialize to JSON. We convert _id to a string and
+    # drop any other non-serializable values so the raw_ai_record field can
+    # be safely returned in the API response.
+    raw_ai_record_sanitized: Optional[Dict[str, Any]] = None
+    if ai_record:
+        raw_ai_record_sanitized = {}
+        for k, v in ai_record.items():
+            if k == "_id":
+                raw_ai_record_sanitized[k] = str(v)
+            elif hasattr(v, "isoformat"):
+                raw_ai_record_sanitized[k] = v.isoformat()
+            elif isinstance(v, (list, dict)):
+                # Best-effort: keep as-is; nested BSON types are rare in
+                # the fields the frontend actually displays.
+                raw_ai_record_sanitized[k] = v
+            elif isinstance(v, (str, int, float, bool, type(None))):
+                raw_ai_record_sanitized[k] = v
+            else:
+                raw_ai_record_sanitized[k] = str(v)
+
     # 10. Normalize rejection reason
     raw_rejection_reason = None
     raw_rejection_descr = None
@@ -317,7 +339,7 @@ async def get_invoice_trace(ai_db, claim_id: int) -> AiInvoiceTrace:
         ai_line_items=ai_line_items,
         final_line_items=final_line_items,
         comparison=comparison,
-        raw_ai_record=ai_record,
+        raw_ai_record=raw_ai_record_sanitized,
         source_status=source_status,
         data_complete=data_complete,
     )

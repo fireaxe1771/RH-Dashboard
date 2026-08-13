@@ -1,3 +1,10 @@
+"""SQL Server data access for the RecoveryHub Claims database.
+
+Wraps pymssql/pyodbc connections to the Claims SQL Server and provides
+query functions for dashboard widgets (drafts, runs, submissions, department
+breakdowns). Handles column-name normalization against live metadata and
+temporal table workarounds (see AGENTS.md for the Claims table constraints).
+"""
 import pymssql
 import logging
 import re

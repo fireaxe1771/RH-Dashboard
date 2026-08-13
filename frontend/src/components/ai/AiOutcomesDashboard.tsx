@@ -20,12 +20,12 @@ import {
   AiDepartmentOutcomeStat,
   AiBillabilityStat,
 } from '../../services/aiAnalyticsApi';
+import { api } from '../../services/api';
 import { billingStyles, LoadingState, ErrorState, EmptyState, formatPercent } from '../billing/shared';
+import { computeDateRange } from '../FilterBar';
 import { AiAnalyticsFilterBar } from './AiAnalyticsFilterBar';
 import { AiInvoiceCohortGrid } from './AiInvoiceCohortGrid';
 import { AiInvoiceTrace } from './AiInvoiceTrace';
-
-const fmt = (d: Date): string => d.toISOString().split('T')[0];
 
 // ---------------------------------------------------------------------------
 // KPI Card
@@ -338,15 +338,10 @@ const BillabilityView: React.FC<{ stats: AiBillabilityStat | null }> = ({ stats 
 // ---------------------------------------------------------------------------
 
 export const AiOutcomesDashboard: React.FC = () => {
-  const today = useMemo(() => fmt(new Date()), []);
-  const monthAgo = useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    return fmt(d);
-  }, []);
-
-  const [startDate, setStartDate] = useState(monthAgo);
-  const [endDate, setEndDate] = useState(today);
+  const [serverDate, setServerDate] = useState<string | undefined>(undefined);
+  const [dateReady, setDateReady] = useState(false);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [departmentId, setDepartmentId] = useState<number | undefined>(undefined);
   const [businessOutcome, setBusinessOutcome] = useState<string | undefined>(undefined);
 
@@ -359,6 +354,29 @@ export const AiOutcomesDashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [selectedClaimId, setSelectedClaimId] = useState<number | null>(null);
 
+  // Fetch the database server date once on mount, then compute the initial
+  // date range (current month) so queries align with SQL Server's GETDATE().
+  useEffect(() => {
+    let active = true;
+    api.getServerDate()
+      .then((dateStr) => {
+        if (!active) return;
+        setServerDate(dateStr);
+        const dates = computeDateRange('month', 0, dateStr);
+        setStartDate(dates.start_date);
+        setEndDate(dates.end_date);
+        setDateReady(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        const dates = computeDateRange('month', 0);
+        setStartDate(dates.start_date);
+        setEndDate(dates.end_date);
+        setDateReady(true);
+      });
+    return () => { active = false; };
+  }, []);
+
   const filters: AiAnalyticsFilters = useMemo(
     () => ({
       start_date: startDate,
@@ -370,6 +388,7 @@ export const AiOutcomesDashboard: React.FC = () => {
   );
 
   useEffect(() => {
+    if (!dateReady) return;
     let active = true;
     setLoading(true);
     setError(null);
@@ -401,9 +420,9 @@ export const AiOutcomesDashboard: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [filters]);
+  }, [filters, dateReady]);
 
-  if (loading && !summary) return <LoadingState label="Loading AI outcomes data…" />;
+  if (!dateReady || (loading && !summary)) return <LoadingState label="Loading AI outcomes data…" />;
   if (error) return <ErrorState message={error} />;
   if (!summary) return null;
 
@@ -418,6 +437,9 @@ export const AiOutcomesDashboard: React.FC = () => {
         endDate={endDate}
         onStartDateChange={setStartDate}
         onEndDateChange={setEndDate}
+        serverDate={serverDate}
+        defaultRangeType="month"
+        defaultPeriodsBack={0}
         departmentId={departmentId}
         onDepartmentIdChange={setDepartmentId}
         businessOutcome={businessOutcome}

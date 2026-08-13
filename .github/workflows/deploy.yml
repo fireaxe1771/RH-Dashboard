@@ -20,7 +20,7 @@ jobs:
 
       # Backend Testing
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.6.0
         with:
           python-version: "3.11"
           cache: "pip"
@@ -58,6 +58,61 @@ jobs:
     name: Build, Push, and Deploy
     needs: test
     runs-on: ubuntu-latest
+    # Production environment gate.
+    #
+    # SETUP REQUIRED: this only blocks deployments once the "production"
+    # environment exists in GitHub repo settings WITH required reviewers:
+    #   Settings -> Environments -> New environment -> name it "production"
+    #   -> enable "Required reviewers" and add the approver(s).
+    # Until reviewers are configured, this line only labels the job as
+    # "production" in the UI; pushes to main still deploy automatically.
+    # Optionally also set a "Wait timer" and restrict deployment branches
+    # to main under the same environment settings.
+    # environment: production  # Uncomment after creating "production" environment in repo settings
+    # Shared env for all Terraform steps — avoids repeating the same
+    # TF_VAR_* and ARM_* secrets across init, validate, plan, and apply.
+    env:
+      # Authenticate to the Terraform state backend (Azure Storage) via OIDC
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      # Inject secrets as Terraform variables (TF_VAR_ prefix)
+      TF_VAR_resource_group_name: ${{ secrets.AZURE_RESOURCE_GROUP }}
+      TF_VAR_acr_name: ${{ secrets.ACR_NAME }}
+      TF_VAR_backend_image_tag: ${{ github.sha }}
+      TF_VAR_frontend_image_tag: ${{ github.sha }}
+      TF_VAR_mongodb_uri: ${{ secrets.MONGODB_URI }}
+      TF_VAR_mongodb_db_name: ${{ secrets['MONGODB_DB_NAME'] || 'recoveryhub_dashboard' }}
+      TF_VAR_recoveryhub_ai_mongodb_db_name: AI_FEE_CALC_MULTI_AGENT_PROD
+      TF_VAR_azure_sql_host: ${{ secrets.AZURE_SQL_HOST }}
+      TF_VAR_azure_sql_db: ${{ secrets.AZURE_SQL_DB }}
+      TF_VAR_azure_sql_user: ${{ secrets.AZURE_SQL_USER }}
+      TF_VAR_azure_sql_password: ${{ secrets.AZURE_SQL_PASSWORD }}
+      TF_VAR_azure_sql_authentication: azure-ad
+      TF_VAR_azure_sql_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+      TF_VAR_azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
+      TF_VAR_azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+      # SPA client ID (single source of truth): the frontend build arg
+      # VITE_AZURE_CLIENT_ID and the backend's AZURE_CLIENT_ID (JWT
+      # audience) both derive from this secret.
+      TF_VAR_azure_spa_client_id: ${{ secrets['AZURE_SPA_CLIENT_ID'] }}
+      # Frontend origin used by the backend to restrict CORS.
+      TF_VAR_frontend_url: ${{ secrets['FRONTEND_URL'] }}
+      # Billing integration secrets
+      TF_VAR_azure_billing_client_id: ${{ secrets['AZURE_BILLING_CLIENT_ID'] }}
+      TF_VAR_azure_billing_client_secret: ${{ secrets['AZURE_BILLING_CLIENT_SECRET'] }}
+      TF_VAR_azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_azure_billing_account_id: ${{ secrets['AZURE_BILLING_ACCOUNT_ID'] }}
+      TF_VAR_azure_billing_account_type: ${{ secrets['AZURE_BILLING_ACCOUNT_TYPE'] }}
+      TF_VAR_azure_management_group_id: ${{ secrets['AZURE_MANAGEMENT_GROUP_ID'] }}
+      # AI integration secrets (Azure OpenAI / Foundry; OpenAI.com optional).
+      # API version and chat/embedding deployment names use the Terraform
+      # defaults (2024-10-21, gpt-5.4-mini, text-embedding-3-small); override
+      # them in terraform/billing_variables.tf if your deployments differ.
+      TF_VAR_openai_api_key: ${{ secrets['OPENAI_API_KEY'] }}
+      TF_VAR_azure_openai_endpoint: ${{ secrets['AZURE_OPENAI_ENDPOINT'] }}
+      TF_VAR_azure_openai_api_key: ${{ secrets['AZURE_OPENAI_API_KEY'] }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4.2.2
@@ -87,13 +142,15 @@ jobs:
 
       # Build and Push Frontend Docker Image (injecting Entra client IDs)
       # The frontend client ID is a PUBLIC value (baked into browser-visible JS,
-      # visible to every site visitor). It is NOT a secret and does not need to
-      # be stored in GitHub Secrets. It is the Entra ID SPA app registration
+      # visible to every site visitor). It is the Entra ID SPA app registration
       # used for MSAL user login — separate from the deploy service principal.
+      # It is sourced from the AZURE_SPA_CLIENT_ID GitHub secret so there is a
+      # single source of truth shared with the backend's JWT audience (via
+      # TF_VAR_azure_spa_client_id below).
       - name: Build & Push Frontend Image
         run: |
           docker build \
-            --build-arg VITE_AZURE_CLIENT_ID=d7d4d4d0-5460-4655-ab6d-a9aaac38b578 \
+            --build-arg VITE_AZURE_CLIENT_ID=${{ secrets['AZURE_SPA_CLIENT_ID'] }} \
             --build-arg VITE_AZURE_TENANT_ID=${{ secrets.AZURE_TENANT_ID }} \
             -t ${{ secrets.ACR_NAME }}.azurecr.io/rh-dashboard-frontend:${{ github.sha }} \
             ./frontend
@@ -105,43 +162,32 @@ jobs:
         with:
           terraform_version: 1.6.2
 
-      # Initialize and Apply Infrastructure via Terraform
-      - name: Terraform Init & Apply
+      # Initialize Terraform
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform
+
+      # Validate Terraform configuration (catches syntax/type errors before apply)
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: terraform
+
+      # Plan and Apply — the plan is saved to a file so apply uses the exact
+      # same plan that was generated (no race with concurrent state changes).
+      # `terraform plan -out` still prints the human-readable plan to the job
+      # log, so the intended changes remain reviewable. -no-color keeps the
+      # log free of ANSI escape codes.
+      - name: Terraform Plan & Apply
         run: |
-          cd terraform
-          terraform init
-          terraform apply -auto-approve
-        env:
-          # Authenticate to the Terraform state backend (Azure Storage) via OIDC
-          ARM_USE_OIDC: true
-          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          # Inject secrets as Terraform variables (TF_VAR_ prefix)
-          TF_VAR_resource_group_name: ${{ secrets.AZURE_RESOURCE_GROUP }}
-          TF_VAR_acr_name: ${{ secrets.ACR_NAME }}
-          TF_VAR_backend_image_tag: ${{ github.sha }}
-          TF_VAR_frontend_image_tag: ${{ github.sha }}
-          TF_VAR_mongodb_uri: ${{ secrets.MONGODB_URI }}
-          TF_VAR_mongodb_db_name: ${{ secrets.MONGODB_DB_NAME || 'recoveryhub_dashboard' }}
-          TF_VAR_recoveryhub_ai_mongodb_db_name: AI_FEE_CALC_MULTI_AGENT_PROD
-          TF_VAR_azure_sql_host: ${{ secrets.AZURE_SQL_HOST }}
-          TF_VAR_azure_sql_db: ${{ secrets.AZURE_SQL_DB }}
-          TF_VAR_azure_sql_user: ${{ secrets.AZURE_SQL_USER }}
-          TF_VAR_azure_sql_password: ${{ secrets.AZURE_SQL_PASSWORD }}
-          TF_VAR_azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
-          TF_VAR_azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
-          # Billing integration secrets
-          TF_VAR_azure_billing_client_id: ${{ secrets.AZURE_BILLING_CLIENT_ID }}
-          TF_VAR_azure_billing_client_secret: ${{ secrets.AZURE_BILLING_CLIENT_SECRET }}
-          TF_VAR_azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          TF_VAR_azure_billing_account_id: ${{ secrets.AZURE_BILLING_ACCOUNT_ID }}
-          TF_VAR_azure_billing_account_type: ${{ secrets.AZURE_BILLING_ACCOUNT_TYPE }}
-          TF_VAR_azure_management_group_id: ${{ secrets.AZURE_MANAGEMENT_GROUP_ID }}
-          # AI integration secrets (Azure OpenAI / Foundry; OpenAI.com optional).
-          # API version and chat/embedding deployment names use the Terraform
-          # defaults (2024-10-21, gpt-5.4-mini, text-embedding-3-small); override
-          # them in terraform/billing_variables.tf if your deployments differ.
-          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          TF_VAR_azure_openai_endpoint: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
-          TF_VAR_azure_openai_api_key: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          terraform plan -no-color -out=tfplan
+          terraform apply -no-color tfplan
+        working-directory: terraform
+
+      # A saved plan file embeds every variable value passed to Terraform —
+      # including all TF_VAR_* secrets — in plaintext. Remove it regardless of
+      # whether the apply succeeded so it can never be picked up by a later
+      # step or artifact upload.
+      - name: Remove Terraform plan file
+        if: always()
+        run: rm -f tfplan
+        working-directory: terraform

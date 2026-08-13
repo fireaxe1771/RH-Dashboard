@@ -1,3 +1,9 @@
+"""Azure service-principal credential for billing API access.
+
+Creates and caches a ``ClientSecretCredential`` that the billing sync modules
+use to authenticate to Azure Cost Management, Advisor, Billing, and Resource
+Graph APIs. The credential is lazily created and cached via ``lru_cache``.
+"""
 import logging
 from functools import lru_cache
 from azure.identity import ClientSecretCredential

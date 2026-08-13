@@ -97,7 +97,7 @@ async def get_ai_line_items_for_claim_ids(
 
     try:
         cursor = ai_db[AI_LINE_ITEMS_COLLECTION].find(query, SUMMARY_PROJECTION)
-        docs = await cursor.to_list(length=None)
+        docs = await cursor.to_list(length=1000)
     except Exception as e:
         logger.error(f"Failed to fetch ai_line_items for {len(claim_ids)} claims: {e}")
         raise
@@ -186,7 +186,7 @@ async def get_agent_conversations_for_claim(
             .find(query, CONVERSATION_PROJECTION)
             .sort("created_at", 1)
         )
-        docs = await cursor.to_list(length=None)
+        docs = await cursor.to_list(length=1000)
         return docs
     except Exception as e:
         logger.error(f"Failed to fetch agent conversations for claim {claim_id}: {e}")
@@ -239,7 +239,7 @@ async def get_ai_fee_configuration_for_departments(
 
     try:
         cursor = ai_db[DEPARTMENT_FEES_COLLECTION].find(query, projection)
-        docs = await cursor.to_list(length=None)
+        docs = await cursor.to_list(length=1000)
     except Exception as e:
         logger.error(f"Failed to fetch AI fee config for {len(department_ids)} departments: {e}")
         raise

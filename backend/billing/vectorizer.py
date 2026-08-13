@@ -52,7 +52,7 @@ async def _generate_cost_documents(db, billing_period: str) -> list[dict]:
     docs: list[dict] = []
     service_rows = await db["azure_cost_summary"].find(
         {"period": billing_period, "dimension": "ServiceName"}
-    ).to_list(length=None)
+    ).to_list(length=1000)
     if not service_rows:
         return docs
 
@@ -64,7 +64,7 @@ async def _generate_cost_documents(db, billing_period: str) -> list[dict]:
 
     rg_rows = await db["azure_cost_summary"].find(
         {"period": billing_period, "dimension": "ResourceGroupName"}
-    ).to_list(length=None)
+    ).to_list(length=1000)
     rg_rows.sort(key=lambda r: r.get("total_cost", 0.0), reverse=True)
 
     lines = [
@@ -127,7 +127,7 @@ async def _generate_cost_documents(db, billing_period: str) -> list[dict]:
 
 async def _generate_advisor_documents(db, billing_period: str) -> list[dict]:
     docs: list[dict] = []
-    recs = await db["azure_advisor_recommendations"].find({"status": "Active"}).to_list(length=None)
+    recs = await db["azure_advisor_recommendations"].find({"status": "Active"}).to_list(length=1000)
     for rec in recs:
         impacted_field = rec.get("impacted_field", "")
         field_short = impacted_field.split("/")[-1] if impacted_field else ""
@@ -166,7 +166,7 @@ async def _generate_advisor_documents(db, billing_period: str) -> list[dict]:
 
 async def _generate_budget_documents(db, billing_period: str) -> list[dict]:
     docs: list[dict] = []
-    budgets = await db["azure_budgets"].find({}).to_list(length=None)
+    budgets = await db["azure_budgets"].find({}).to_list(length=1000)
     for b in budgets:
         util = b.get("utilization_pct", 0.0)
         amount = b.get("amount", 0.0)
@@ -201,7 +201,7 @@ async def _generate_budget_documents(db, billing_period: str) -> list[dict]:
 
 async def _generate_reservation_documents(db, billing_period: str) -> list[dict]:
     docs: list[dict] = []
-    recs = await db["azure_reservation_recommendations"].find({"net_savings": {"$gt": 0}}).to_list(length=None)
+    recs = await db["azure_reservation_recommendations"].find({"net_savings": {"$gt": 0}}).to_list(length=1000)
     for r in recs:
         term = r.get("term", "")
         term_friendly = "1-year" if term == "P1Y" else "3-year" if term == "P3Y" else term
@@ -240,7 +240,7 @@ async def _generate_invoice_documents(db, billing_period: str) -> list[dict]:
     docs: list[dict] = []
     invoices = await db["azure_invoices"].find(
         {"billing_period_start": {"$regex": f"^{billing_period}"}}
-    ).to_list(length=None)
+    ).to_list(length=1000)
     for inv in invoices:
         text = (
             "Azure Invoice Summary:\n\n"
@@ -285,25 +285,111 @@ async def generate_billing_documents(db, billing_period: str) -> list[dict]:
 # --------------------------------------------------------------------------- #
 
 async def embed_documents(documents: list[dict]) -> list[dict]:
-    """Generates embeddings for documents in batches of 100, sleeping between batches."""
+    """Generates embeddings for documents in configurable batches.
+
+    Filters out documents with empty/short text, enforces a max document count,
+    retries transient API failures (429/500/503/timeout) with exponential
+    backoff, and sleeps between batches to respect rate limits.
+    """
     client = _get_openai_client()
-    BATCH_SIZE = 100
+    min_len = settings.VECTORIZER_MIN_TEXT_LENGTH
+    max_docs = settings.VECTORIZER_MAX_DOCUMENTS
+    batch_size = settings.VECTORIZER_BATCH_SIZE
+    batch_delay = settings.VECTORIZER_BATCH_DELAY
+    max_retries = settings.VECTORIZER_MAX_RETRIES
 
-    for i in range(0, len(documents), BATCH_SIZE):
-        batch = documents[i:i + BATCH_SIZE]
+    # Filter out documents with missing/empty/short text
+    valid_docs = [
+        doc for doc in documents
+        if doc.get("text") and len(doc["text"].strip()) >= min_len
+    ]
+    skipped = len(documents) - len(valid_docs)
+    if skipped > 0:
+        logger.warning(f"Filtered {skipped} documents with empty or short text (< {min_len} chars).")
+
+    # Enforce max document cap
+    if max_docs > 0 and len(valid_docs) > max_docs:
+        logger.warning(
+            f"Document count {len(valid_docs)} exceeds VECTORIZER_MAX_DOCUMENTS "
+            f"({max_docs}). Truncating to {max_docs}."
+        )
+        valid_docs = valid_docs[:max_docs]
+
+    if not valid_docs:
+        logger.info("No valid documents to embed after filtering.")
+        return documents  # Return original list (unchanged, no embeddings added)
+
+    for i in range(0, len(valid_docs), batch_size):
+        batch = valid_docs[i:i + batch_size]
         texts = [doc["text"] for doc in batch]
-        try:
-            response = await client.embeddings.create(
-                model=settings.OPENAI_EMBEDDING_MODEL,
-                input=texts,
-            )
-            for j, embedding_data in enumerate(response.data):
-                batch[j]["embedding"] = embedding_data.embedding
-        except Exception as e:  # noqa: BLE001
-            raise VectorizerError(f"Embedding generation failed for batch {i // BATCH_SIZE}: {e}")
+        batch_num = i // batch_size
 
-        if i + BATCH_SIZE < len(documents):
-            await asyncio.sleep(0.5)
+        # Retry transient failures with exponential backoff
+        last_error: Exception | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = await client.embeddings.create(
+                    model=settings.OPENAI_EMBEDDING_MODEL,
+                    input=texts,
+                )
+                for j, embedding_data in enumerate(response.data):
+                    batch[j]["embedding"] = embedding_data.embedding
+                last_error = None
+                break  # Success, exit retry loop
+            except Exception as e:  # noqa: BLE001
+                last_error = e
+                error_str = str(e).lower()
+                # Check for transient/retryable errors
+                is_transient = (
+                    "429" in error_str
+                    or "rate limit" in error_str
+                    or "timeout" in error_str
+                    or "timed out" in error_str
+                    or "500" in error_str
+                    or "503" in error_str
+                    or "service unavailable" in error_str
+                    or "internal server error" in error_str
+                )
+                # Check for quota-exhausted (non-retryable)
+                is_quota_exhausted = (
+                    "quota" in error_str
+                    or "insufficient_quota" in error_str
+                    or "billing" in error_str
+                )
+
+                if is_quota_exhausted:
+                    logger.error(
+                        f"OpenAI quota exhausted at batch {batch_num}. "
+                        f"Aborting vectorization. Error: {e}"
+                    )
+                    raise VectorizerError(
+                        f"OpenAI quota exhausted at batch {batch_num}: {e}. "
+                        f"{len(valid_docs) - i} documents will not be vectorized."
+                    )
+
+                if not is_transient or attempt == max_retries:
+                    logger.error(
+                        f"Embedding batch {batch_num} failed after {attempt} attempts: {e}"
+                    )
+                    raise VectorizerError(
+                        f"Embedding generation failed for batch {batch_num}: {e}"
+                    )
+
+                # Exponential backoff: 2^attempt seconds, capped at 60
+                wait = min(2 ** attempt, 60)
+                logger.warning(
+                    f"Embedding batch {batch_num} attempt {attempt}/{max_retries} "
+                    f"failed (transient). Retrying in {wait}s. Error: {e}"
+                )
+                await asyncio.sleep(wait)
+
+        if last_error is not None:
+            # Should not reach here (loop either breaks on success or raises),
+            # but guard against logic errors.
+            raise VectorizerError(f"Embedding generation failed for batch {batch_num}: {last_error}")
+
+        if i + batch_size < len(valid_docs) and batch_delay > 0:
+            await asyncio.sleep(batch_delay)
 
     return documents
 
@@ -334,7 +420,11 @@ async def upsert_vectors(db, documents: list[dict]) -> int:
 
 
 async def run_vectorization(db) -> int:
-    """Generates and upserts embeddings for the current and prior billing periods."""
+    """Generates and upserts embeddings for the current and prior billing periods.
+
+    Only documents that received embeddings are upserted; filtered/short-text
+    documents are skipped.
+    """
     today = date.today()
     current_period = today.strftime("%Y-%m")
     prior_month = today.replace(day=1) - timedelta(days=1)
@@ -345,7 +435,12 @@ async def run_vectorization(db) -> int:
         docs = await generate_billing_documents(db, period)
         if not docs:
             continue
-        docs_with_embeddings = await embed_documents(docs)
+        await embed_documents(docs)
+        # Only upsert documents that actually received embeddings
+        docs_with_embeddings = [d for d in docs if "embedding" in d and d["embedding"]]
+        if not docs_with_embeddings:
+            logger.info(f"No documents with embeddings to upsert for period {period}")
+            continue
         count = await upsert_vectors(db, docs_with_embeddings)
         total += count
         logger.info(f"Vectorized {count} documents for period {period}")

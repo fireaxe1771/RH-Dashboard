@@ -5,9 +5,9 @@ All endpoints are read-only and require authentication via ``get_current_user``.
 
 from __future__ import annotations
 
+import functools
 import logging
-import time
-from typing import List, Optional
+from typing import Any, Callable, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -49,6 +49,53 @@ from ai_analytics.models import AiInvoiceTrace
 logger = logging.getLogger(__name__)
 
 ai_analytics_router = APIRouter(prefix="/ai-analytics", tags=["AI Analytics"])
+
+
+def _handle_route_errors(
+    operation: str,
+    *,
+    context_params: tuple[str, ...] = (),
+) -> Callable:
+    """Maps service-layer exceptions to HTTP responses for a route handler.
+
+    Every endpoint in this module shares the same error contract, so it lives
+    here rather than being repeated per handler:
+
+    - ``HTTPException`` is re-raised untouched. Handlers that validate their
+      own arguments (e.g. the ``grain`` check on the trend endpoint) raise it
+      directly, and it already carries the intended status code. Catching it
+      as a generic error would silently turn deliberate 400s into 500s.
+    - ``ValueError`` becomes a 400. The service and repository layers raise it
+      for caller-correctable input problems such as an over-long date span.
+    - Anything else is logged with a traceback and becomes a generic 500, so
+      internal details are never returned to the client.
+
+    ``operation`` completes the log line "Failed to {operation}".
+    ``context_params`` names handler arguments to append to that line for
+    debuggability (e.g. ``("claim_id",)`` -> "... (claim_id=123)"). Only pass
+    non-sensitive identifiers, since the value is written to the log.
+    """
+    def decorator(func: Callable) -> Callable:
+        # functools.wraps sets __wrapped__, which inspect.signature follows.
+        # FastAPI therefore still sees the original signature and resolves
+        # query params and dependencies exactly as it would undecorated.
+        @functools.wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await func(*args, **kwargs)
+            except HTTPException:
+                raise
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except Exception:
+                context = ", ".join(
+                    f"{name}={kwargs.get(name)!r}" for name in context_params
+                )
+                suffix = f" ({context})" if context else ""
+                logger.exception(f"Failed to {operation}{suffix}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+        return wrapper
+    return decorator
 
 
 def _build_filters(
@@ -136,6 +183,7 @@ _Q_DATE_BASIS = Query(
     response_model=AiOutcomeSummary,
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build outcome summary")
 async def outcomes_summary(
     start_date: Optional[str] = _Q_START_DATE,
     end_date: Optional[str] = _Q_END_DATE,
@@ -160,13 +208,7 @@ async def outcomes_summary(
         billing_category, reason_category,
         1, 1, "ai_business_updated_at", "desc", date_basis,
     )
-    try:
-        return await get_outcome_summary(ai_db, filters)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to build outcome summary")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_outcome_summary(ai_db, filters)
 
 
 @ai_analytics_router.get(
@@ -174,6 +216,7 @@ async def outcomes_summary(
     response_model=List[AiPipelineStageStat],
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build outcome funnel")
 async def outcomes_funnel(
     start_date: Optional[str] = _Q_START_DATE,
     end_date: Optional[str] = _Q_END_DATE,
@@ -198,13 +241,7 @@ async def outcomes_funnel(
         billing_category, reason_category,
         1, 1, "ai_business_updated_at", "desc", date_basis,
     )
-    try:
-        return await get_outcome_funnel(ai_db, filters)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to build outcome funnel")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_outcome_funnel(ai_db, filters)
 
 
 @ai_analytics_router.get(
@@ -212,6 +249,7 @@ async def outcomes_funnel(
     response_model=List[AiOutcomeTrendPoint],
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build outcome trend")
 async def outcomes_trend(
     grain: str = Query("day", description="Time grain: day | week | month"),
     start_date: Optional[str] = _Q_START_DATE,
@@ -242,13 +280,7 @@ async def outcomes_trend(
         billing_category, reason_category,
         1, 1, "ai_business_updated_at", "desc", date_basis,
     )
-    try:
-        return await get_outcome_trend(ai_db, filters, grain=grain)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to build outcome trend")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_outcome_trend(ai_db, filters, grain=grain)
 
 
 @ai_analytics_router.get(
@@ -256,6 +288,7 @@ async def outcomes_trend(
     response_model=List[AiRejectionReasonStat],
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build rejection reasons")
 async def rejection_reasons(
     start_date: Optional[str] = _Q_START_DATE,
     end_date: Optional[str] = _Q_END_DATE,
@@ -270,13 +303,7 @@ async def rejection_reasons(
         None, None, None, None, None, None, None, reason_category,
         1, 1, "ai_business_updated_at", "desc", date_basis,
     )
-    try:
-        return await get_rejection_reasons(ai_db, filters)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to build rejection reasons")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_rejection_reasons(ai_db, filters)
 
 
 @ai_analytics_router.get(
@@ -284,6 +311,7 @@ async def rejection_reasons(
     response_model=List[AiDepartmentOutcomeStat],
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build department outcomes")
 async def department_outcomes(
     start_date: Optional[str] = _Q_START_DATE,
     end_date: Optional[str] = _Q_END_DATE,
@@ -308,13 +336,7 @@ async def department_outcomes(
         billing_category, reason_category,
         1, 1, "ai_business_updated_at", "desc", date_basis,
     )
-    try:
-        return await get_department_outcomes(ai_db, filters)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to build department outcomes")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_department_outcomes(ai_db, filters)
 
 
 @ai_analytics_router.get(
@@ -322,6 +344,7 @@ async def department_outcomes(
     response_model=AiInvoiceCohortResponse,
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build invoice cohort")
 async def invoice_cohort(
     start_date: Optional[str] = _Q_START_DATE,
     end_date: Optional[str] = _Q_END_DATE,
@@ -350,13 +373,7 @@ async def invoice_cohort(
         billing_category, reason_category,
         page, page_size, sort_by, sort_direction, date_basis,
     )
-    try:
-        return await get_invoice_cohort(ai_db, filters)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to build invoice cohort")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_invoice_cohort(ai_db, filters)
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +385,7 @@ async def invoice_cohort(
     response_model=AiBillabilityStat,
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build billability stats")
 async def billability_stats(
     start_date: Optional[str] = _Q_START_DATE,
     end_date: Optional[str] = _Q_END_DATE,
@@ -383,13 +401,7 @@ async def billability_stats(
         billing_category, None,
         1, 1, "ai_business_updated_at", "desc", date_basis,
     )
-    try:
-        return await get_billability_stats(ai_db, filters)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to build billability stats")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_billability_stats(ai_db, filters)
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +413,7 @@ async def billability_stats(
     response_model=AiDiagnosticsSummary,
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build diagnostics summary")
 async def diagnostics_summary(
     start_date: Optional[str] = _Q_START_DATE,
     end_date: Optional[str] = _Q_END_DATE,
@@ -425,19 +438,14 @@ async def diagnostics_summary(
         billing_category, reason_category,
         1, 1, "ai_business_updated_at", "desc", date_basis,
     )
-    try:
-        return await get_diagnostics_summary(ai_db, filters)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to build diagnostics summary")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_diagnostics_summary(ai_db, filters)
 
 
 @ai_analytics_router.get(
     "/diagnostics/status",
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build status distribution")
 async def diagnostics_status(
     start_date: Optional[str] = _Q_START_DATE,
     end_date: Optional[str] = _Q_END_DATE,
@@ -455,13 +463,7 @@ async def diagnostics_status(
         None, None, None, None, None, None,
         1, 1, "ai_business_updated_at", "desc", date_basis,
     )
-    try:
-        return await get_status_distribution(ai_db, filters)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to build status distribution")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_status_distribution(ai_db, filters)
 
 
 @ai_analytics_router.get(
@@ -469,6 +471,7 @@ async def diagnostics_status(
     response_model=List[AiConfidenceBucketStat],
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build confidence distribution")
 async def diagnostics_confidence(
     start_date: Optional[str] = _Q_START_DATE,
     end_date: Optional[str] = _Q_END_DATE,
@@ -485,19 +488,14 @@ async def diagnostics_confidence(
         None, None, confidence_min, confidence_max, None, None, None, None,
         1, 1, "ai_business_updated_at", "desc", date_basis,
     )
-    try:
-        return await get_confidence_distribution(ai_db, filters)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to build confidence distribution")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_confidence_distribution(ai_db, filters)
 
 
 @ai_analytics_router.get(
     "/diagnostics/retries",
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build retry analysis")
 async def diagnostics_retries(
     start_date: Optional[str] = _Q_START_DATE,
     end_date: Optional[str] = _Q_END_DATE,
@@ -511,19 +509,14 @@ async def diagnostics_retries(
         None, None, None, None, None, None, None, None,
         1, 1, "ai_business_updated_at", "desc", date_basis,
     )
-    try:
-        return await get_retry_analysis(ai_db, filters)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to build retry analysis")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_retry_analysis(ai_db, filters)
 
 
 @ai_analytics_router.get(
     "/diagnostics/writeback",
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build writeback analysis")
 async def diagnostics_writeback(
     start_date: Optional[str] = _Q_START_DATE,
     end_date: Optional[str] = _Q_END_DATE,
@@ -538,13 +531,7 @@ async def diagnostics_writeback(
         None, None, None, None, None, writeback_status, None, None,
         1, 1, "ai_business_updated_at", "desc", date_basis,
     )
-    try:
-        return await get_writeback_analysis(ai_db, filters)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to build writeback analysis")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_writeback_analysis(ai_db, filters)
 
 
 @ai_analytics_router.get(
@@ -552,6 +539,7 @@ async def diagnostics_writeback(
     response_model=List[AiAgentStat],
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build agent stats")
 async def diagnostics_agents(
     start_date: Optional[str] = _Q_START_DATE,
     end_date: Optional[str] = _Q_END_DATE,
@@ -563,11 +551,7 @@ async def diagnostics_agents(
         None, None, None, None, None, None, None, None,
         1, 1, "ai_business_updated_at", "desc", "business_status_date",
     )
-    try:
-        return await get_agent_stats(ai_db, filters)
-    except Exception as e:
-        logger.exception("Failed to build agent stats")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_agent_stats(ai_db, filters)
 
 
 # ---------------------------------------------------------------------------
@@ -579,13 +563,10 @@ async def diagnostics_agents(
     response_model=AiInvoiceTrace,
     dependencies=[Depends(get_current_user)],
 )
+@_handle_route_errors("build invoice trace", context_params=("claim_id",))
 async def invoice_trace(
     claim_id: int,
     ai_db=Depends(get_ai_db),
 ):
     """Forensic per-claim timeline trace."""
-    try:
-        return await get_invoice_trace(ai_db, claim_id)
-    except Exception as e:
-        logger.exception(f"Failed to build invoice trace for claim {claim_id}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    return await get_invoice_trace(ai_db, claim_id)
