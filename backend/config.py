@@ -97,6 +97,45 @@ class Settings:
     BILLING_DAILY_SYNC_HOUR: int = int(os.getenv("BILLING_DAILY_SYNC_HOUR", "2"))
     BILLING_HISTORY_MONTHS: int = int(os.getenv("BILLING_HISTORY_MONTHS", "12"))
 
+    # --- AI Analytics Worker ---
+    # The AI Analytics Worker is an event-driven projection service that reads
+    # RecoveryHub_AI MongoDB and writes analytics projections into the
+    # dashboard-owned MongoDB. See docs/ai-analytics/PHASE_0_IMPLEMENTATION_PLAN.md.
+    # When disabled, the worker task is not started in the FastAPI lifespan.
+    AI_ANALYTICS_WORKER_ENABLED: bool = os.getenv("AI_ANALYTICS_WORKER_ENABLED", "false").lower() == "true"
+    # Worker code version — stamped on every projection and worker-state record
+    # so projections can be associated with the code that produced them.
+    AI_ANALYTICS_WORKER_VERSION: str = os.getenv("AI_ANALYTICS_WORKER_VERSION", "0.1.0")
+    # Projection schema version — bumped when the Section 9 projection schema
+    # changes (see Section 9.12 Schema Evolution Policy). Old projections keep
+    # their old version and are upgraded lazily.
+    AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION: int = int(
+        os.getenv("AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION", "1")
+    )
+    # Coalescing debounce window (seconds). Multiple change events for the same
+    # claim within this window collapse into a single refresh (Phase 6/8).
+    WORKER_DEBOUNCE_SECONDS: float = float(os.getenv("WORKER_DEBOUNCE_SECONDS", "2.0"))
+    # Max claims processed per worker cycle. Prevents the worker from
+    # monopolizing the FastAPI event loop during backfill bursts (Section 1.1.5).
+    WORKER_MAX_CLAIMS_PER_CYCLE: int = int(os.getenv("WORKER_MAX_CLAIMS_PER_CYCLE", "100"))
+    # Per-source-query timeout in milliseconds, enforced by the source
+    # repository wrapper (Phase 2). Prevents a stuck Mongo query from starving
+    # the event loop.
+    WORKER_SOURCE_QUERY_TIMEOUT_MS: int = int(os.getenv("WORKER_SOURCE_QUERY_TIMEOUT_MS", "5000"))
+    # Reconciliation safety-net cadence in minutes (Section 8.6). Every interval,
+    # the worker queries ai_line_items for records changed since the last
+    # checkpoint and requeues them for refresh.
+    WORKER_RECONCILIATION_INTERVAL_MINUTES: int = int(os.getenv("WORKER_RECONCILIATION_INTERVAL_MINUTES", "30"))
+    # Backfill batch size for historical population (Phase 4/6) and for
+    # stale-checkpoint date-range fallback (Phase 9).
+    WORKER_BACKFILL_BATCH_SIZE: int = int(os.getenv("WORKER_BACKFILL_BATCH_SIZE", "500"))
+    # Max retries for a single claim refresh before escalating to the
+    # dead-letter collection (Phase 5). Exponential backoff between attempts.
+    WORKER_MAX_RETRIES: int = int(os.getenv("WORKER_MAX_RETRIES", "3"))
+    # Attempt count after which a failing claim is moved to the dead-letter
+    # collection. Defaults to matching WORKER_MAX_RETRIES.
+    WORKER_DEAD_LETTER_THRESHOLD: int = int(os.getenv("WORKER_DEAD_LETTER_THRESHOLD", "3"))
+
     def validate_settings(self) -> None:
         """Validates configuration parameters, stopping startup if required variables are missing."""
         missing = []
@@ -167,6 +206,26 @@ class Settings:
             missing.append("VECTORIZER_MAX_RETRIES (must be >= 0)")
         if self.VECTORIZER_MIN_TEXT_LENGTH < 0:
             missing.append("VECTORIZER_MIN_TEXT_LENGTH (must be >= 0)")
+
+        # Validate AI Analytics Worker parameters
+        if self.AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION < 1:
+            missing.append("AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION (must be >= 1)")
+        if self.WORKER_DEBOUNCE_SECONDS < 0:
+            missing.append("WORKER_DEBOUNCE_SECONDS (must be >= 0)")
+        if self.WORKER_MAX_CLAIMS_PER_CYCLE < 1:
+            missing.append("WORKER_MAX_CLAIMS_PER_CYCLE (must be >= 1)")
+        if self.WORKER_SOURCE_QUERY_TIMEOUT_MS < 1:
+            missing.append("WORKER_SOURCE_QUERY_TIMEOUT_MS (must be >= 1)")
+        if self.WORKER_RECONCILIATION_INTERVAL_MINUTES < 1:
+            missing.append("WORKER_RECONCILIATION_INTERVAL_MINUTES (must be >= 1)")
+        if self.WORKER_BACKFILL_BATCH_SIZE < 1:
+            missing.append("WORKER_BACKFILL_BATCH_SIZE (must be >= 1)")
+        if self.WORKER_MAX_RETRIES < 0:
+            missing.append("WORKER_MAX_RETRIES (must be >= 0)")
+        if self.WORKER_DEAD_LETTER_THRESHOLD < 1:
+            missing.append("WORKER_DEAD_LETTER_THRESHOLD (must be >= 1)")
+        if not self.AI_ANALYTICS_WORKER_VERSION:
+            missing.append("AI_ANALYTICS_WORKER_VERSION (must not be empty)")
 
         if missing:
             error_msg = (

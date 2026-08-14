@@ -16,6 +16,9 @@ os.environ["AZURE_TENANT_ID"] = "mock_tenant"
 os.environ["DEV_AUTH_BYPASS"] = "false"
 # Disable the billing scheduler/backfill during tests (no billing creds needed)
 os.environ["BILLING_SYNC_ENABLED"] = "false"
+# Disable the AI Analytics Worker during tests — Phase 1 no-op stub is tested
+# directly via run_worker/stop_worker_task, not through the lifespan.
+os.environ["AI_ANALYTICS_WORKER_ENABLED"] = "false"
 
 # Ensure backend directory is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

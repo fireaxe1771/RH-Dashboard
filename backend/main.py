@@ -31,14 +31,24 @@ from billing.sync_service import run_full_backfill
 from billing_routes import billing_router
 from ai_adoption_routes import ai_adoption_router
 from ai_analytics_routes import ai_analytics_router
+from ai_analytics_worker.config import worker_config
+from ai_analytics_worker.main import run_worker, stop_worker_task
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Module-level handle for the worker task and its stop event, set during
+# lifespan startup and awaited during shutdown. Kept at module scope so the
+# shutdown branch can reference them without threading them through `yield`.
+_worker_task: asyncio.Task | None = None
+_worker_stop_event: asyncio.Event | None = None
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handles startup and shutdown database connections lifespan events."""
+    global _worker_task, _worker_stop_event
+
     try:
         # Establish connection to application metadata database
         db_manager.connect()
@@ -53,14 +63,29 @@ async def lifespan(app: FastAPI):
             logger.info("Billing sync scheduler started.")
             # Run initial backfill in background (no-op if already populated)
             asyncio.create_task(_run_billing_backfill_if_needed())
+        # Start the AI Analytics Worker if enabled. The worker runs as a
+        # background asyncio task in this event loop (Phase 0 plan Section 1.1).
+        # Phase 1: no-op stub that proves lifespan integration and cancellation.
+        if worker_config.enabled:
+            _worker_stop_event = asyncio.Event()
+            _worker_task = asyncio.create_task(run_worker(_worker_stop_event))
+            logger.info("AI Analytics Worker task started.")
     except Exception as e:
         logger.critical(f"Database Initialization Failed during startup: {e}")
         # Fail loudly to prevent running app in unconfigured state
         raise e
-    
+
     yield
-    
+
     # Clean disconnect on shutdown
+    # Stop the AI Analytics Worker first — it must drain within
+    # CANCELLATION_TIMEOUT_SECONDS (5s) per the Phase 0 plan Section 1.1.4.
+    if _worker_task is not None and _worker_stop_event is not None:
+        logger.info("Stopping AI Analytics Worker task...")
+        await stop_worker_task(_worker_task, _worker_stop_event)
+        _worker_task = None
+        _worker_stop_event = None
+        logger.info("AI Analytics Worker task stopped.")
     if settings.BILLING_SYNC_ENABLED and billing_scheduler.running:
         logger.info("Shutting down billing scheduler, waiting for in-flight jobs to complete...")
         billing_scheduler.shutdown(wait=True)

@@ -111,6 +111,42 @@ class DatabaseManager:
             await self.db["azure_billing_vectors"].create_index([("metadata.period", 1)])
             await self.db["azure_billing_vectors"].create_index([("created_at", -1)])
 
+            # --- AI Analytics Worker destination collections ---
+            # Indexes per Phase 0 plan Section 10. Collection names are sourced
+            # from ai_analytics_worker.config (single source of truth, DRY).
+            from ai_analytics_worker.config import worker_config
+
+            # ai_invoice_analytics — one document per claim, keyed by claim_id.
+            # Filter/sort indexes for the dashboard read paths.
+            await self.db[worker_config.PROJECTIONS_COLLECTION].create_index(
+                [("claim_id", 1)], unique=True
+            )
+            await self.db[worker_config.PROJECTIONS_COLLECTION].create_index([("department_id", 1)])
+            await self.db[worker_config.PROJECTIONS_COLLECTION].create_index([("ai_updated_at", -1)])
+            await self.db[worker_config.PROJECTIONS_COLLECTION].create_index([("worker_processed_at", -1)])
+            await self.db[worker_config.PROJECTIONS_COLLECTION].create_index([("ai_processing_status", 1)])
+            await self.db[worker_config.PROJECTIONS_COLLECTION].create_index([("writeback_state", 1)])
+            await self.db[worker_config.PROJECTIONS_COLLECTION].create_index([("billability_state", 1)])
+            await self.db[worker_config.PROJECTIONS_COLLECTION].create_index([("has_retry", 1)])
+            await self.db[worker_config.PROJECTIONS_COLLECTION].create_index([("projection_schema_version", 1)])
+
+            # ai_analytics_worker_state — single doc per worker (keyed by name).
+            await self.db[worker_config.WORKER_STATE_COLLECTION].create_index(
+                [("last_checkpoint_at", -1)]
+            )
+
+            # ai_analytics_worker_dead_letters — failed claims after max retries.
+            await self.db[worker_config.DEAD_LETTERS_COLLECTION].create_index([("claim_id", 1)])
+            await self.db[worker_config.DEAD_LETTERS_COLLECTION].create_index(
+                [("resolved", 1), ("last_failed_at", -1)]
+            )
+
+            # ai_analytics_worker_runs — audit log of batch processing cycles.
+            await self.db[worker_config.WORKER_RUNS_COLLECTION].create_index(
+                [("run_type", 1), ("started_at", -1)]
+            )
+            await self.db[worker_config.WORKER_RUNS_COLLECTION].create_index([("status", 1)])
+
             # Warn (do not fail) if the Atlas Vector Search index is not present
             await self._check_vector_index()
 
