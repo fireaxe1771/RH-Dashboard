@@ -138,6 +138,20 @@ class Settings:
     # Attempt count after which a failing claim is moved to the dead-letter
     # collection. Defaults to matching WORKER_MAX_RETRIES.
     WORKER_DEAD_LETTER_THRESHOLD: int = int(os.getenv("WORKER_DEAD_LETTER_THRESHOLD", "3"))
+    # Delay (seconds) between change-stream restart attempts when the stream
+    # breaks (transient network error, replica-set election, etc.). The
+    # listener doubles this delay on each consecutive failure, capped at
+    # 30s, to avoid hammering the source during an outage (Phase 5).
+    WORKER_CHANGE_STREAM_RESTART_DELAY_SECONDS: float = float(
+        os.getenv("WORKER_CHANGE_STREAM_RESTART_DELAY_SECONDS", "1.0")
+    )
+    # Max consecutive change-stream restart attempts before the listener
+    # gives up and records an error on worker_health. 0 means retry forever
+    # (the listener never gives up on its own — only stop_event or
+    # cancellation stops it). Phase 5.
+    WORKER_CHANGE_STREAM_MAX_RESTARTS: int = int(
+        os.getenv("WORKER_CHANGE_STREAM_MAX_RESTARTS", "0")
+    )
 
     def validate_settings(self) -> None:
         """Validates configuration parameters, stopping startup if required variables are missing."""
@@ -227,6 +241,10 @@ class Settings:
             missing.append("WORKER_MAX_RETRIES (must be >= 0)")
         if self.WORKER_DEAD_LETTER_THRESHOLD < 1:
             missing.append("WORKER_DEAD_LETTER_THRESHOLD (must be >= 1)")
+        if self.WORKER_CHANGE_STREAM_RESTART_DELAY_SECONDS < 0:
+            missing.append("WORKER_CHANGE_STREAM_RESTART_DELAY_SECONDS (must be >= 0)")
+        if self.WORKER_CHANGE_STREAM_MAX_RESTARTS < 0:
+            missing.append("WORKER_CHANGE_STREAM_MAX_RESTARTS (must be >= 0)")
         if not self.AI_ANALYTICS_WORKER_VERSION:
             missing.append("AI_ANALYTICS_WORKER_VERSION (must not be empty)")
 

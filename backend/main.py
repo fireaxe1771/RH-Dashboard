@@ -65,10 +65,16 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(_run_billing_backfill_if_needed())
         # Start the AI Analytics Worker if enabled. The worker runs as a
         # background asyncio task in this event loop (Phase 0 plan Section 1.1).
-        # Phase 1: no-op stub that proves lifespan integration and cancellation.
+        # Phase 5: change-stream listener that processes events in near-real-time.
         if worker_config.enabled:
             _worker_stop_event = asyncio.Event()
-            _worker_task = asyncio.create_task(run_worker(_worker_stop_event))
+            _worker_task = asyncio.create_task(
+                run_worker(
+                    _worker_stop_event,
+                    ai_db=db_manager.ai_db,
+                    db=db_manager.db,
+                )
+            )
             logger.info("AI Analytics Worker task started.")
     except Exception as e:
         logger.critical(f"Database Initialization Failed during startup: {e}")

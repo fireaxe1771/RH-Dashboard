@@ -84,6 +84,24 @@ class WorkerConfig:
         """Attempt count after which a failing claim is dead-lettered (Phase 5)."""
         return settings.WORKER_DEAD_LETTER_THRESHOLD
 
+    @property
+    def change_stream_restart_delay_seconds(self) -> float:
+        """Delay between change-stream restart attempts (Phase 5).
+
+        Doubled on each consecutive failure, capped at 30s, to avoid
+        hammering the source during an outage.
+        """
+        return settings.WORKER_CHANGE_STREAM_RESTART_DELAY_SECONDS
+
+    @property
+    def change_stream_max_restarts(self) -> int:
+        """Max consecutive change-stream restarts before giving up (Phase 5).
+
+        0 means retry forever — the listener only stops via stop_event or
+        cancellation.
+        """
+        return settings.WORKER_CHANGE_STREAM_MAX_RESTARTS
+
     # --- Destination collection names (Section 10) -------------------------
     # Defined here so worker modules import them from one place. These are
     # names, not behavior — no DRY conflict with ``config.py``.

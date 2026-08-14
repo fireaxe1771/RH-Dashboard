@@ -104,10 +104,10 @@ class TestBackfillHappyPath:
             return []
 
         with patch(
-            "ai_analytics_worker.backfill.get_ai_line_items_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_ai_line_items_for_claim_with_retry",
             new=mock_get_line_items,
         ), patch(
-            "ai_analytics_worker.backfill.get_agent_conversations_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_agent_conversations_for_claim_with_retry",
             new=mock_get_conversations,
         ):
             result = await run_backfill(ai_db, mock_mongo_db, batch_size=10)
@@ -135,10 +135,10 @@ class TestBackfillHappyPath:
             return make_full_doc(claim_id=claim_id)
 
         with patch(
-            "ai_analytics_worker.backfill.get_ai_line_items_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_ai_line_items_for_claim_with_retry",
             new=mock_get_line_items,
         ), patch(
-            "ai_analytics_worker.backfill.get_agent_conversations_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_agent_conversations_for_claim_with_retry",
             new=AsyncMock(return_value=[]),
         ):
             await run_backfill(ai_db, mock_mongo_db, batch_size=10)
@@ -165,10 +165,10 @@ class TestBackfillHappyPath:
             return make_full_doc(claim_id=claim_id, department_name=f"Dept v{call_count['n']}")
 
         with patch(
-            "ai_analytics_worker.backfill.get_ai_line_items_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_ai_line_items_for_claim_with_retry",
             new=mock_get_line_items,
         ), patch(
-            "ai_analytics_worker.backfill.get_agent_conversations_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_agent_conversations_for_claim_with_retry",
             new=AsyncMock(return_value=[]),
         ):
             result1 = await run_backfill(ai_db, mock_mongo_db, batch_size=10)
@@ -209,10 +209,10 @@ class TestBackfillErrorHandling:
             return make_full_doc(claim_id=claim_id)
 
         with patch(
-            "ai_analytics_worker.backfill.get_ai_line_items_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_ai_line_items_for_claim_with_retry",
             new=mock_get_line_items,
         ), patch(
-            "ai_analytics_worker.backfill.get_agent_conversations_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_agent_conversations_for_claim_with_retry",
             new=AsyncMock(return_value=[]),
         ):
             result = await run_backfill(ai_db, mock_mongo_db, batch_size=10)
@@ -239,10 +239,10 @@ class TestBackfillErrorHandling:
             raise Exception("everything fails")
 
         with patch(
-            "ai_analytics_worker.backfill.get_ai_line_items_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_ai_line_items_for_claim_with_retry",
             new=mock_get_line_items,
         ), patch(
-            "ai_analytics_worker.backfill.get_agent_conversations_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_agent_conversations_for_claim_with_retry",
             new=AsyncMock(return_value=[]),
         ):
             result = await run_backfill(ai_db, mock_mongo_db, batch_size=10)
@@ -274,10 +274,10 @@ class TestBackfillSkips:
             return make_full_doc(claim_id=claim_id)
 
         with patch(
-            "ai_analytics_worker.backfill.get_ai_line_items_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_ai_line_items_for_claim_with_retry",
             new=mock_get_line_items,
         ), patch(
-            "ai_analytics_worker.backfill.get_agent_conversations_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_agent_conversations_for_claim_with_retry",
             new=AsyncMock(return_value=[]),
         ):
             result = await run_backfill(ai_db, mock_mongo_db, batch_size=10)
@@ -294,10 +294,10 @@ class TestBackfillSkips:
         )
 
         with patch(
-            "ai_analytics_worker.backfill.get_ai_line_items_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_ai_line_items_for_claim_with_retry",
             new=AsyncMock(return_value=make_full_doc()),
         ), patch(
-            "ai_analytics_worker.backfill.get_agent_conversations_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_agent_conversations_for_claim_with_retry",
             new=AsyncMock(return_value=[]),
         ):
             result = await run_backfill(ai_db, mock_mongo_db, batch_size=10)
@@ -324,10 +324,10 @@ class TestBackfillCancellation:
         stop_event.set()
 
         with patch(
-            "ai_analytics_worker.backfill.get_ai_line_items_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_ai_line_items_for_claim_with_retry",
             new=AsyncMock(return_value=make_full_doc()),
         ), patch(
-            "ai_analytics_worker.backfill.get_agent_conversations_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_agent_conversations_for_claim_with_retry",
             new=AsyncMock(return_value=[]),
         ):
             result = await run_backfill(
@@ -355,10 +355,10 @@ class TestBackfillCancellation:
             return make_full_doc(claim_id=claim_id)
 
         with patch(
-            "ai_analytics_worker.backfill.get_ai_line_items_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_ai_line_items_for_claim_with_retry",
             new=mock_get_line_items,
         ), patch(
-            "ai_analytics_worker.backfill.get_agent_conversations_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_agent_conversations_for_claim_with_retry",
             new=AsyncMock(return_value=[]),
         ):
             result = await run_backfill(
@@ -390,10 +390,10 @@ class TestBackfillEmptySource:
         # No documents in ai_line_items
 
         with patch(
-            "ai_analytics_worker.backfill.get_ai_line_items_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_ai_line_items_for_claim_with_retry",
             new=AsyncMock(return_value=make_full_doc()),
         ), patch(
-            "ai_analytics_worker.backfill.get_agent_conversations_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_agent_conversations_for_claim_with_retry",
             new=AsyncMock(return_value=[]),
         ):
             result = await run_backfill(ai_db, mock_mongo_db, batch_size=10)
@@ -430,10 +430,10 @@ class TestBackfillBatching:
             return make_full_doc(claim_id=claim_id)
 
         with patch(
-            "ai_analytics_worker.backfill.get_ai_line_items_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_ai_line_items_for_claim_with_retry",
             new=mock_get_line_items,
         ), patch(
-            "ai_analytics_worker.backfill.get_agent_conversations_for_claim_with_retry",
+            "ai_analytics_worker.claim_refresh.get_agent_conversations_for_claim_with_retry",
             new=AsyncMock(return_value=[]),
         ):
             result = await run_backfill(ai_db, mock_mongo_db, batch_size=2)

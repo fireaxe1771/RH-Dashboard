@@ -17,16 +17,18 @@ docs/ai-analytics/PHASE_0_IMPLEMENTATION_PLAN.md Section 16):
 - Never becomes a required dependency for operational claim processing.
 - Cancellable within 5 seconds for graceful FastAPI shutdown.
 
-Phase 1 (this package skeleton) introduces the package, worker config
-accessor, in-memory health state, and metrics counters — no business logic.
-Phase 2 adds the source repository wrapper (timeout, retry, structured
+Phase 1 introduced the package skeleton, worker config accessor, in-memory
+health state, and metrics counters.
+Phase 2 added the source repository wrapper (timeout, retry, structured
 logging over the existing mongo_repository read functions).
-Phase 3 adds the projection builder (deterministic ai_invoice_analytics
+Phase 3 added the projection builder (deterministic ai_invoice_analytics
 document construction from source data, reusing normalization_core.py).
-Phase 4 adds the projection repository (destination writes) and the
+Phase 4 added the projection repository (destination writes) and the
 historical backfill orchestrator.
-Subsequent phases add change-stream listening, queue/coalescing, and
-reconciliation.
+Phase 5 added the change-stream listener (near-real-time incremental
+updates via MongoDB Change Streams with resume token persistence) and the
+shared claim refresh algorithm.
+Subsequent phases add queue/coalescing, reconciliation, and staleness UI.
 """
 
 __all__ = [
@@ -36,5 +38,7 @@ __all__ = [
     "source_repository",
     "projection_builder",
     "projection_repository",
+    "claim_refresh",
     "backfill",
+    "change_stream_listener",
 ]

@@ -1,15 +1,19 @@
 """AI Analytics Worker — entry point, lifecycle, and asyncio task.
 
-This module is the worker's main loop. In Phase 1 it is a no-op stub that
-proves the lifespan integration, cancellation, and health-state transitions
-work correctly. Subsequent phases replace the no-op body with the real
-pipeline: backfill (Phase 4/6) → change-stream listener + reconciliation +
-queue (Phase 7/9/10).
+This module is the worker's main entry point. It manages the worker lifecycle
+(health state transitions, logging, cancellation) and delegates the real work
+to the change-stream listener (Phase 5).
 
-Source: none directly in Phase 1 (the stub does no I/O). Later phases read
-RecoveryHub_AI MongoDB via ``source_repository``.
-Destination: none directly in Phase 1. Later phases write projections via
-``projection_repository``.
+The worker runs as a single background asyncio task in the FastAPI event loop.
+On startup, ``run_worker`` marks the worker as running, then enters the
+change-stream listener loop. On graceful shutdown (``stop_event``) or
+cancellation (``asyncio.CancelledError``), it marks the worker as stopped and
+returns/c re-raises.
+
+Source: RecoveryHub_AI MongoDB (read-only, via ``db_manager.ai_db`` or
+the ``ai_db`` parameter).
+Destination: dashboard-owned MongoDB (via ``db_manager.db`` or the ``db``
+parameter) — projections, worker state, dead-letters, run audit log.
 Architectural constraints:
 - Runs as a single background asyncio task in the FastAPI event loop.
 - Must respond to cancellation within ``CANCELLATION_TIMEOUT_SECONDS`` (5s).
@@ -21,39 +25,51 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Any
 
+from .change_stream_listener import run_change_stream_listener
 from .config import worker_config
 from .health import worker_health, STATUS_RUNNING, STATUS_STOPPED
-from .metrics import worker_metrics
 
 logger = logging.getLogger(__name__)
 
-# Sleep interval for the no-op Phase 1 loop. Short enough that cancellation is
-# observed quickly, long enough that the loop does not busy-spin. Real phases
-# will replace this with the change-stream wait.
-_NOOP_LOOP_INTERVAL_SECONDS = 0.5
 
-
-async def run_worker(stop_event: asyncio.Event) -> None:
+async def run_worker(
+    stop_event: asyncio.Event,
+    ai_db: Any = None,
+    db: Any = None,
+) -> None:
     """Run the AI Analytics Worker until ``stop_event`` is set or cancelled.
 
-    Phase 1: no-op loop. Marks the worker as started/running, sleeps in short
-    intervals so cancellation is observed promptly, then marks stopped on exit.
+    Marks the worker as started/running, delegates to the change-stream
+    listener (Phase 5), then marks stopped on exit.
 
     Arguments:
         stop_event: an ``asyncio.Event`` that the caller sets to request a
-            graceful shutdown. The worker checks this between cycles.
+            graceful shutdown. The worker checks this between events.
+        ai_db: the RecoveryHub_AI Motor database handle (read-only). If
+            ``None``, pulled from ``database.db_manager.ai_db`` at call time.
+        db: the dashboard-owned Motor database handle (writes). If ``None``,
+            pulled from ``database.db_manager.db`` at call time.
 
     Side effects:
         Updates ``worker_health`` (status, started/completed timestamps).
         Logs start and stop events.
+        Delegates all projection writes to the change-stream listener.
 
     Meaningful exceptions:
         ``asyncio.CancelledError`` is re-raised after marking the worker
         stopped, so the caller's ``await task`` surfaces the cancellation.
         Any other exception is recorded on ``worker_health`` and re-raised.
     """
+    # Resolve database handles if not provided explicitly.
+    if ai_db is None or db is None:
+        from database import db_manager
+        if ai_db is None:
+            ai_db = db_manager.ai_db
+        if db is None:
+            db = db_manager.db
+
     worker_health.mark_started()
     worker_health.set_status(STATUS_RUNNING)
     logger.info(
@@ -63,10 +79,11 @@ async def run_worker(stop_event: asyncio.Event) -> None:
     )
 
     try:
-        while not stop_event.is_set():
-            # Phase 1 no-op: yield control and re-check the stop event.
-            # Real phases will await the change-stream listener / queue here.
-            await asyncio.sleep(_NOOP_LOOP_INTERVAL_SECONDS)
+        await run_change_stream_listener(
+            ai_db=ai_db,
+            db=db,
+            stop_event=stop_event,
+        )
 
         # Graceful shutdown via stop_event
         worker_health.mark_completed()

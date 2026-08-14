@@ -39,23 +39,23 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from bson import ObjectId
 
 from ai_analytics.mongo_repository import AI_LINE_ITEMS_COLLECTION
 
+from .claim_refresh import (
+    OUTCOME_DEAD_LETTERED,
+    OUTCOME_INSERTED,
+    OUTCOME_NO_SOURCE,
+    OUTCOME_UPDATED,
+    refresh_claim,
+)
 from .config import worker_config
-from .projection_builder import build_projection
 from .projection_repository import (
-    record_dead_letter,
     record_worker_run,
     update_worker_run,
-    upsert_projection,
-)
-from .source_repository import (
-    get_ai_line_items_for_claim_with_retry,
-    get_agent_conversations_for_claim_with_retry,
 )
 
 logger = logging.getLogger(__name__)
@@ -300,67 +300,26 @@ async def _process_single_claim(
     claim_id: int,
     result: BackfillResult,
 ) -> None:
-    """Fetch source data, build projection, and persist for a single claim.
+    """Refresh a single claim's projection via the shared ``refresh_claim``.
 
-    On any error, the claim is dead-lettered and the error is logged — the
-    backfill continues with the next claim. This ensures one bad claim never
-    stops the entire backfill.
+    Delegates to ``claim_refresh.refresh_claim`` (Phase 5 DRY extraction) and
+    maps the returned ``ClaimRefreshResult`` to the backfill's running
+    counters. ``asyncio.CancelledError`` propagates from ``refresh_claim``
+    without being caught here — the backfill loop handles it.
     """
-    try:
-        # Fetch source data (with timeout/retry from Phase 2).
-        ai_line_items = await get_ai_line_items_for_claim_with_retry(
-            ai_db, claim_id
-        )
-        conversations = await get_agent_conversations_for_claim_with_retry(
-            ai_db, claim_id
-        )
+    refresh_result = await refresh_claim(
+        ai_db=ai_db,
+        db=db,
+        claim_id=claim_id,
+        source_event_type="backfill",
+    )
 
-        # Build the projection (pure function from Phase 3).
-        worker_processed_at = datetime.now(UTC)
-        projection = build_projection(
-            claim_id=claim_id,
-            ai_line_items=ai_line_items,
-            conversations=conversations,
-            worker_processed_at=worker_processed_at,
-        )
-
-        if projection is None:
-            # Nothing to project (no claim_id and no source) — dead-letter.
-            await record_dead_letter(
-                db,
-                claim_id=claim_id,
-                source_event_type="backfill",
-                error_type="NoSourceData",
-                error_message="build_projection returned None — no source data.",
-            )
-            result.dead_lettered += 1
-            result.claims_failed += 1
-            return
-
-        # Persist the projection.
-        outcome = await upsert_projection(db, projection)
-        if outcome == "inserted":
-            result.projections_inserted += 1
-        else:
-            result.projections_updated += 1
+    if refresh_result.outcome == OUTCOME_INSERTED:
+        result.projections_inserted += 1
         result.claims_processed += 1
-
-    except asyncio.CancelledError:
-        # Propagate cancellation — don't dead-letter.
-        raise
-    except Exception as exc:
-        # Any other error: dead-letter the claim and continue.
-        result.claims_failed += 1
+    elif refresh_result.outcome == OUTCOME_UPDATED:
+        result.projections_updated += 1
+        result.claims_processed += 1
+    elif refresh_result.outcome in (OUTCOME_DEAD_LETTERED, OUTCOME_NO_SOURCE):
         result.dead_lettered += 1
-        await record_dead_letter(
-            db,
-            claim_id=claim_id,
-            source_event_type="backfill",
-            error_type=type(exc).__name__,
-            error_message=str(exc),
-        )
-        logger.warning(
-            "Backfill: claim_id=%d failed (error_type=%s); dead-lettered.",
-            claim_id,
-            type(exc).__name__,
-        )
+        result.claims_failed += 1
