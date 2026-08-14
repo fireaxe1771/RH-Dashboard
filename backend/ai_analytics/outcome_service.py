@@ -53,6 +53,7 @@ from .normalization import (
 from .reason_normalization import normalize_reason
 from .cache import cached
 from config import settings
+from database import db_manager
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,6 @@ async def _load_normalized_cohort(
             # Read from the dashboard-owned projection collection. The
             # adapter maps projection fields to the raw ai_line_items
             # shape so build_normalized_record works unchanged.
-            from database import db_manager
             ai_records_by_claim = (
                 await projection_repo.get_projection_records_for_claim_ids(
                     db_manager.db, claim_ids
@@ -151,6 +151,12 @@ async def _load_normalized_cohort(
             )
     except Exception as e:
         logger.error(f"AI-side data query failed: {e}")
+        # The key name ``recoveryhub_ai_mongo`` is preserved for API
+        # backward compatibility — the frontend treats it as "AI-side
+        # data is unavailable". When the flag is on, the failure is
+        # actually in the dashboard-owned Mongo (the projection), but
+        # the semantic meaning to the consumer is the same: AI-side
+        # data could not be loaded.
         source_status["recoveryhub_ai_mongo"] = "unavailable"
         data_complete = False
 

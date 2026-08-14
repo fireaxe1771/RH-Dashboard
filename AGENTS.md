@@ -311,6 +311,8 @@ semantically identical to the direct-read path returning `None`.
 
 **Rolling out the flag:** set `AI_ANALYTICS_USE_PROJECTION=true` only after
 the worker has run a backfill and `ai_invoice_analytics` is populated. When
-false, behaviour is identical to pre-Phase-9. The flag is read at request
-time (not import time), so it can be toggled without a restart in Container
-Apps (env var refresh).
+false, behaviour is identical to pre-Phase-9. The flag is read at import
+time (the `settings` singleton in `config.py` evaluates `os.getenv` once
+when `Settings()` is constructed). Toggling it requires a container
+restart (a new Container App revision) — Azure Container Apps does not
+hot-reload env vars into a running process.

@@ -25,8 +25,8 @@ Architectural constraints:
 -- ``thread_id`` and ``retry_thread_id`` are not stored in the projection
    (Section 9 does not include them). They are 0% populated in production
    per the Phase 0 audit, so their absence is semantically identical to
-   the direct-read path returning ``None`` for them. Phase 10 may enrich
-   the projection to carry them.
+   the direct-read path returning ``None`` for them. ``retry_count`` IS
+   stored (Section 9.6, 30% populated) and is passed through unchanged.
 """
 
 from __future__ import annotations
@@ -41,8 +41,7 @@ logger = logging.getLogger(__name__)
 
 # Projection field name → raw ai_line_items field name that
 # ``build_normalized_record`` reads. Fields with the same name in both
-# shapes (e.g. ``confidence_level``, ``is_billable``, ``billing_category``,
-# ``line_items_save_to_rh_status``) don't need a mapping entry — the
+# shapes (see ``_PASSTHROUGH_FIELDS``) don't need a mapping entry — the
 # adapter copies them through directly.
 _FIELD_MAP: Dict[str, str] = {
     # projection field → ai_record field name
@@ -66,11 +65,18 @@ _MISSING_FROM_PROJECTION: tuple[str, ...] = (
 # Fields that pass through unchanged (same name in both shapes). Listed
 # explicitly so the adapter is self-documenting and a future schema
 # change is caught here rather than silently breaking the cohort.
+#
+# ``retry_count`` is included here (not in ``_MISSING_FROM_PROJECTION``)
+# because the projection DOES store it (Section 9.6) and it is 30%
+# populated in production per the Phase 0 audit. The Phase 0 audit also
+# found ``thread_id`` / ``retry_thread_id`` are 0% populated — those go
+# in ``_MISSING_FROM_PROJECTION`` so they are explicitly None.
 _PASSTHROUGH_FIELDS: tuple[str, ...] = (
     "confidence_level",
     "is_billable",
     "billing_category",
     "line_items_save_to_rh_status",
+    "retry_count",
 )
 
 

@@ -73,12 +73,30 @@ class TestProjectionToAiRecord:
             "is_billable": True,
             "billing_category": "Fire Suppression",
             "line_items_save_to_rh_status": True,
+            "retry_count": 2,
         }
         result = projection_to_ai_record(projection)
         assert result["confidence_level"] == 85
         assert result["is_billable"] is True
         assert result["billing_category"] == "Fire Suppression"
         assert result["line_items_save_to_rh_status"] is True
+        assert result["retry_count"] == 2
+
+    def test_retry_count_passthrough_not_silently_dropped(self):
+        """``retry_count`` is 30% populated in production per the Phase 0
+        audit and is stored in the projection (Section 9.6).
+
+        Regression guard: a previous version of the adapter omitted
+        ``retry_count`` from ``_PASSTHROUGH_FIELDS``, which silently
+        dropped it and made every record report ``retry_count=0`` when
+        the projection flag was on. ``calculate_retry_count`` reads
+        ``ai_record.get("retry_count")`` directly — if the adapter
+        doesn't carry it through, the has_retry filter and the
+        retry_count column on the dashboard are wrong for 30% of records.
+        """
+        projection = {"retry_count": 3}
+        result = projection_to_ai_record(projection)
+        assert result["retry_count"] == 3
 
     def test_thread_id_and_retry_thread_id_are_none(self):
         """Fields not in the projection are explicitly None.
@@ -96,7 +114,7 @@ class TestProjectionToAiRecord:
         result = projection_to_ai_record({})
         expected_keys = {
             "confidence_level", "is_billable", "billing_category",
-            "line_items_save_to_rh_status",
+            "line_items_save_to_rh_status", "retry_count",
             "claim_processing_status", "agent_exec_status",
             "invoice_total", "processing_time_seconds",
             "thread_id", "retry_thread_id",
@@ -115,6 +133,7 @@ class TestProjectionToAiRecord:
             "line_items_save_to_rh_status": True,
             "ai_invoice_total": 2500.00,
             "processing_duration_seconds": 18.3,
+            "retry_count": 1,
         }
         result = projection_to_ai_record(projection)
         assert result == {
@@ -126,6 +145,7 @@ class TestProjectionToAiRecord:
             "line_items_save_to_rh_status": True,
             "invoice_total": 2500.00,
             "processing_time_seconds": 18.3,
+            "retry_count": 1,
             "thread_id": None,
             "retry_thread_id": None,
         }
@@ -156,12 +176,14 @@ class TestGetProjectionRecordsForClaimIds:
             "ai_processing_status": "COMPLETED",
             "agent_execution_status": "success",
             "confidence_level": 90,
+            "retry_count": 2,
         })
         await collection.insert_one({
             "_id": 200,
             "ai_processing_status": "INITIATED",
             "agent_execution_status": "pending",
             "confidence_level": None,
+            "retry_count": 0,
         })
 
         result = await get_projection_records_for_claim_ids(
@@ -171,7 +193,9 @@ class TestGetProjectionRecordsForClaimIds:
         # 999 has no projection — absent from result, same as direct-read.
         assert set(result.keys()) == {100, 200}
         assert result[100]["claim_processing_status"] == "COMPLETED"
+        assert result[100]["retry_count"] == 2
         assert result[200]["claim_processing_status"] == "INITIATED"
+        assert result[200]["retry_count"] == 0
 
     @pytest.mark.asyncio
     async def test_missing_projection_is_absent_not_none(self, mock_mongo_db):
@@ -274,6 +298,7 @@ class TestLoadNormalizedCohortFlagGating:
             "line_items_save_to_rh_status": True,
             "ai_invoice_total": 1500.00,
             "processing_duration_seconds": 15.5,
+            "retry_count": 2,
         })
 
         with patch(
@@ -316,6 +341,7 @@ class TestLoadNormalizedCohortFlagGating:
             assert record["billing_category"] == "Fire Suppression"
             assert record["invoice_total"] == 1500.00
             assert record["processing_time_seconds"] == 15.5
+            assert record["retry_count"] == 2
             # business_outcome comes from the SQL join, not the projection.
             assert record["business_outcome"] == "released"
 
