@@ -49,6 +49,7 @@ from typing import Any, Dict, Optional
 from ai_analytics.mongo_repository import AI_LINE_ITEMS_COLLECTION
 
 from .config import worker_config
+from .metrics import worker_metrics
 from .projection_repository import get_worker_state, record_worker_run, update_worker_run
 from .queue import ClaimQueue
 
@@ -177,6 +178,12 @@ async def run_reconciliation_once(
         )
         result.watermark = watermark
 
+        # Counted only once the scan actually proceeds — a run skipped for a
+        # missing checkpoint is not a reconciliation. This makes a counter
+        # stuck at 0 a meaningful signal that the checkpoint is absent.
+        # Skipped runs are still recorded in ai_analytics_worker_runs.
+        worker_metrics.increment("reconciliation_runs")
+
         logger.info(
             "Reconciliation: scanning ai_line_items for updated_at > %s "
             "(checkpoint=%s, safety_margin=%.0fm).",
@@ -230,6 +237,13 @@ async def run_reconciliation_once(
             batch = await cursor.to_list(length=batch_size)
 
         result.completed_at = datetime.now(UTC)
+        # Matches the counter name: total source documents matching the
+        # watermark, including multiple documents for the same claim. The
+        # deduplicated count is ``claims_processed`` on the run audit record.
+        if result.claims_found:
+            worker_metrics.increment(
+                "reconciliation_claims_found", result.claims_found
+            )
         final_status = "cancelled" if result.cancelled else "completed"
         await update_worker_run(
             db,

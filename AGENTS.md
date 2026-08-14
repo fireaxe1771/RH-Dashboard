@@ -221,3 +221,52 @@ backward compatibility with existing imports. New code should import from
   `billing_category` and `retry_count` instead)
 - Recent records (last 30 days): `billing_category` dropped to 21% populated
   (was 99.8% historically) — `classify_billability()` handles this correctly
+
+### Worker Observability Conventions (Phase 8)
+
+**Two state stores must both be written.** Checkpoint and event timestamps
+live in *both* the `ai_analytics_worker_state` Mongo document (survives
+restart; read by reconciliation) and the in-memory `worker_health` singleton
+(read by the `/ready` and `/status` HTTP endpoints). Writing only Mongo makes
+the endpoints report `null` forever while the real value sits in the database.
+Any new call site that advances a checkpoint must update both — see
+`queue.run_queue_consumer` and `change_stream_listener._save_resume_token`.
+
+**`worker_metrics` counters must be incremented at the call site.** Testing
+`WorkerMetrics` in isolation does not prove the pipeline uses it. The
+regression guard is `tests/test_ai_analytics_worker_instrumentation.py`, which
+drives real pipeline paths and asserts counter deltas. Verify a new counter
+test actually fails when the increment is removed.
+
+Counter semantics worth preserving:
+- `claims_refreshed == projections_created + projections_updated` (invariant)
+- `claim_refresh_retries` counts retries *taken*, not failed attempts — the
+  terminal attempt is a `claim_refresh_errors`, not a retry
+- `events_received` counts total change-stream volume including skipped
+  deletes, so a quiet stream is distinguishable from a delete-only one
+- `reconciliation_runs` counts only scans that actually executed; a run
+  skipped for a missing checkpoint is not counted, which makes a stuck-at-zero
+  counter a meaningful signal
+- `asyncio.CancelledError` must never increment error counters — otherwise
+  every graceful deploy looks like an error burst
+
+**Unauthenticated endpoints must not carry error text.** `/health` and
+`/ready` are unauthenticated for container probes, and the backend Container
+App sets `external_enabled = true`, so their payloads are world-readable.
+`record_error` stores raw exception strings, which for driver failures embed
+the Atlas cluster hostname, port, and timeout config. `last_error` is exposed
+only on the auth-protected `/status`.
+
+### Testing: avoid wall-clock dependence
+
+`ClaimQueue` takes an injectable `clock` (defaults to `time.monotonic`)
+specifically so debounce tests need no `time.sleep`. Sleep-based debounce
+tests were flaky on Windows at roughly 2 failures in 6 runs: the default
+system timer granularity (~15.6 ms) can exceed a short debounce margin.
+
+When using the `FakeClock` helper in
+`tests/test_ai_analytics_worker_queue.py`, start at `0.0` and advance by whole
+seconds. Both keep IEEE-754 arithmetic exact. Adding a small delta to a large
+origin does not: `1000.0 + 0.05` rounds to `1000.04999999999995`, so an
+exact-boundary assertion fails for reasons unrelated to the queue. Since no
+real time passes, large window values cost nothing.

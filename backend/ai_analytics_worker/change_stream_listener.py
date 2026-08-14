@@ -53,6 +53,8 @@ from ai_analytics.mongo_repository import (
 )
 
 from .config import worker_config
+from .health import worker_health
+from .metrics import worker_metrics
 from .projection_repository import get_worker_state, update_worker_state
 from .queue import ClaimQueue
 
@@ -172,6 +174,12 @@ async def _save_resume_token(
     the health/operations dashboard can show how recently the worker
     processed an event.
 
+    The same two timestamps are mirrored onto the in-memory ``worker_health``
+    singleton. Both stores must be written: the Mongo document survives a
+    restart, while the in-memory copy is what the Phase 8 ``/ready`` and
+    ``/status`` endpoints read. Writing only Mongo would leave those
+    endpoints reporting ``null`` forever.
+
     Arguments:
         db: the dashboard-owned Motor database handle.
         resume_token: the resume token dict from the last processed event.
@@ -187,6 +195,9 @@ async def _save_resume_token(
             "status": "running",
         },
     )
+    worker_health.mark_checkpoint()
+    worker_health.mark_successful_event()
+    worker_metrics.increment("resume_tokens_saved")
 
 
 async def _process_change_event(
@@ -209,6 +220,10 @@ async def _process_change_event(
     """
     operation_type = change_event.get("operationType", "unknown")
 
+    # Counted before filtering so the counter reflects total stream volume,
+    # including the delete/invalidate events that are deliberately skipped.
+    worker_metrics.increment("events_received")
+
     if operation_type not in _WATCHED_OPERATIONS:
         # Skip delete/drop/invalidate/etc. — reconciliation handles stale
         # projections from deletes (Phase 7).
@@ -220,6 +235,7 @@ async def _process_change_event(
 
     claim_id = _extract_claim_id(change_event)
     if claim_id is None:
+        worker_metrics.increment("events_skipped_no_claim_id")
         logger.warning(
             "Change stream: %s event has no extractable claim_id; skipping.",
             operation_type,

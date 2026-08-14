@@ -53,6 +53,7 @@ from .claim_refresh import (
     refresh_claim,
 )
 from .config import worker_config
+from .metrics import worker_metrics
 from .projection_repository import (
     record_worker_run,
     update_worker_run,
@@ -150,6 +151,7 @@ async def run_backfill(
         "worker_version": worker_config.worker_version,
     }
     run_id = await record_worker_run(db, run_doc)
+    worker_metrics.increment("backfill_runs")
 
     logger.info(
         "Backfill started (batch_size=%d, max_claims_per_cycle=%d, "
@@ -317,9 +319,11 @@ async def _process_single_claim(
     if refresh_result.outcome == OUTCOME_INSERTED:
         result.projections_inserted += 1
         result.claims_processed += 1
+        worker_metrics.increment("backfill_claims_processed")
     elif refresh_result.outcome == OUTCOME_UPDATED:
         result.projections_updated += 1
         result.claims_processed += 1
+        worker_metrics.increment("backfill_claims_processed")
     elif refresh_result.outcome in (OUTCOME_DEAD_LETTERED, OUTCOME_NO_SOURCE):
         result.dead_lettered += 1
         result.claims_failed += 1

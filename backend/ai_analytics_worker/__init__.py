@@ -35,7 +35,11 @@ Phase 7 added the safety-net reconciliation loop that periodically scans
 ``ai_line_items`` for claims updated since the last checkpoint and
 enqueues them for refresh, covering events missed by the change stream
 (oplog gaps, crash between enqueue and refresh, deletes).
-Subsequent phases add staleness UI, security hardening, and deployment.
+Phase 8 added the health and operations endpoints (``/health``,
+``/ready``, ``/status``) that expose the in-memory worker state and
+metrics counters to operators and container probes.
+Subsequent phases add RH-Dashboard integration, staleness UI, security
+hardening, and deployment.
 """
 
 __all__ = [
@@ -50,4 +54,5 @@ __all__ = [
     "change_stream_listener",
     "queue",
     "reconciliation",
+    "routes",
 ]

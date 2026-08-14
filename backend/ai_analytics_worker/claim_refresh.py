@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Optional
 
+from .metrics import worker_metrics
 from .projection_builder import build_projection
 from .projection_repository import record_dead_letter, upsert_projection
 from .source_repository import (
@@ -103,6 +104,10 @@ async def refresh_claim(
         - Upserts a projection into ``ai_invoice_analytics`` (if successful).
         - Records a dead-letter in ``ai_analytics_worker_dead_letters`` if
           the claim fails processing or has no source data.
+        - Increments ``worker_metrics`` counters (``claims_refreshed``,
+          ``projections_created`` / ``projections_updated``,
+          ``claim_refresh_errors``, ``dead_letters_created``) so the Phase 8
+          ``/status`` endpoint reports real throughput.
     """
     try:
         # Fetch source data (with timeout/retry from Phase 2).
@@ -131,6 +136,7 @@ async def refresh_claim(
                 error_type="NoSourceData",
                 error_message="build_projection returned None — no source data.",
             )
+            worker_metrics.increment("dead_letters_created")
             return ClaimRefreshResult(
                 outcome=OUTCOME_NO_SOURCE,
                 claim_id=claim_id,
@@ -141,7 +147,11 @@ async def refresh_claim(
         # Persist the projection.
         outcome = await upsert_projection(db, projection)
         resolved_claim_id = projection.get("_id", claim_id)
+        # Counted once per successful refresh regardless of insert-vs-update,
+        # so claims_refreshed == projections_created + projections_updated.
+        worker_metrics.increment("claims_refreshed")
         if outcome == "inserted":
+            worker_metrics.increment("projections_created")
             logger.debug(
                 "Claim refresh: inserted projection for claim_id=%s "
                 "(source_event=%s).",
@@ -152,6 +162,7 @@ async def refresh_claim(
                 outcome=OUTCOME_INSERTED,
                 claim_id=resolved_claim_id,
             )
+        worker_metrics.increment("projections_updated")
         logger.debug(
             "Claim refresh: updated projection for claim_id=%s "
             "(source_event=%s).",
@@ -185,6 +196,8 @@ async def refresh_claim(
             error_type=error_type,
             error_message=error_message,
         )
+        worker_metrics.increment("claim_refresh_errors")
+        worker_metrics.increment("dead_letters_created")
         logger.warning(
             "Claim refresh: claim_id=%d failed (source_event=%s, "
             "error_type=%s); dead-lettered.",

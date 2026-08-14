@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .claim_refresh import refresh_claim
 from .config import worker_config
@@ -70,15 +70,27 @@ class ClaimQueue:
     Error behavior: never raises — ``enqueue`` returns False if closed.
     """
 
-    def __init__(self, debounce_seconds: float = 0.0) -> None:
+    def __init__(
+        self,
+        debounce_seconds: float = 0.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         """Initialize the queue.
 
         Arguments:
             debounce_seconds: how long a claim_id must remain in the queue
                 without being re-enqueued before it is "ready" to drain.
                 0 means no debounce (items are ready immediately).
+            clock: monotonic time source returning seconds as a float.
+                Defaults to ``time.monotonic``. Injectable so tests can
+                advance time deterministically instead of calling
+                ``time.sleep`` — sleep-based tests are flaky on Windows,
+                where the default timer granularity (~15.6ms) can exceed a
+                short debounce window. Must be monotonic; a wall-clock
+                source would break the window across NTP adjustments.
         """
         self._debounce_seconds = debounce_seconds
+        self._clock = clock
         # claim_id -> monotonic timestamp of the most recent enqueue.
         self._pending: Dict[int, float] = {}
         # Set when items are added or the queue is closed, to wake the
@@ -105,7 +117,7 @@ class ClaimQueue:
         if self._closed:
             return False
         is_new = claim_id not in self._pending
-        self._pending[claim_id] = time.monotonic()
+        self._pending[claim_id] = self._clock()
         self._wakeup.set()
         return is_new
 
@@ -142,7 +154,7 @@ class ClaimQueue:
         """
         if not self._pending:
             return []
-        now = time.monotonic()
+        now = self._clock()
         ready: List[int] = []
         for claim_id, enqueue_time in list(self._pending.items()):
             if now - enqueue_time >= self._debounce_seconds:
@@ -163,7 +175,7 @@ class ClaimQueue:
         """
         if not self._pending:
             return None
-        now = time.monotonic()
+        now = self._clock()
         min_remaining = float("inf")
         for enqueue_time in self._pending.values():
             remaining = self._debounce_seconds - (now - enqueue_time)
@@ -212,8 +224,9 @@ async def run_queue_consumer(
     Side effects:
         - Upserts projections into ``ai_invoice_analytics`` (via refresh_claim).
         - Records dead-letters for failing claims (via refresh_claim).
-        - Updates ``last_checkpoint_at`` on ``ai_analytics_worker_state``
-          after each successful refresh.
+        - Updates ``last_checkpoint_at`` on ``ai_analytics_worker_state`` and
+          on the in-memory ``worker_health`` after each successful refresh.
+        - Increments ``worker_metrics`` throughput counters (via refresh_claim).
 
     Raises:
         ``asyncio.CancelledError``: if the caller cancels the task.
@@ -222,6 +235,7 @@ async def run_queue_consumer(
     """
     from datetime import UTC, datetime
 
+    from .health import worker_health
     from .projection_repository import update_worker_state
 
     if max_claims_per_cycle is None:
@@ -250,6 +264,11 @@ async def run_queue_consumer(
                     worker_config.WORKER_NAME,
                     {"last_checkpoint_at": datetime.now(UTC)},
                 )
+                # Mirror onto the in-memory health state. The Mongo document
+                # is what reconciliation reads after a restart; the in-memory
+                # copy is what the Phase 8 /ready and /status endpoints read.
+                # Writing only Mongo leaves those endpoints reporting null.
+                worker_health.mark_checkpoint()
 
                 claims_since_yield += 1
                 if claims_since_yield >= max_claims_per_cycle:

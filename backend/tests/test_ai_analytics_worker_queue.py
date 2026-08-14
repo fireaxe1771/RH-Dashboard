@@ -19,12 +19,44 @@ Test level: unit.
 from __future__ import annotations
 
 import asyncio
-import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from ai_analytics_worker.queue import ClaimQueue, run_queue_consumer
+
+
+class FakeClock:
+    """Deterministic monotonic clock for debounce-window assertions.
+
+    The debounce tests originally used ``time.sleep`` with margins as small
+    as 10ms. That is flaky on Windows, where the default system timer
+    granularity (~15.6ms) can exceed the margin, so a sleep intended to
+    cross the window sometimes did not. Observed failure rate was roughly
+    2 in 6 runs.
+
+    Injecting a clock removes wall-clock dependence entirely: ``advance``
+    moves time by an exact amount, so "just before the window" and "just
+    after the window" become precise, reproducible assertions rather than
+    races. It also makes the tests instant instead of sleeping.
+
+    Starts at 0.0 and the tests advance by whole seconds, because both
+    choices keep the arithmetic exact in IEEE-754 doubles. Adding a small
+    delta to a large origin loses precision: ``1000.0 + 0.05`` rounds to
+    1000.04999999999995, so the subtraction inside ``pop_ready`` yields
+    0.04999999999995 and an exact-boundary assertion fails for reasons that
+    have nothing to do with the queue. Since no real time elapses, large
+    window values are free.
+    """
+
+    def __init__(self, start: float = 0.0) -> None:
+        self._now = start
+
+    def __call__(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
 
 
 # ---------------------------------------------------------------------------
@@ -41,9 +73,10 @@ class TestClaimQueueBasic:
         assert queue.size == 1
 
     def test_enqueue_existing_claim_returns_false_and_resets_timer(self):
-        queue = ClaimQueue(debounce_seconds=1.0)
+        clock = FakeClock()
+        queue = ClaimQueue(debounce_seconds=1.0, clock=clock)
         queue.enqueue(123)
-        time.sleep(0.01)
+        clock.advance(0.01)
         # Re-enqueue the same claim — should return False (already pending)
         assert queue.enqueue(123) is False
         assert queue.size == 1
@@ -56,18 +89,35 @@ class TestClaimQueueBasic:
         assert queue.closed is True
 
     def test_pop_ready_returns_items_past_debounce(self):
-        queue = ClaimQueue(debounce_seconds=0.05)
+        clock = FakeClock()
+        queue = ClaimQueue(debounce_seconds=10.0, clock=clock)
         queue.enqueue(100)
         queue.enqueue(200)
         # Items not ready yet (debounce window hasn't elapsed)
         assert queue.pop_ready() == []
         assert queue.size == 2
 
-        # Wait for debounce window
-        time.sleep(0.06)
+        clock.advance(10.0)  # exactly the window — boundary is inclusive
         ready = queue.pop_ready()
         assert set(ready) == {100, 200}
         assert queue.size == 0
+
+    def test_pop_ready_excludes_item_just_short_of_window(self):
+        """An item short of the window must not be drained.
+
+        Pins the boundary from the other side: with a real clock this case
+        could not be expressed reliably.
+        """
+        clock = FakeClock()
+        queue = ClaimQueue(debounce_seconds=10.0, clock=clock)
+        queue.enqueue(100)
+
+        clock.advance(9.0)
+        assert queue.pop_ready() == []
+        assert queue.size == 1
+
+        clock.advance(1.0)
+        assert queue.pop_ready() == [100]
 
     def test_pop_ready_with_zero_debounce_returns_immediately(self):
         queue = ClaimQueue(debounce_seconds=0.0)
@@ -100,11 +150,36 @@ class TestClaimQueueBasic:
         assert queue.seconds_until_next_ready() is None
 
     def test_seconds_until_next_ready_with_pending(self):
-        queue = ClaimQueue(debounce_seconds=0.1)
+        clock = FakeClock()
+        queue = ClaimQueue(debounce_seconds=10.0, clock=clock)
         queue.enqueue(100)
-        delay = queue.seconds_until_next_ready()
-        assert delay is not None
-        assert 0.0 <= delay <= 0.1
+        # Deterministic: no time has passed, so the full window remains.
+        assert queue.seconds_until_next_ready() == pytest.approx(10.0)
+
+        clock.advance(4.0)
+        assert queue.seconds_until_next_ready() == pytest.approx(6.0)
+
+    def test_seconds_until_next_ready_clamps_to_zero_when_overdue(self):
+        """A window already passed reports 0, never a negative delay.
+
+        The consumer feeds this value to ``asyncio.wait_for`` as a timeout;
+        a negative number would raise instead of polling.
+        """
+        clock = FakeClock()
+        queue = ClaimQueue(debounce_seconds=10.0, clock=clock)
+        queue.enqueue(100)
+        clock.advance(500.0)
+        assert queue.seconds_until_next_ready() == 0.0
+
+    def test_seconds_until_next_ready_reflects_earliest_item(self):
+        """With staggered enqueues, the delay tracks the oldest pending claim."""
+        clock = FakeClock()
+        queue = ClaimQueue(debounce_seconds=10.0, clock=clock)
+        queue.enqueue(100)
+        clock.advance(3.0)
+        queue.enqueue(200)
+        # Claim 100 is 3s in, so 7s remain; claim 200 needs the full 10s.
+        assert queue.seconds_until_next_ready() == pytest.approx(7.0)
 
 
 # ---------------------------------------------------------------------------
@@ -117,31 +192,49 @@ class TestClaimQueueDebounce:
 
     def test_re_enqueue_resets_debounce_timer(self):
         """Re-enqueuing a claim resets its timer so it waits the full window again."""
-        queue = ClaimQueue(debounce_seconds=0.1)
+        clock = FakeClock()
+        queue = ClaimQueue(debounce_seconds=10.0, clock=clock)
         queue.enqueue(100)
-        time.sleep(0.08)
+        clock.advance(8.0)
 
         # Re-enqueue — resets the timer
         queue.enqueue(100)
-        time.sleep(0.08)
-        # Original window (0.1s) has elapsed but the reset window hasn't
-        ready = queue.pop_ready()
-        assert ready == []  # Not ready yet — timer was reset
+        clock.advance(8.0)
+        # 16s of total elapsed time exceeds the 10s window, but only 8s has
+        # passed since the reset, so the claim is not ready.
+        assert queue.pop_ready() == []
 
-        # Wait for the reset window to elapse
-        time.sleep(0.03)
-        ready = queue.pop_ready()
-        assert 100 in ready
+        clock.advance(2.0)  # reaches 10s since the reset
+        assert queue.pop_ready() == [100]
+
+    def test_sustained_burst_never_drains_until_it_stops(self):
+        """A claim re-enqueued faster than the window never becomes ready.
+
+        This is the coalescing guarantee: a hot claim collapses into a single
+        refresh that fires only once updates pause. Expressing it needs an
+        exact clock — with sleeps it would be a 10-sleep race.
+        """
+        clock = FakeClock()
+        queue = ClaimQueue(debounce_seconds=10.0, clock=clock)
+
+        for _ in range(10):
+            queue.enqueue(100)
+            clock.advance(9.0)  # always re-enqueued before the window closes
+            assert queue.pop_ready() == []
+
+        # Updates stop; the window now completes and yields exactly one claim.
+        clock.advance(10.0)
+        assert queue.pop_ready() == [100]
 
     def test_multiple_distinct_claims_are_all_ready_after_debounce(self):
-        queue = ClaimQueue(debounce_seconds=0.05)
+        clock = FakeClock()
+        queue = ClaimQueue(debounce_seconds=10.0, clock=clock)
         queue.enqueue(100)
         queue.enqueue(200)
         queue.enqueue(300)
 
-        time.sleep(0.06)
-        ready = set(queue.pop_ready())
-        assert ready == {100, 200, 300}
+        clock.advance(10.0)
+        assert set(queue.pop_ready()) == {100, 200, 300}
 
     def test_re_enqueue_does_not_duplicate_in_queue(self):
         """Enqueuing the same claim 5 times results in size=1, not 5."""
@@ -150,18 +243,38 @@ class TestClaimQueueDebounce:
             queue.enqueue(100)
         assert queue.size == 1
 
+    def test_default_clock_is_real_monotonic_time(self):
+        """Omitting ``clock`` must use ``time.monotonic``, not a stub.
+
+        The FakeClock tests would still pass if the default were broken, so
+        this asserts production behaviour explicitly: with no injected clock,
+        a fresh entry is genuinely un-ready until real time passes.
+        """
+        import time as real_time
+
+        queue = ClaimQueue(debounce_seconds=30.0)
+        queue.enqueue(100)
+        # A 30s window cannot have elapsed, so nothing is ready and the
+        # reported delay is derived from the real clock.
+        assert queue.pop_ready() == []
+        delay = queue.seconds_until_next_ready()
+        assert 29.0 < delay <= 30.0
+
+        start = real_time.monotonic()
+        assert real_time.monotonic() >= start  # sanity: clock is monotonic
+
     def test_mixed_burst_and_new_claims(self):
         """A burst on claim 100 plus a new claim 200 — both are ready after debounce."""
-        queue = ClaimQueue(debounce_seconds=0.05)
+        clock = FakeClock()
+        queue = ClaimQueue(debounce_seconds=10.0, clock=clock)
         queue.enqueue(100)
         queue.enqueue(100)
         queue.enqueue(100)
         queue.enqueue(200)
 
         assert queue.size == 2  # Only 2 distinct claims
-        time.sleep(0.06)
-        ready = set(queue.pop_ready())
-        assert ready == {100, 200}
+        clock.advance(10.0)
+        assert set(queue.pop_ready()) == {100, 200}
 
 
 # ---------------------------------------------------------------------------

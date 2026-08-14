@@ -33,6 +33,7 @@ from ai_adoption_routes import ai_adoption_router
 from ai_analytics_routes import ai_analytics_router
 from ai_analytics_worker.config import worker_config
 from ai_analytics_worker.main import run_worker, stop_worker_task
+from ai_analytics_worker.routes import worker_router
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -131,6 +132,11 @@ app.add_middleware(
 app.include_router(billing_router, prefix="/api/billing")
 app.include_router(ai_adoption_router, prefix="/api/ai-adoption")
 app.include_router(ai_analytics_router, prefix="/api")
+# AI Analytics Worker health/operations endpoints (Phase 8). Mounted under
+# /api/ai-analytics/worker so they sit alongside the existing AI analytics
+# routes. /health and /ready are unauthenticated container probes; /status
+# is auth-protected via get_current_user in the route definition.
+app.include_router(worker_router, prefix="/api/ai-analytics/worker")
 
 def serialize_mongo_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Helper to convert MongoDB ObjectId to JSON-serializable string identifier."""

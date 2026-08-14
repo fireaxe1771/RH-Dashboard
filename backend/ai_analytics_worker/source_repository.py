@@ -45,6 +45,7 @@ from ai_analytics.mongo_repository import (
 )
 
 from .config import worker_config
+from .metrics import worker_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +160,10 @@ async def _with_retry(
 
             if attempt < max_attempts:
                 delay = _backoff_delay(attempt)
+                # Counted per retry actually taken, not per failed attempt —
+                # the final attempt that exhausts the budget is a failure
+                # (counted as claim_refresh_errors upstream), not a retry.
+                worker_metrics.increment("claim_refresh_retries")
                 logger.warning(
                     "worker source query failed with transient error on "
                     "attempt %d/%d (operation=%s, claim_id=%d, "
