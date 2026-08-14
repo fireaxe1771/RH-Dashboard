@@ -21,8 +21,10 @@ Phase 1 (this package skeleton) introduces the package, worker config
 accessor, in-memory health state, and metrics counters — no business logic.
 Phase 2 adds the source repository wrapper (timeout, retry, structured
 logging over the existing mongo_repository read functions).
-Subsequent phases add projection building, persistence, backfill,
-change-stream listening, and reconciliation.
+Phase 3 adds the projection builder (deterministic ai_invoice_analytics
+document construction from source data, reusing normalization_core.py).
+Subsequent phases add persistence, backfill, change-stream listening,
+and reconciliation.
 """
 
-__all__ = ["config", "health", "metrics", "source_repository"]
+__all__ = ["config", "health", "metrics", "source_repository", "projection_builder"]
