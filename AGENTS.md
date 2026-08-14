@@ -316,3 +316,52 @@ time (the `settings` singleton in `config.py` evaluates `os.getenv` once
 when `Settings()` is constructed). Toggling it requires a container
 restart (a new Container App revision) — Azure Container Apps does not
 hot-reload env vars into a running process.
+
+### Invoice Trace & Agent Stats — Projection Integration (Phase 10)
+
+Phase 10 enriches the projection schema (v1 → v2) and migrates two
+endpoints to read from the projection when `AI_ANALYTICS_USE_PROJECTION`
+is true:
+
+**Schema v2 additions (projection_schema_version 1 → 2):**
+- `ai_line_items` — now includes `resources` in each entry (was summary-only)
+- `conversation_summaries` — new list of per-conversation summary dicts
+  (conversation_id, agent, status, created_at, processing_stage,
+  request_type, execution_time_seconds). Excludes large payload fields
+  (input_data, incident_json, results, output_data).
+- `conversation_id` — from `ai_line_items.conversation_id` (linking ID)
+- `thread_id_is_billable` — from `ai_line_items.thread_id_is_billable`
+
+Per Section 9.12 Schema Evolution Policy: old v1 projections keep their
+shape and are upgraded lazily on next refresh. The read adapter returns
+`None`/empty for v1-missing fields — callers fall back gracefully.
+
+**`/invoices/{claim_id}/trace` (Phase 10 migration):**
+- When flag is on: reads AI summary from the projection (line items with
+  resources, review_msg, timestamps, processing status, etc.) via
+  `projection_read_repository.get_projection_for_trace`. Eliminates the
+  `ai_line_items` cross-cluster read.
+- Full conversation documents (input_data, incident_json, results,
+  output_data) are still fetched from RecoveryHub_AI Mongo — the
+  projection only stores conversation summaries, not the large payload
+  fields. This is one remaining per-claim cross-cluster read, which is
+  acceptable for an on-demand forensic tool.
+- If no projection exists for the claim (v1 not yet refreshed, or claim
+  never processed by worker), falls back to the direct-read path
+  automatically.
+
+**`/diagnostics/agents` (Phase 10 migration):**
+- When flag is on: aggregates from the projection's
+  `conversation_summaries` via `$unwind` + `$group` on the
+  `ai_invoice_analytics` collection. Eliminates the batch cross-cluster
+  read on `ai_agent_conversations`.
+- v1 projections (no `conversation_summaries`) contribute nothing —
+  `$unwind` on an empty/missing array produces no documents. Stats are
+  incomplete until all projections are refreshed to v2, but never
+  incorrect.
+
+**Projection schema version bump:**
+- `AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION` default changed from
+  1 to 2 in `config.py`. Existing deployments that pin the env var to 1
+  continue producing v1 projections (no breaking change). New/restarted
+  workers produce v2 projections.

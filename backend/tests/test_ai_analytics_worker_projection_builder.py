@@ -986,3 +986,137 @@ class TestNothingToProject:
         assert proj["_id"] is None
         assert proj["claim_id"] is None
         assert FLAG_MISSING_CLAIM_ID in proj["data_quality_flags"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: line items with resources, conversation summaries, trace fields
+# ---------------------------------------------------------------------------
+
+
+class TestPhase10LineItemsWithResources:
+    """Phase 10: line items now include ``resources`` for Invoice Trace."""
+
+    def test_resources_included_in_line_item_summary(self):
+        """``resources`` from the source line item is carried into the projection."""
+        doc = make_ai_line_items(
+            line_items=[
+                {
+                    "item": "Equipment usage",
+                    "description": "Engine 1",
+                    "quantity": 2,
+                    "rate": 500.00,
+                    "line_item_total": 1000.00,
+                    "resources": [
+                        {"resourceLabel": "Fuel", "quantity": 10, "amount": 50.00},
+                        {"resourceLabel": "Oil", "quantity": 1, "amount": 25.00},
+                    ],
+                }
+            ]
+        )
+        proj = build_projection(12345, doc, [], PROCESSED_AT)
+
+        assert len(proj["ai_line_items"]) == 1
+        entry = proj["ai_line_items"][0]
+        assert entry["item"] == "Equipment usage"
+        assert isinstance(entry["resources"], list)
+        assert len(entry["resources"]) == 2
+        assert entry["resources"][0]["resourceLabel"] == "Fuel"
+
+    def test_resources_none_when_not_in_source(self):
+        """When the source line item has no ``resources``, the projection has None."""
+        doc = make_ai_line_items(
+            line_items=[
+                {"item": "Equipment", "quantity": 1, "rate": 100, "line_item_total": 100}
+            ]
+        )
+        proj = build_projection(12345, doc, [], PROCESSED_AT)
+
+        entry = proj["ai_line_items"][0]
+        assert entry["resources"] is None
+
+
+class TestPhase10ConversationSummaries:
+    """Phase 10: per-conversation summaries for /diagnostics/agents."""
+
+    def test_conversation_summaries_populated(self):
+        """Per-conversation summaries are stored in the projection."""
+        conv1 = make_conversation(
+            agent="agent_a",
+            status="completed",
+            processing_stage="stage_1",
+            request_type="incident_analysis",
+        )
+        conv2 = make_conversation(
+            agent="agent_b",
+            status="failed",
+            processing_stage="stage_2",
+            request_type="billability_check",
+        )
+        doc = make_ai_line_items()
+        proj = build_projection(12345, doc, [conv1, conv2], PROCESSED_AT)
+
+        summaries = proj["conversation_summaries"]
+        assert len(summaries) == 2
+        assert summaries[0]["agent"] == "agent_a"
+        assert summaries[0]["status"] == "completed"
+        assert summaries[0]["processing_stage"] == "stage_1"
+        assert summaries[0]["request_type"] == "incident_analysis"
+        assert summaries[0]["conversation_id"] is not None
+        assert summaries[1]["agent"] == "agent_b"
+        assert summaries[1]["status"] == "failed"
+
+    def test_conversation_summaries_exclude_payload_fields(self):
+        """Large payload fields are NOT in the conversation summaries."""
+        conv = make_conversation(
+            input_data={"claim_id": 12345, "large": "payload"},
+            incident_json={"claim_id": 12345, "data": "here"},
+            results={"output": "result"},
+            output_data={"final": "output"},
+        )
+        doc = make_ai_line_items()
+        proj = build_projection(12345, doc, [conv], PROCESSED_AT)
+
+        summary = proj["conversation_summaries"][0]
+        assert "input_data" not in summary
+        assert "incident_json" not in summary
+        assert "results" not in summary
+        assert "output_data" not in summary
+
+    def test_conversation_summaries_empty_when_no_conversations(self):
+        """No conversations → empty conversation_summaries list."""
+        doc = make_ai_line_items()
+        proj = build_projection(12345, doc, [], PROCESSED_AT)
+
+        assert proj["conversation_summaries"] == []
+
+
+class TestPhase10TraceFields:
+    """Phase 10: conversation_id and thread_id_is_billable from ai_line_items."""
+
+    def test_conversation_id_copied_from_source(self):
+        """``conversation_id`` from ai_line_items is in the projection."""
+        doc = make_ai_line_items(conversation_id="conv-abc-123")
+        proj = build_projection(12345, doc, [], PROCESSED_AT)
+
+        assert proj["conversation_id"] == "conv-abc-123"
+
+    def test_conversation_id_none_when_not_in_source(self):
+        """No conversation_id in source → None in projection."""
+        doc = make_ai_line_items()
+        proj = build_projection(12345, doc, [], PROCESSED_AT)
+
+        assert proj["conversation_id"] is None
+
+    def test_thread_id_is_billable_copied_from_source(self):
+        """``thread_id_is_billable`` from ai_line_items is in the projection."""
+        doc = make_ai_line_items(thread_id_is_billable="yes")
+        proj = build_projection(12345, doc, [], PROCESSED_AT)
+
+        assert proj["thread_id_is_billable"] == "yes"
+
+    def test_trace_fields_none_when_no_source(self):
+        """Trace fields are None when there's no source document."""
+        proj = build_projection(12345, None, [], PROCESSED_AT)
+
+        assert proj["conversation_id"] is None
+        assert proj["thread_id_is_billable"] is None

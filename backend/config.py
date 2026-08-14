@@ -109,8 +109,11 @@ class Settings:
     # Projection schema version — bumped when the Section 9 projection schema
     # changes (see Section 9.12 Schema Evolution Policy). Old projections keep
     # their old version and are upgraded lazily.
+    # v2 (Phase 10): adds ``resources`` to line item entries, adds
+    # ``conversation_summaries`` (per-conversation summary list), adds
+    # ``conversation_id`` and ``thread_id_is_billable`` from ai_line_items.
     AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION: int = int(
-        os.getenv("AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION", "1")
+        os.getenv("AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION", "2")
     )
     # Coalescing debounce window (seconds). Multiple change events for the same
     # claim within this window collapse into a single refresh (Phase 6/8).

@@ -4,15 +4,17 @@ Combines all available SQL and Mongo data for a single claim into a
 comprehensive trace: business outcome, AI processing, conversations,
 line items, and comparison.
 
-Phase 9 note: This service is NOT affected by
-``settings.AI_ANALYTICS_USE_PROJECTION``. It reads the raw
-``ai_line_items`` document directly from RecoveryHub_AI Mongo because the
-forensic trace needs the full ``line_items`` array (with nested
-``resources``), the raw ``review_msg``, and the full conversation
-documents — none of which are in the worker's ``ai_invoice_analytics``
-projection (Section 9 only stores a line-item summary and conversation
-counts). Phase 10 will enrich the projection to carry the data needed
-to replace this direct-read path.
+Phase 10: When ``settings.AI_ANALYTICS_USE_PROJECTION`` is true, the
+AI summary fields (line items with resources, review_msg, timestamps,
+processing status, etc.) are read from the worker's
+``ai_invoice_analytics`` projection instead of fetching the raw
+``ai_line_items`` document from RecoveryHub_AI Mongo. This eliminates
+one cross-cluster read. Full conversation documents (with input_data,
+incident_json, results, output_data) are still fetched from
+RecoveryHub_AI Mongo because the projection only stores conversation
+summaries (not the large payload fields). When the flag is false,
+behaviour is identical to pre-Phase-10 (direct read from
+RecoveryHub_AI Mongo for both ai_line_items and conversations).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from typing import Any, Dict, List, Optional
 from .models import AiInvoiceTrace, AiConversationRecord, AiLineItemEntry, AiFinalLineItemEntry, AiLineItemComparison
 from . import sql_repository as sql_repo
 from . import mongo_repository as mongo_repo
+from . import projection_read_repository as projection_repo
 from .normalization import (
     classify_business_outcome,
     classify_writeback_status,
@@ -32,6 +35,8 @@ from .normalization import (
     CANCELLED_LOG_TEXT,
 )
 from .reason_normalization import normalize_reason
+from config import settings
+from database import db_manager
 
 logger = logging.getLogger(__name__)
 
@@ -206,12 +211,33 @@ async def get_invoice_trace(ai_db, claim_id: int) -> AiInvoiceTrace:
         has_cancellation_record=has_cancellation_record,
     )
 
-    # 5. Mongo: AI line items
+    # 5. AI line items — projection (Phase 10) or direct Mongo read.
     ai_record = None
     try:
-        ai_record = await mongo_repo.get_ai_line_items_for_claim(ai_db, claim_id)
+        if settings.AI_ANALYTICS_USE_PROJECTION:
+            # Read from the dashboard-owned projection. The adapter maps
+            # projection fields to the raw ai_line_items shape, including
+            # line_items with nested resources, review_msg, and timestamps.
+            # Returns None if no projection exists — the trace falls back
+            # to the direct-read path below.
+            ai_record = await projection_repo.get_projection_for_trace(
+                db_manager.db, claim_id
+            )
+            if ai_record is None:
+                # No projection (v1 not yet refreshed, or claim never
+                # processed by worker). Fall back to direct read.
+                ai_record = await mongo_repo.get_ai_line_items_for_claim(
+                    ai_db, claim_id
+                )
+        else:
+            ai_record = await mongo_repo.get_ai_line_items_for_claim(ai_db, claim_id)
     except Exception as e:
         logger.error(f"Failed to fetch ai_line_items for claim {claim_id}: {e}")
+        # The key name ``recoveryhub_ai_mongo`` is preserved for API
+        # backward compatibility — the frontend treats it as "AI-side
+        # data is unavailable". When the flag is on, the failure may be
+        # in the dashboard-owned Mongo (the projection), but the semantic
+        # meaning to the consumer is the same.
         source_status["recoveryhub_ai_mongo"] = "unavailable"
         data_complete = False
 

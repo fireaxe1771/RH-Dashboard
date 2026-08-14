@@ -2,9 +2,9 @@
 
 **Project:** RecoveryHub Dashboard System
 **Feature:** AI Analytics Worker — Event-Driven Analytics Projection Service
-**Document Version:** 1.0
-**Date:** 2026-08-13
-**Status:** Phase 0 COMPLETE — schema and collection design approved 2026-08-13
+**Document Version:** 1.2
+**Date:** 2026-08-13 (Phase 0); updated through Phase 10
+**Status:** Phases 0-10 COMPLETE — see Section 17 (Implementation Progress) for per-phase status
 **Supersedes:** `PHASE_0_DATA_CONTRACT.md` (2026-08-12, deleted)
 
 ---
@@ -1470,3 +1470,253 @@ phases:
 - Worker does not require a browser WebSocket.
 - Worker is replaceable, rebuildable, one-way, read-only against operational
   AI data, and independent of operational claim processing.
+
+---
+
+## 17. Implementation Progress (Phases 1-9)
+
+This section tracks the implementation status of each phase after Phase 0.
+Phase 0 exit criteria (Section 14) are unchanged. Each phase below lists
+its deliverables, status, and the tests that guard it.
+
+### Phase 1 — Worker foundation — COMPLETE
+
+**Deliverables:**
+- `ai_analytics_worker/config.py` — `WorkerConfig` with all Section 1.1.5
+  parameters (debounce, max claims per cycle, source query timeout,
+  reconciliation interval, backfill batch size, max retries, dead-letter
+  threshold, change-stream restart delay/max restarts, projection schema
+  version, worker version, projections collection name)
+- `ai_analytics_worker/__init__.py` — package init
+- `backend/config.py` — worker env vars added to `Settings` with validation
+- `ai_analytics_worker/health.py` — `worker_health` singleton, `record_error`,
+  checkpoint/event timestamp tracking
+- `ai_analytics_worker/metrics.py` — `worker_metrics` counters
+
+**Tests:** `test_ai_analytics_worker_main.py`, `test_ai_analytics_worker_metrics.py`
+
+### Phase 2 — Source repositories — COMPLETE
+
+**Deliverables:**
+- `ai_analytics_worker/source_repository.py` — read-only RecoveryHub_AI
+  access with `WORKER_SOURCE_QUERY_TIMEOUT_MS` enforcement and
+  `WORKER_MAX_RETRIES` exponential backoff
+
+**Tests:** `test_ai_analytics_worker_source_repository.py`
+
+### Phase 3 — Projection normalization — COMPLETE
+
+**Deliverables:**
+- `ai_analytics_worker/projection_builder.py` — deterministic dashboard
+  record builder implementing Section 9 schema. Reuses
+  `normalization_core.py` (DRY).
+- `ai_analytics_worker/projection_repository.py` — write-side repository
+  for the `ai_invoice_analytics` collection (upsert by `_id = claim_id`)
+
+**Tests:** `test_ai_analytics_worker_projection_builder.py`,
+`test_ai_analytics_worker_projection_repository.py`
+
+### Phase 4 — Historical backfill — COMPLETE
+
+**Deliverables:**
+- `ai_analytics_worker/backfill.py` — batch historical population using
+  `WORKER_BACKFILL_BATCH_SIZE`. Also used for stale-checkpoint date-range
+  fallback (Phase 9 reconciliation).
+
+**Tests:** `test_ai_analytics_worker_backfill.py`
+
+### Phase 5 — Change Stream listener — COMPLETE
+
+**Deliverables:**
+- `ai_analytics_worker/change_stream_listener.py` — near-real-time updates
+  via MongoDB Change Streams. Resume token persistence (open, close,
+  reopen). Exponential backoff on restart with cap at 30s. Respects
+  `WORKER_CHANGE_STREAM_MAX_RESTARTS` (0 = retry forever).
+
+**Tests:** `test_ai_analytics_worker_change_stream.py`
+
+### Phase 6 — Queue and coalescing — COMPLETE
+
+**Deliverables:**
+- `ai_analytics_worker/queue.py` — `ClaimQueue` with injectable clock
+  (defaults to `time.monotonic`), `WORKER_DEBOUNCE_SECONDS` coalescing
+  window, `WORKER_MAX_CLAIMS_PER_CYCLE` batch limit.
+
+**Tests:** `test_ai_analytics_worker_queue.py` (uses `FakeClock` to avoid
+wall-clock dependence — see AGENTS.md testing conventions)
+
+### Phase 7 — Reconciliation — COMPLETE
+
+**Deliverables:**
+- `ai_analytics_worker/reconciliation.py` — safety-net scan every
+  `WORKER_RECONCILIATION_INTERVAL_MINUTES`. Queries `ai_line_items` for
+  records changed since last checkpoint and requeues them.
+- `ai_analytics_worker/claim_refresh.py` — single-claim refresh pipeline
+  (source read → projection build → projection write)
+
+**Tests:** `test_ai_analytics_worker_reconciliation.py`,
+`test_ai_analytics_worker_claim_refresh.py`
+
+### Phase 8 — Health and operations — COMPLETE
+
+**Deliverables:**
+- `ai_analytics_worker/routes.py` — `/health`, `/ready`, `/status`
+  endpoints. `/health` and `/ready` are unauthenticated (container probes,
+  external_enabled=true) and must not carry error text. `/status` is
+  auth-protected and exposes `last_error`.
+- `ai_analytics_worker/main.py` — FastAPI lifespan integration, worker
+  task startup/shutdown, graceful cancellation.
+
+**Tests:** `test_ai_analytics_worker_health.py`,
+`test_ai_analytics_worker_routes.py`, `test_ai_analytics_worker_main.py`,
+`test_ai_analytics_worker_instrumentation.py` (regression guard for
+counter increments at call sites)
+
+**Conventions documented in AGENTS.md:**
+- Two state stores must both be written (Mongo `ai_analytics_worker_state`
+  + in-memory `worker_health` singleton)
+- `worker_metrics` counters must be incremented at the call site
+- `asyncio.CancelledError` must never increment error counters
+- `ClaimQueue` uses injectable `FakeClock` to avoid wall-clock flakiness
+
+### Phase 9 — RH-Dashboard integration — COMPLETE
+
+**Deliverables:**
+- `backend/config.py` — `AI_ANALYTICS_USE_PROJECTION` flag (default
+  `false`). Read at import time (the `settings` singleton); toggling
+  requires a container restart.
+- `backend/ai_analytics/projection_read_repository.py` — read-side
+  adapter mapping projection field names to the raw `ai_line_items`
+  field shape. Field mapping is explicit (`_FIELD_MAP`,
+  `_PASSTHROUGH_FIELDS`, `_MISSING_FROM_PROJECTION`) so schema changes
+  are caught there rather than silently producing `None`.
+  - `_FIELD_MAP`: 4 renamed fields (`ai_processing_status` →
+    `claim_processing_status`, `agent_execution_status` →
+    `agent_exec_status`, `ai_invoice_total` → `invoice_total`,
+    `processing_duration_seconds` → `processing_time_seconds`)
+  - `_PASSTHROUGH_FIELDS`: 5 same-name fields (`confidence_level`,
+    `is_billable`, `billing_category`, `line_items_save_to_rh_status`,
+    `retry_count` — the last is 30% populated per Phase 0 audit)
+  - `_MISSING_FROM_PROJECTION`: 2 fields (`thread_id`,
+    `retry_thread_id` — 0% populated per Phase 0 audit)
+- `backend/ai_analytics/outcome_service.py` —
+  `_load_normalized_cohort` branches on the flag: projection read vs
+  direct Mongo read. SQL steps (cohort, cancellations, logs) are
+  unchanged. `source_status["recoveryhub_ai_mongo"]` key is preserved
+  for API backward compatibility even when the failure is in the
+  dashboard-owned Mongo (the projection).
+- `backend/ai_analytics/invoice_trace_service.py` — NOT affected by
+  the flag (keeps direct-read; Phase 10 will enrich the projection to
+  replace this path). Docstring-only change.
+- `backend/ai_analytics/diagnostics_service.py` — inherits the
+  flag-gated swap via `_load_normalized_cohort` import. `get_agent_stats`
+  correctly bypasses it (reads `ai_agent_conversations` directly).
+
+**Tests:** `test_ai_analytics_projection_read.py` (17 tests):
+- Field mapping tests (renames, passthroughs, missing fields,
+  regression guard for `retry_count`)
+- Batch fetch tests (empty input, fetch by `_id`, missing projections,
+  error propagation)
+- Flag-gating tests (flag off → direct Mongo, flag on → projection,
+  missing projection → `ai_record=None`, projection failure →
+  `data_complete=False`)
+
+**Conventions documented in AGENTS.md:**
+- Hybrid read with config-flag fallback approach
+- `invoice_trace_service.py` Phase 10 handoff (keeps direct-read)
+- `/diagnostics/agents` not affected (reads raw conversations)
+- Flag is read at import time; toggling requires container restart
+
+**Test count:** 661 tests pass (was 644 pre-Phase 9), no regressions.
+
+### Verification: field mapping completeness
+
+The adapter's field mapping was verified against
+`normalization_core.build_normalized_record` (the function that consumes
+the adapted dict). Every field `build_normalized_record` reads from
+`ai_record` is covered:
+
+| `build_normalized_record` reads | Adapter source | Notes |
+|---|---|---|
+| `claim_processing_status` | `_FIELD_MAP` ← `ai_processing_status` | Renamed |
+| `agent_exec_status` | `_FIELD_MAP` ← `agent_execution_status` | Renamed |
+| `confidence_level` | `_PASSTHROUGH_FIELDS` | Same name |
+| `line_items_save_to_rh_status` | `_PASSTHROUGH_FIELDS` | Same name |
+| `retry_thread_id` | `_MISSING_FROM_PROJECTION` | 0% populated → None |
+| `retry_count` (via `calculate_retry_count`) | `_PASSTHROUGH_FIELDS` | Same name, 30% populated |
+| `is_billable` | `_PASSTHROUGH_FIELDS` | Same name |
+| `billing_category` | `_PASSTHROUGH_FIELDS` | Same name |
+| `thread_id` | `_MISSING_FROM_PROJECTION` | 0% populated → None |
+| `invoice_total` | `_FIELD_MAP` ← `ai_invoice_total` | Renamed |
+| `processing_time_seconds` | `_FIELD_MAP` ← `processing_duration_seconds` | Renamed |
+
+**Note:** `calculate_retry_count` also reads `ai_record.get("retry_count")`
+directly — this is covered by `_PASSTHROUGH_FIELDS`. The
+`retry_thread_id` parameter is passed separately by
+`build_normalized_record` and is covered by `_MISSING_FROM_PROJECTION`.
+
+### Phase 10 — Invoice Trace integration — COMPLETE
+
+**Schema v2 additions (projection_schema_version 1 → 2):**
+- `ai_line_items` — each entry now includes `resources` (was summary-only
+  with item, description, quantity, rate, line_item_total)
+- `conversation_summaries` — new list of per-conversation summary dicts
+  (conversation_id, agent, status, created_at, processing_stage,
+  request_type, execution_time_seconds). Excludes large payload fields
+  (input_data, incident_json, results, output_data)
+- `conversation_id` — from `ai_line_items.conversation_id` (linking ID)
+- `thread_id_is_billable` — from `ai_line_items.thread_id_is_billable`
+
+Per Section 9.12 Schema Evolution Policy: old v1 projections keep their
+shape and are upgraded lazily on next refresh.
+
+**Deliverables:**
+- `backend/ai_analytics_worker/projection_builder.py` — enriched with:
+  - `resources` added to `_LINE_ITEM_SUMMARY_FIELDS`
+  - New `_summarize_conversation_details()` helper for per-conversation
+    summaries
+  - `conversation_summaries`, `conversation_id`,
+    `thread_id_is_billable` fields in the projection dict
+- `backend/config.py` — `AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION`
+  default bumped from 1 to 2
+- `backend/ai_analytics/projection_read_repository.py` — new functions:
+  - `projection_to_trace_data()` — maps projection to full trace field
+    shape (line_items with resources, review_msg, timestamps,
+    conversation_id, thread_id_is_billable, conversation_summaries)
+  - `get_projection_for_trace()` — fetches a single projection by
+    claim_id and returns trace data dict (or None for fallback)
+  - `aggregate_agent_stats_from_projections()` — aggregates
+    conversation_summaries via $unwind + $group for /diagnostics/agents
+- `backend/ai_analytics/invoice_trace_service.py` — when flag is on,
+  reads AI summary from projection (eliminates ai_line_items cross-cluster
+  read). Falls back to direct-read if no projection exists. Full
+  conversations still read from RecoveryHub_AI Mongo for detail fields.
+- `backend/ai_analytics/diagnostics_service.py` — `get_agent_stats` when
+  flag is on, aggregates from projection's conversation_summaries
+  (eliminates batch cross-cluster read on ai_agent_conversations)
+
+**Tests:**
+- `test_ai_analytics_worker_projection_builder.py` — 11 new tests:
+  - `TestPhase10LineItemsWithResources` (resources in summary, None when
+    absent)
+  - `TestPhase10ConversationSummaries` (populated, excludes payload
+    fields, empty when no conversations)
+  - `TestPhase10TraceFields` (conversation_id, thread_id_is_billable
+    copied/None)
+- `test_ai_analytics_projection_read.py` — 14 new tests:
+  - `TestProjectionToTraceData` (field mapping: review_msg, timestamps,
+    line_items, conversation_id, thread_id_is_billable,
+    conversation_summaries, v1 compatibility, Phase 9 superset)
+  - `TestGetProjectionForTrace` (fetch by claim_id, None when absent)
+  - `TestAggregateAgentStatsFromProjections` (aggregation, v1
+    contributions, date filter)
+
+**Conventions documented in AGENTS.md:**
+- Schema v2 additions and Section 9.12 lazy upgrade
+- `/invoices/{claim_id}/trace` migration (projection for AI summary,
+  Mongo for full conversations)
+- `/diagnostics/agents` migration ($unwind + $group on
+  conversation_summaries)
+- Schema version bump behavior (pinned env vars continue v1)
+
+**Test count:** 686 tests pass (was 661 pre-Phase 10), no regressions.

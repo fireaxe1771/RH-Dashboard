@@ -73,13 +73,28 @@ _IN_PROGRESS_PROCESSING_STATUSES = {"INITIATED", "IN_PROGRESS"}
 
 # Fields extracted from each ai_line_items.line_items entry for the summary.
 # Section 9.8: "Direct copy (summary: item, description, quantity, rate,
-# line_item_total)".
+# line_item_total)". Phase 10 adds ``resources`` so the Invoice Trace
+# endpoint can display nested resources without a cross-cluster read.
 _LINE_ITEM_SUMMARY_FIELDS = (
     "item",
     "description",
     "quantity",
     "rate",
     "line_item_total",
+    "resources",
+)
+
+# Fields extracted from each ai_agent_conversations document for the
+# per-conversation summary (Phase 10). Excludes the large payload fields
+# (input_data, incident_json, results, output_data) — those stay in the
+# source and are fetched on demand by the Invoice Trace endpoint.
+_CONVERSATION_SUMMARY_FIELDS = (
+    "agent",
+    "status",
+    "created_at",
+    "processing_stage",
+    "request_type",
+    "execution_time_seconds",
 )
 
 
@@ -210,6 +225,14 @@ def build_projection(
     # --- Conversation summary (Section 9.7) ------------------------------
     conversation_summary = _summarize_conversations(conversations)
 
+    # --- Per-conversation summaries (Phase 10) ---------------------------
+    # Store per-conversation summary dicts so /diagnostics/agents can
+    # aggregate from the projection and the Invoice Trace endpoint can
+    # show the conversation list without a cross-cluster read. Excludes
+    # the large payload fields (input_data, incident_json, results,
+    # output_data) — those stay in the source and are fetched on demand.
+    conversation_summaries = _summarize_conversation_details(conversations)
+
     # --- Line items summary (Section 9.8) --------------------------------
     raw_line_items = ai_line_items.get("line_items") if has_ai_record else None
     line_items_summary = _summarize_line_items(raw_line_items)
@@ -292,6 +315,10 @@ def build_projection(
         "conversation_duration_total_seconds": conversation_summary[
             "conversation_duration_total_seconds"
         ],
+        # Phase 10: per-conversation summaries for /diagnostics/agents
+        # aggregation and Invoice Trace conversation list. Excludes large
+        # payload fields (input_data, incident_json, results, output_data).
+        "conversation_summaries": conversation_summaries,
         # 9.8 Line items
         "ai_line_item_count": len(line_items_summary),
         "ai_invoice_total": ai_line_items.get("invoice_total") if has_ai_record else None,
@@ -308,6 +335,17 @@ def build_projection(
         "multiple_ai_records": False,
         "source_record_count": 1 if has_ai_record else 0,
         "data_quality_flags": data_quality_flags,
+        # Phase 10: raw fields needed by Invoice Trace that weren't in
+        # the v1 schema. ``conversation_id`` is the linking ID on the
+        # ai_line_items doc (NOT the conversation doc's _id).
+        # ``thread_id_is_billable`` is 0% populated per Phase 0 but kept
+        # for forward compatibility with the trace endpoint.
+        "conversation_id": (
+            ai_line_items.get("conversation_id") if has_ai_record else None
+        ),
+        "thread_id_is_billable": (
+            ai_line_items.get("thread_id_is_billable") if has_ai_record else None
+        ),
     }
 
     logger.debug(
@@ -409,10 +447,12 @@ def _summarize_line_items(
 ) -> List[Dict[str, Any]]:
     """Extract the Section 9.8 line-item summary fields.
 
-    Each entry keeps only ``item``, ``description``, ``quantity``, ``rate``,
-    ``line_item_total``. Non-dict or missing entries are skipped rather than
-    raising — a malformed line_items array sets no data-quality flag (the
-    count is simply 0).
+    Each entry keeps ``item``, ``description``, ``quantity``, ``rate``,
+    ``line_item_total``, and ``resources`` (Phase 10 — needed by the
+    Invoice Trace endpoint to display nested resources without a
+    cross-cluster read). Non-dict or missing entries are skipped rather
+    than raising — a malformed line_items array sets no data-quality flag
+    (the count is simply 0).
     """
     if not isinstance(raw_line_items, list):
         return []
@@ -423,3 +463,33 @@ def _summarize_line_items(
             continue
         summary.append({field: entry.get(field) for field in _LINE_ITEM_SUMMARY_FIELDS})
     return summary
+
+
+def _summarize_conversation_details(
+    conversations: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Extract per-conversation summary dicts (Phase 10).
+
+    Each entry contains the summary fields that ``/diagnostics/agents``
+    needs for aggregation (agent, status, processing_stage, request_type)
+    and that the Invoice Trace endpoint needs for the conversation list
+    (created_at, execution_time_seconds, conversation_id). The large
+    payload fields (input_data, incident_json, results, output_data) are
+    NOT included — they stay in the source and are fetched on demand by
+    the trace endpoint.
+
+    Conversations are returned in the same order as the input (the
+    caller — ``source_repository`` — sorts chronologically by
+    ``created_at``).
+    """
+    summaries: List[Dict[str, Any]] = []
+    for conv in conversations:
+        if not isinstance(conv, dict):
+            continue
+        entry: Dict[str, Any] = {
+            "conversation_id": str(conv.get("_id", "")) if conv.get("_id") else None,
+        }
+        for field in _CONVERSATION_SUMMARY_FIELDS:
+            entry[field] = conv.get(field)
+        summaries.append(entry)
+    return summaries

@@ -1,9 +1,17 @@
-"""Tests for ai_analytics.projection_read_repository (Phase 9).
+"""Tests for ai_analytics.projection_read_repository (Phases 9-10).
 
 Feature under test: the adapter that maps the worker's
 ``ai_invoice_analytics`` projection documents to the raw
 ``ai_line_items`` field shape that ``build_normalized_record`` expects,
 and the batch fetch function that reads projections by claim_id.
+
+Phase 10 additions:
+-- ``projection_to_trace_data`` maps the projection to the full field
+   shape that ``invoice_trace_service`` needs (line items with resources,
+   review_msg, timestamps, conversation_id, thread_id_is_billable).
+-- ``get_projection_for_trace`` fetches a single projection for the trace.
+-- ``aggregate_agent_stats_from_projections`` aggregates conversation
+   summaries from the projection for /diagnostics/agents.
 
 Failure prevented:
 -- A field name mismatch between the projection and the raw ai_record
@@ -31,6 +39,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from ai_analytics.projection_read_repository import (
     projection_to_ai_record,
     get_projection_records_for_claim_ids,
+    projection_to_trace_data,
+    get_projection_for_trace,
+    aggregate_agent_stats_from_projections,
 )
 
 
@@ -436,3 +447,237 @@ class TestLoadNormalizedCohortFlagGating:
 
             assert source_status["recoveryhub_ai_mongo"] == "unavailable"
             assert data_complete is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: projection_to_trace_data — trace field mapping
+# ---------------------------------------------------------------------------
+
+
+class TestProjectionToTraceData:
+    """Verify the projection → trace data field mapping (Phase 10)."""
+
+    def test_renames_review_message_to_review_msg(self):
+        """Projection's ``review_message`` → raw ``review_msg``."""
+        projection = {"review_message": "Auto-approved"}
+        result = projection_to_trace_data(projection)
+        assert result["review_msg"] == "Auto-approved"
+
+    def test_renames_ai_inserted_at_to_inserted_at(self):
+        """Projection's ``ai_inserted_at`` → raw ``inserted_at``."""
+        from datetime import datetime
+        ts = datetime(2026, 7, 1, 9, 0, 0)
+        projection = {"ai_inserted_at": ts}
+        result = projection_to_trace_data(projection)
+        assert result["inserted_at"] == ts
+
+    def test_renames_ai_updated_at_to_updated_at(self):
+        """Projection's ``ai_updated_at`` → raw ``updated_at``."""
+        from datetime import datetime
+        ts = datetime(2026, 7, 2, 10, 30, 0)
+        projection = {"ai_updated_at": ts}
+        result = projection_to_trace_data(projection)
+        assert result["updated_at"] == ts
+
+    def test_renames_ai_completed_at_to_completed_at(self):
+        """Projection's ``ai_completed_at`` → raw ``completed_at``."""
+        from datetime import datetime
+        ts = datetime(2026, 7, 2, 10, 25, 0)
+        projection = {"ai_completed_at": ts}
+        result = projection_to_trace_data(projection)
+        assert result["completed_at"] == ts
+
+    def test_renames_ai_line_items_to_line_items(self):
+        """Projection's ``ai_line_items`` → raw ``line_items`` (with resources)."""
+        items = [
+            {"item": "Equipment", "quantity": 2, "rate": 500, "resources": []},
+        ]
+        projection = {"ai_line_items": items}
+        result = projection_to_trace_data(projection)
+        assert result["line_items"] == items
+
+    def test_conversation_id_passthrough(self):
+        """``conversation_id`` passes through unchanged (v2)."""
+        projection = {"conversation_id": "conv-abc-123"}
+        result = projection_to_trace_data(projection)
+        assert result["conversation_id"] == "conv-abc-123"
+
+    def test_thread_id_is_billable_passthrough(self):
+        """``thread_id_is_billable`` passes through unchanged (v2)."""
+        projection = {"thread_id_is_billable": "yes"}
+        result = projection_to_trace_data(projection)
+        assert result["thread_id_is_billable"] == "yes"
+
+    def test_incident_duration_passthrough(self):
+        """``incident_duration_in_minutes`` passes through unchanged."""
+        projection = {"incident_duration_in_minutes": 45}
+        result = projection_to_trace_data(projection)
+        assert result["incident_duration_in_minutes"] == 45
+
+    def test_conversation_summaries_extracted(self):
+        """``conversation_summaries`` is extracted from the projection (v2)."""
+        summaries = [
+            {"agent": "agent_a", "status": "completed", "conversation_id": "1"},
+        ]
+        projection = {"conversation_summaries": summaries}
+        result = projection_to_trace_data(projection)
+        assert result["conversation_summaries"] == summaries
+
+    def test_conversation_summaries_empty_for_v1_projection(self):
+        """v1 projections (no conversation_summaries) → empty list."""
+        result = projection_to_trace_data({})
+        assert result["conversation_summaries"] == []
+
+    def test_includes_all_phase9_fields(self):
+        """The trace adapter also maps all Phase 9 fields (superset)."""
+        projection = {
+            "ai_processing_status": "COMPLETED",
+            "agent_execution_status": "success",
+            "ai_invoice_total": 1500.00,
+            "processing_duration_seconds": 12.5,
+            "confidence_level": 85,
+            "is_billable": True,
+            "billing_category": "Fire",
+            "line_items_save_to_rh_status": True,
+            "retry_count": 1,
+        }
+        result = projection_to_trace_data(projection)
+        assert result["claim_processing_status"] == "COMPLETED"
+        assert result["agent_exec_status"] == "success"
+        assert result["invoice_total"] == 1500.00
+        assert result["processing_time_seconds"] == 12.5
+        assert result["confidence_level"] == 85
+        assert result["retry_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: get_projection_for_trace — single claim fetch
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectionForTrace:
+    """Verify the single-claim trace projection fetch."""
+
+    @pytest.mark.asyncio
+    async def test_returns_trace_data_when_projection_exists(self, mock_mongo_db):
+        """A v2 projection is fetched and adapted to trace data shape."""
+        from ai_analytics_worker.config import worker_config
+
+        collection = mock_mongo_db[worker_config.PROJECTIONS_COLLECTION]
+        await collection.insert_one({
+            "_id": 100,
+            "ai_processing_status": "COMPLETED",
+            "review_message": "Auto-approved",
+            "ai_line_items": [{"item": "Equipment", "resources": []}],
+            "conversation_id": "conv-123",
+            "conversation_summaries": [
+                {"agent": "agent_a", "status": "completed"},
+            ],
+        })
+
+        result = await get_projection_for_trace(mock_mongo_db, 100)
+
+        assert result is not None
+        assert result["claim_processing_status"] == "COMPLETED"
+        assert result["review_msg"] == "Auto-approved"
+        assert result["line_items"] == [{"item": "Equipment", "resources": []}]
+        assert result["conversation_id"] == "conv-123"
+        assert len(result["conversation_summaries"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_projection(self, mock_mongo_db):
+        """No projection for the claim → None (caller falls back to direct read)."""
+        result = await get_projection_for_trace(mock_mongo_db, 99999)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: aggregate_agent_stats_from_projections — /diagnostics/agents
+# ---------------------------------------------------------------------------
+
+
+class TestAggregateAgentStatsFromProjections:
+    """Verify the projection-based agent stats aggregation."""
+
+    @pytest.mark.asyncio
+    async def test_aggregates_by_agent_status_stage_request_type(self, mock_mongo_db):
+        """Conversation summaries are grouped by (agent, status, stage, request_type)."""
+        from ai_analytics_worker.config import worker_config
+
+        collection = mock_mongo_db[worker_config.PROJECTIONS_COLLECTION]
+        await collection.insert_one({
+            "_id": 100,
+            "conversation_summaries": [
+                {"agent": "agent_a", "status": "completed",
+                 "processing_stage": "stage_1", "request_type": "incident_analysis",
+                 "created_at": "2026-07-01T09:00:00"},
+                {"agent": "agent_a", "status": "completed",
+                 "processing_stage": "stage_1", "request_type": "incident_analysis",
+                 "created_at": "2026-07-01T10:00:00"},
+                {"agent": "agent_b", "status": "failed",
+                 "processing_stage": "stage_2", "request_type": "billability_check",
+                 "created_at": "2026-07-01T11:00:00"},
+            ],
+        })
+
+        results = await aggregate_agent_stats_from_projections(mock_mongo_db)
+
+        assert len(results) == 2
+        # agent_a, completed, stage_1, incident_analysis → count 2
+        agent_a = next(
+            r for r in results if r["agent"] == "agent_a"
+        )
+        assert agent_a["count"] == 2
+        assert agent_a["status"] == "completed"
+        # agent_b, failed, stage_2, billability_check → count 1
+        agent_b = next(
+            r for r in results if r["agent"] == "agent_b"
+        )
+        assert agent_b["count"] == 1
+        assert agent_b["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_v1_projections_contribute_nothing(self, mock_mongo_db):
+        """Projections without conversation_summaries produce no results."""
+        from ai_analytics_worker.config import worker_config
+
+        collection = mock_mongo_db[worker_config.PROJECTIONS_COLLECTION]
+        await collection.insert_one({
+            "_id": 100,
+            # v1 projection — no conversation_summaries field
+            "ai_processing_status": "COMPLETED",
+        })
+
+        results = await aggregate_agent_stats_from_projections(mock_mongo_db)
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_date_filter_on_created_at(self, mock_mongo_db):
+        """Date range filters on conversation_summaries.created_at."""
+        from ai_analytics_worker.config import worker_config
+
+        collection = mock_mongo_db[worker_config.PROJECTIONS_COLLECTION]
+        await collection.insert_one({
+            "_id": 100,
+            "conversation_summaries": [
+                {"agent": "agent_a", "status": "completed",
+                 "processing_stage": "s1", "request_type": "r1",
+                 "created_at": "2026-07-01T09:00:00"},
+                {"agent": "agent_b", "status": "completed",
+                 "processing_stage": "s2", "request_type": "r2",
+                 "created_at": "2026-08-01T09:00:00"},
+            ],
+        })
+
+        # Filter to only July. end_date is exclusive (caller adds 1 day),
+        # so end_date="2026-07-31" → end_exclusive="2026-08-01" which
+        # excludes August 1st.
+        results = await aggregate_agent_stats_from_projections(
+            mock_mongo_db,
+            start_date="2026-07-01",
+            end_date="2026-07-31",
+        )
+
+        # Only the July conversation should be counted
+        assert len(results) == 1
+        assert results[0]["agent"] == "agent_a"
