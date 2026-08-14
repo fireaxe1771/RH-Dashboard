@@ -1022,8 +1022,8 @@ class TestPhase10LineItemsWithResources:
         assert len(entry["resources"]) == 2
         assert entry["resources"][0]["resourceLabel"] == "Fuel"
 
-    def test_resources_none_when_not_in_source(self):
-        """When the source line item has no ``resources``, the projection has None."""
+    def test_resources_empty_when_not_in_source(self):
+        """When the source line item has no ``resources``, the projection has an empty list."""
         doc = make_ai_line_items(
             line_items=[
                 {"item": "Equipment", "quantity": 1, "rate": 100, "line_item_total": 100}
@@ -1032,7 +1032,30 @@ class TestPhase10LineItemsWithResources:
         proj = build_projection(12345, doc, [], PROCESSED_AT)
 
         entry = proj["ai_line_items"][0]
-        assert entry["resources"] is None
+        assert entry["resources"] == []
+
+    def test_line_item_aliases_are_canonicalized(self):
+        """Legacy label/amount/total aliases preserve trace comparisons."""
+        doc = make_ai_line_items(
+            line_items=[
+                {
+                    "label": "Equipment",
+                    "quantity": 2,
+                    "amount": 125.0,
+                    "total": 250.0,
+                }
+            ]
+        )
+        proj = build_projection(12345, doc, [], PROCESSED_AT)
+
+        assert proj["ai_line_items"] == [{
+            "item": "Equipment",
+            "description": None,
+            "quantity": 2,
+            "rate": 125.0,
+            "line_item_total": 250.0,
+            "resources": [],
+        }]
 
 
 class TestPhase10ConversationSummaries:
@@ -1061,6 +1084,7 @@ class TestPhase10ConversationSummaries:
         assert summaries[0]["status"] == "completed"
         assert summaries[0]["processing_stage"] == "stage_1"
         assert summaries[0]["request_type"] == "incident_analysis"
+        assert summaries[0]["created_at"] == "2026-07-01T09:05:00"
         assert summaries[0]["conversation_id"] is not None
         assert summaries[1]["agent"] == "agent_b"
         assert summaries[1]["status"] == "failed"

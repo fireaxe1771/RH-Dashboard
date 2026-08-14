@@ -50,6 +50,31 @@ def _serialize_datetime(val: Any) -> Optional[str]:
     return str(val)
 
 
+def _conversation_records_from_summaries(
+    summaries: List[Dict[str, Any]],
+) -> List[AiConversationRecord]:
+    """Build lightweight conversation records from projection summaries.
+
+    Summary records are the intentional fallback when full conversation
+    payloads cannot be loaded from RecoveryHub_AI. Large payload fields remain
+    ``None`` rather than causing the entire trace to disappear.
+    """
+    records: List[AiConversationRecord] = []
+    for summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        records.append(AiConversationRecord(
+            conversation_id=str(summary.get("conversation_id") or ""),
+            agent=summary.get("agent"),
+            status=summary.get("status"),
+            created_at=_serialize_datetime(summary.get("created_at")),
+            processing_stage=summary.get("processing_stage"),
+            request_type=summary.get("request_type"),
+            execution_time_seconds=summary.get("execution_time_seconds"),
+        ))
+    return records
+
+
 def _extract_ai_line_items(ai_record: Dict[str, Any]) -> List[AiLineItemEntry]:
     """Extract AI-generated line items from the ai_line_items document.
 
@@ -213,35 +238,39 @@ async def get_invoice_trace(ai_db, claim_id: int) -> AiInvoiceTrace:
 
     # 5. AI line items — projection (Phase 10) or direct Mongo read.
     ai_record = None
+    projection_conversation_summaries: List[Dict[str, Any]] = []
     try:
         if settings.AI_ANALYTICS_USE_PROJECTION:
-            # Read from the dashboard-owned projection. The adapter maps
-            # projection fields to the raw ai_line_items shape, including
-            # line_items with nested resources, review_msg, and timestamps.
-            # Returns None if no projection exists — the trace falls back
-            # to the direct-read path below.
-            ai_record = await projection_repo.get_projection_for_trace(
+            projection_data = await projection_repo.get_projection_for_trace(
                 db_manager.db, claim_id
             )
-            if ai_record is None:
-                # No projection (v1 not yet refreshed, or claim never
-                # processed by worker). Fall back to direct read.
+            if projection_data is None:
+                # No projection (or a pre-worker claim): use the authoritative
+                # source until the worker has produced a projection.
                 ai_record = await mongo_repo.get_ai_line_items_for_claim(
                     ai_db, claim_id
                 )
+            else:
+                projection_conversation_summaries = projection_data.pop(
+                    "conversation_summaries", []
+                )
+                has_ai_record = projection_data.pop(
+                    "has_ai_line_item_record", True
+                )
+                # Do not treat an explicit missing-source projection as an
+                # AI record with all-null fields.
+                ai_record = projection_data if has_ai_record else None
         else:
             ai_record = await mongo_repo.get_ai_line_items_for_claim(ai_db, claim_id)
     except Exception as e:
         logger.error(f"Failed to fetch ai_line_items for claim {claim_id}: {e}")
-        # The key name ``recoveryhub_ai_mongo`` is preserved for API
-        # backward compatibility — the frontend treats it as "AI-side
-        # data is unavailable". When the flag is on, the failure may be
-        # in the dashboard-owned Mongo (the projection), but the semantic
-        # meaning to the consumer is the same.
         source_status["recoveryhub_ai_mongo"] = "unavailable"
         data_complete = False
 
-    # 6. Mongo: Agent conversations
+    # 6. Agent conversations. In projection mode, v2 summaries provide a
+    # usable fallback; full source documents are merged when available so
+    # forensic payload fields remain present without leaking summaries into
+    # raw_ai_record.
     conversations: List[AiConversationRecord] = []
     try:
         conv_docs = await mongo_repo.get_agent_conversations_for_claim(ai_db, claim_id)
@@ -259,8 +288,17 @@ async def get_invoice_trace(ai_db, claim_id: int) -> AiInvoiceTrace:
                 results=doc.get("results"),
                 output_data=doc.get("output_data"),
             ))
+        if not conversations and projection_conversation_summaries:
+            conversations = _conversation_records_from_summaries(
+                projection_conversation_summaries
+            )
     except Exception as e:
         logger.error(f"Failed to fetch conversations for claim {claim_id}: {e}")
+        if projection_conversation_summaries:
+            conversations = _conversation_records_from_summaries(
+                projection_conversation_summaries
+            )
+        data_complete = False
 
     # 7. SQL: Final line items
     final_line_items: List[AiFinalLineItemEntry] = []

@@ -282,7 +282,12 @@ def projection_to_trace_data(
     for field in _MISSING_FROM_PROJECTION:
         adapted[field] = None
 
-    # Phase 10: per-conversation summaries (v2 only; v1 → empty list).
+    # Phase 10 metadata consumed by invoice_trace_service. Keep these
+    # separate from the raw ai_line_items shape; the service removes them
+    # before exposing raw_ai_record.
+    adapted["has_ai_line_item_record"] = projection.get(
+        "has_ai_line_item_record", True
+    )
     adapted["conversation_summaries"] = projection.get("conversation_summaries") or []
 
     return adapted

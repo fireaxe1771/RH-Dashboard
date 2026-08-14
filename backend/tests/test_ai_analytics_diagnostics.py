@@ -149,6 +149,58 @@ class TestDiagnosticsRoutes:
         assert data["total_records"] == 0
         assert data["records_with_retries"] == 0
 
+
+# ---------------------------------------------------------------------------
+# Phase 10 projection service path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_stats_uses_projection_when_flag_enabled(monkeypatch):
+    """The service-level flag branch must call projection aggregation, not raw Mongo."""
+    from ai_analytics.diagnostics_service import get_agent_stats
+    from ai_analytics.models import AiAnalyticsFilters
+    from config import settings
+
+    monkeypatch.setattr(settings, "AI_ANALYTICS_USE_PROJECTION", True)
+    projection_results = [{
+        "agent": "agent-a",
+        "status": "completed",
+        "processing_stage": "stage-1",
+        "request_type": "incident_analysis",
+        "count": 3,
+    }]
+
+    with patch(
+        "ai_analytics.diagnostics_service.projection_repo.aggregate_agent_stats_from_projections",
+        new_callable=AsyncMock,
+        return_value=projection_results,
+    ) as aggregate, patch(
+        "ai_analytics.diagnostics_service.mongo_repo.AGENT_CONVERSATIONS_COLLECTION",
+        "should-not-be-used",
+    ):
+        stats = await get_agent_stats(object(), AiAnalyticsFilters())
+
+    aggregate.assert_awaited_once()
+    assert stats[0].agent == "agent-a"
+    assert stats[0].count == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_stats_projection_failure_returns_empty(monkeypatch):
+    """Projection aggregation errors are contained at the diagnostics boundary."""
+    from ai_analytics.diagnostics_service import get_agent_stats
+    from ai_analytics.models import AiAnalyticsFilters
+    from config import settings
+
+    monkeypatch.setattr(settings, "AI_ANALYTICS_USE_PROJECTION", True)
+    with patch(
+        "ai_analytics.diagnostics_service.projection_repo.aggregate_agent_stats_from_projections",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("projection unavailable"),
+    ):
+        assert await get_agent_stats(object(), AiAnalyticsFilters()) == []
+
     @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
     @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
     @patch("ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims")

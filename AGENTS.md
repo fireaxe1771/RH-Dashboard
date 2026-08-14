@@ -286,8 +286,9 @@ AI-side data, gated by `AI_ANALYTICS_USE_PROJECTION` (default `false`):
 
 SQL-side data (business_outcome, cancellation_reason, process_logs,
 claim_created_at) is **always** joined from SQL regardless of the flag — the
-projection only caches the AI-Mongo side. Phase 10 will enrich the projection
-to carry SQL-joined fields.
+projection continues to cache only the AI-Mongo side. Phase 10 enriches the
+AI-side trace and conversation data but does not move SQL truth into the
+projection.
 
 The adapter (`ai_analytics/projection_read_repository.py`) maps projection
 field names to the raw `ai_line_items` field names that
@@ -299,15 +300,18 @@ Fields not in the projection (`thread_id`, `retry_thread_id`) are 0%
 populated in production per the Phase 0 audit, so their absence is
 semantically identical to the direct-read path returning `None`.
 
-**Endpoints NOT affected by the flag:**
-- `/invoices/{claim_id}/trace` — needs the raw `ai_line_items` document
-  (full `line_items` array with nested `resources`, raw `review_msg`).
-  The projection only stores summaries. Phase 10 will enrich the projection
-  to replace this path.
-- `/diagnostics/agents` — aggregates raw `ai_agent_conversations` by
-  (agent, status, processing_stage, request_type). The projection only
-  stores conversation counts. This endpoint always reads from
-  RecoveryHub_AI Mongo directly.
+**Phase 10 endpoint behavior:**
+- `/invoices/{claim_id}/trace` — reads AI summary fields from the projection
+  when enabled, including canonicalized line items with nested `resources`,
+  `review_msg`, timestamps, and retry fields. Full conversation payloads are
+  still loaded from RecoveryHub_AI when available; v2 `conversation_summaries`
+  are used as a lightweight fallback if that read fails. A projection marked
+  `has_ai_line_item_record=false` remains an AI-record-missing trace.
+- `/diagnostics/agents` — aggregates v2 `conversation_summaries` from the
+  projection by (agent, status, processing_stage, request_type). v1
+  projections are excluded because they have no per-conversation summaries.
+  The direct RecoveryHub_AI aggregation remains the fallback path when the
+  flag is false.
 
 **Rolling out the flag:** set `AI_ANALYTICS_USE_PROJECTION=true` only after
 the worker has run a backfill and `ai_invoice_analytics` is populated. When
@@ -326,7 +330,7 @@ is true:
 **Schema v2 additions (projection_schema_version 1 → 2):**
 - `ai_line_items` — now includes `resources` in each entry (was summary-only)
 - `conversation_summaries` — new list of per-conversation summary dicts
-  (conversation_id, agent, status, created_at, processing_stage,
+  (conversation_id, agent, status, created_at as ISO string, processing_stage,
   request_type, execution_time_seconds). Excludes large payload fields
   (input_data, incident_json, results, output_data).
 - `conversation_id` — from `ai_line_items.conversation_id` (linking ID)

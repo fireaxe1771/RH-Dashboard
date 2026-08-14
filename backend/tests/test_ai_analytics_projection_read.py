@@ -527,6 +527,12 @@ class TestProjectionToTraceData:
         """v1 projections (no conversation_summaries) → empty list."""
         result = projection_to_trace_data({})
         assert result["conversation_summaries"] == []
+        assert result["has_ai_line_item_record"] is True
+
+    def test_explicit_missing_ai_record_is_preserved(self):
+        """A tombstone-like projection must remain an AI-record-missing trace."""
+        result = projection_to_trace_data({"has_ai_line_item_record": False})
+        assert result["has_ai_line_item_record"] is False
 
     def test_includes_all_phase9_fields(self):
         """The trace adapter also maps all Phase 9 fields (superset)."""

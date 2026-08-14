@@ -445,14 +445,13 @@ def _summarize_conversations(
 def _summarize_line_items(
     raw_line_items: Optional[Any],
 ) -> List[Dict[str, Any]]:
-    """Extract the Section 9.8 line-item summary fields.
+    """Extract canonical line-item fields for the projection.
 
-    Each entry keeps ``item``, ``description``, ``quantity``, ``rate``,
-    ``line_item_total``, and ``resources`` (Phase 10 — needed by the
-    Invoice Trace endpoint to display nested resources without a
-    cross-cluster read). Non-dict or missing entries are skipped rather
-    than raising — a malformed line_items array sets no data-quality flag
-    (the count is simply 0).
+    The source uses historical aliases for item name, rate, and total
+    (``label``/``name``, ``amount``, and ``total``). Normalize those aliases
+    here so projection and direct-read Invoice Trace responses have identical
+    comparison behavior. Missing resources become an empty list, matching
+    ``_extract_ai_line_items``.
     """
     if not isinstance(raw_line_items, list):
         return []
@@ -461,7 +460,18 @@ def _summarize_line_items(
     for entry in raw_line_items:
         if not isinstance(entry, dict):
             continue
-        summary.append({field: entry.get(field) for field in _LINE_ITEM_SUMMARY_FIELDS})
+        summary.append({
+            "item": entry.get("item") or entry.get("label") or entry.get("name"),
+            "description": entry.get("description"),
+            "quantity": entry.get("quantity"),
+            "rate": entry.get("rate") if entry.get("rate") is not None else entry.get("amount"),
+            "line_item_total": (
+                entry.get("line_item_total")
+                if entry.get("line_item_total") is not None
+                else entry.get("total")
+            ),
+            "resources": entry.get("resources") if isinstance(entry.get("resources"), list) else [],
+        })
     return summary
 
 
@@ -490,6 +500,9 @@ def _summarize_conversation_details(
             "conversation_id": str(conv.get("_id", "")) if conv.get("_id") else None,
         }
         for field in _CONVERSATION_SUMMARY_FIELDS:
-            entry[field] = conv.get(field)
+            value = conv.get(field)
+            # Store timestamps as ISO strings so projection-side date
+            # filtering is deterministic across BSON and test backends.
+            entry[field] = value.isoformat() if field == "created_at" and hasattr(value, "isoformat") else value
         summaries.append(entry)
     return summaries

@@ -1035,7 +1035,7 @@ Changes require a `projection_schema_version` bump — see Section 9.12
 |---|---|---|---|---|---|
 | `ai_line_item_count` | int | `ai_line_items.line_items` | len(line_items) if list else 0 | NO | Number of AI-generated line items |
 | `ai_invoice_total` | float | `ai_line_items.invoice_total` | Direct copy | YES | AI-calculated invoice total |
-| `ai_line_items` | list[dict] | `ai_line_items.line_items` | Direct copy (summary: item, description, quantity, rate, line_item_total) | YES | AI line item entries |
+| `ai_line_items` | list[dict] | `ai_line_items.line_items` | Canonical summary: item/label/name → item, rate/amount → rate, total/line_item_total → line_item_total, plus description, quantity, resources | YES | AI line item entries with nested resources |
 
 If document size becomes excessive (line_items is large), the projection
 should retain line-item summaries only and load raw detail on Invoice Trace
@@ -1117,8 +1117,9 @@ automatic deletion, no archival.
 | Average growth rate | ~2,000 docs/month |
 | Recent peak | 3,334 docs (July 2026) |
 | Sample doc size (BSON) | ~3.5 KB |
-| Estimated projection doc size | ~2-3 KB (summary fields, no raw incident_info) |
-| Projected annual growth | ~24,000 docs/year -> ~60-72 MB/year |
+| Estimated projection doc size | ~2-3 KB for v1 summaries; v2 must be measured because resources and per-conversation summaries add variable nested data |
+| Phase 10 sizing guardrail | Measure BSON size for representative small/median/large claims; alert/review if documents approach MongoDB's 16 MB limit; retain only canonical line-item/resource summaries |
+| Projected annual growth | v1 estimate ~24,000 docs/year -> ~60-72 MB/year; v2 growth is data-dependent and must be recalculated after production sampling |
 | update_count distribution | 98.6% have 0-1 updates (write-once, rarely touched) |
 
 At ~72 MB/year, the projection collection has no storage pressure. Even after
@@ -1473,7 +1474,7 @@ phases:
 
 ---
 
-## 17. Implementation Progress (Phases 1-9)
+## 17. Implementation Progress (Phases 1-10)
 
 This section tracks the implementation status of each phase after Phase 0.
 Phase 0 exit criteria (Section 14) are unchanged. Each phase below lists
@@ -1605,12 +1606,11 @@ counter increments at call sites)
   unchanged. `source_status["recoveryhub_ai_mongo"]` key is preserved
   for API backward compatibility even when the failure is in the
   dashboard-owned Mongo (the projection).
-- `backend/ai_analytics/invoice_trace_service.py` — NOT affected by
-  the flag (keeps direct-read; Phase 10 will enrich the projection to
-  replace this path). Docstring-only change.
-- `backend/ai_analytics/diagnostics_service.py` — inherits the
-  flag-gated swap via `_load_normalized_cohort` import. `get_agent_stats`
-  correctly bypasses it (reads `ai_agent_conversations` directly).
+- `backend/ai_analytics/invoice_trace_service.py` — Phase 9 handoff only;
+  the Phase 10 section below documents its later projection integration.
+- `backend/ai_analytics/diagnostics_service.py` — Phase 9 kept
+  `get_agent_stats` on the direct conversation read; Phase 10 below
+  migrates that branch when the projection flag is enabled.
 
 **Tests:** `test_ai_analytics_projection_read.py` (17 tests):
 - Field mapping tests (renames, passthroughs, missing fields,
@@ -1661,7 +1661,7 @@ directly — this is covered by `_PASSTHROUGH_FIELDS`. The
 - `ai_line_items` — each entry now includes `resources` (was summary-only
   with item, description, quantity, rate, line_item_total)
 - `conversation_summaries` — new list of per-conversation summary dicts
-  (conversation_id, agent, status, created_at, processing_stage,
+  (conversation_id, agent, status, created_at as ISO string, processing_stage,
   request_type, execution_time_seconds). Excludes large payload fields
   (input_data, incident_json, results, output_data)
 - `conversation_id` — from `ai_line_items.conversation_id` (linking ID)
@@ -1696,20 +1696,36 @@ shape and are upgraded lazily on next refresh.
   (eliminates batch cross-cluster read on ai_agent_conversations)
 
 **Tests:**
-- `test_ai_analytics_worker_projection_builder.py` — 11 new tests:
-  - `TestPhase10LineItemsWithResources` (resources in summary, None when
-    absent)
+- `test_ai_analytics_worker_projection_builder.py` — 12 new tests:
+  - `TestPhase10LineItemsWithResources` (resources in summary, empty when
+    absent, legacy alias canonicalization)
   - `TestPhase10ConversationSummaries` (populated, excludes payload
     fields, empty when no conversations)
   - `TestPhase10TraceFields` (conversation_id, thread_id_is_billable
     copied/None)
-- `test_ai_analytics_projection_read.py` — 14 new tests:
-  - `TestProjectionToTraceData` (field mapping: review_msg, timestamps,
-    line_items, conversation_id, thread_id_is_billable,
-    conversation_summaries, v1 compatibility, Phase 9 superset)
+- `test_ai_analytics_projection_read.py` — 15 new tests:
+  - `TestProjectionToTraceData` (field mapping, explicit missing-record
+    marker, v1 compatibility)
   - `TestGetProjectionForTrace` (fetch by claim_id, None when absent)
   - `TestAggregateAgentStatsFromProjections` (aggregation, v1
     contributions, date filter)
+- `test_ai_analytics_invoice_trace_projection.py` — service-level tests for
+  missing AI records, conversation-summary fallback, and raw-record hygiene
+- `test_ai_analytics_diagnostics.py` — service-level tests for the enabled
+  projection branch and contained aggregation failures
+
+**Phase 10 correctness guarantees:**
+- Projection line items canonicalize `item`/`label`/`name`,
+  `rate`/`amount`, and `line_item_total`/`total` so direct and projection
+  trace comparisons agree.
+- A projection with `has_ai_line_item_record=false` remains
+  `ai_record_state="missing"`; it is not treated as an all-null present
+  record.
+- `conversation_summaries` are consumed as a trace fallback when full
+  conversation payload reads fail and are removed before `raw_ai_record`
+  serialization.
+- v2 sizing is explicitly data-dependent; representative BSON-size
+  measurement is required before production rollout.
 
 **Conventions documented in AGENTS.md:**
 - Schema v2 additions and Section 9.12 lazy upgrade
@@ -1719,4 +1735,4 @@ shape and are upgraded lazily on next refresh.
   conversation_summaries)
 - Schema version bump behavior (pinned env vars continue v1)
 
-**Test count:** 686 tests pass (was 661 pre-Phase 10), no regressions.
+**Test count:** 690 tests pass (was 686 before the Phase 10 correctness fixes), no regressions.
