@@ -1117,13 +1117,13 @@ automatic deletion, no archival.
 | Average growth rate | ~2,000 docs/month |
 | Recent peak | 3,334 docs (July 2026) |
 | Sample doc size (BSON) | ~3.5 KB |
-| Estimated projection doc size | ~2-3 KB for v1 summaries; v2 must be measured because resources and per-conversation summaries add variable nested data |
-| Phase 10 sizing guardrail | Measure BSON size for representative small/median/large claims; alert/review if documents approach MongoDB's 16 MB limit; retain only canonical line-item/resource summaries |
-| Projected annual growth | v1 estimate ~24,000 docs/year -> ~60-72 MB/year; v2 growth is data-dependent and must be recalculated after production sampling |
+| Projection doc size (v2 measured) | see Section 9.13.1 — small 1.8 KB, median 2.9 KB, large 9.4 KB (synthetic; re-measure on production sample after backfill) |
+| Phase 10 sizing guardrail | Measure BSON size for representative small/median/large claims; alert/review if documents approach MongoDB's 16 MB limit; retain only canonical line-item/resource summaries — VERIFIED 2026-08-13, no document approaches the 16 MB limit |
+| Projected annual growth | ~24,000 docs/year × ~2.9 KB median -> ~68 MB/year (v2 measured); 10-year projection ~684 MB — trivial for MongoDB Atlas |
 | update_count distribution | 98.6% have 0-1 updates (write-once, rarely touched) |
 
-At ~72 MB/year, the projection collection has no storage pressure. Even after
-10 years of operation, the collection would be under 1 GB — trivial for
+At ~68 MB/year, the projection collection has no storage pressure. Even after
+10 years of operation, the collection would be under 700 MB — trivial for
 MongoDB Atlas.
 
 **Extended history value:**
@@ -1149,6 +1149,48 @@ projection accurately reflects that the claim reached a terminal state and
 is no longer being actively processed. The stale indicator for terminal
 claims should be suppressed or shown differently than staleness for active
 claims (to be addressed in Phase 11 — Worker Staleness UI).
+
+### 9.13.1 v2 Projection Sizing Measurement (VERIFIED 2026-08-13)
+
+**Method:** Synthetic projections built with
+`ai_analytics_worker.projection_builder.build_projection` (schema v2),
+encoded with `bson.encode` to measure the on-wire BSON size. Source
+dicts were shaped to match the verified production schema (Phase 0
+Sections 4.2 and 4.6). Script: `backend/scripts/measure_v2_projection_size.py`.
+
+**Caveat:** Numbers are synthetic. Re-measure against a real production
+sample (small / median / large by `ai_line_item_count`) after the v2
+backfill completes before treating these as final capacity numbers.
+
+| Shape | Line items | Resources/li (avg) | Conversations | Total BSON | line_items bytes | summaries bytes |
+|---|---|---|---|---|---|---|
+| empty (tombstone-like) | 0 | 0 | 0 | 1,382 B | 8 B | 8 B |
+| small | 1 | 0 | 1 | 1,844 B | 134 B | 263 B |
+| median (representative) | 4 | ~2 | 2 | 2,988 B | 1,016 B | 510 B |
+| large | 12 | 3–5 | 5 | 9,589 B | 6,659 B | 1,259 B |
+
+**Findings:**
+- Median v2 projection is ~2.9 KB — within the original v1 estimate of
+  ~2-3 KB. The Phase 10 additions (`resources`, `conversation_summaries`,
+  `conversation_id`, `thread_id_is_billable`) add modest overhead for
+  typical claims.
+- The largest synthetic case (12 line items with 3-5 resources each, 5
+  conversations) is 9.4 KB — far below MongoDB's 16 MB document limit.
+  The 16 MB limit is not a concern at any plausible claim size.
+- `line_items` is the dominant variable-cost component (6.6 KB of the
+  9.4 KB large case). If a claim with hundreds of line items ever
+  appears, consider truncating the projection to summary-only and
+  loading full detail on demand via the source `ai_line_items._id`
+  reference (already noted in Section 9.8).
+- `conversation_summaries` grow linearly with conversation count but
+  remain small (1.3 KB for 5 conversations) because the large payload
+  fields (input_data, incident_json, results, output_data) are
+  excluded.
+
+**Annual growth re-estimate (v2):**
+- ~2,000 new docs/month × 2,988 B median = ~5.7 MB/month = ~68 MB/year
+- 10-year projection: ~684 MB — trivial for MongoDB Atlas
+- Update the v1 estimate (~60-72 MB/year) to ~68 MB/year (v2 measured)
 
 ---
 
@@ -1736,3 +1778,96 @@ shape and are upgraded lazily on next refresh.
 - Schema version bump behavior (pinned env vars continue v1)
 
 **Test count:** 690 tests pass (was 686 before the Phase 10 correctness fixes), no regressions.
+
+### Phase 11 — Sync integrity & worker health visibility — COMPLETE
+
+**Design reframing:** The original Phase 11 plan was "Worker staleness UI —
+projection lag visualization" (age-based staleness). After user review, this
+was reframed to "Sync integrity & worker health visibility" — the concern is
+not *how old* the cache is, but *whether the cache matches MongoDB*. A claim
+sitting in AI for 2 days is not "stale" — the cache correctly reflects that
+the claim is still waiting. "Stale" means the cache doesn't match the source.
+
+This mirrors FireSquirrel's local-first sync pattern: the sync mechanism
+verifies it's in sync (integrity check), surfaces its status visibly (sync
+health indicator), and auto-heals when divergence is detected (auto-resync).
+
+**Deliverables:**
+- `backend/ai_analytics_worker/sync_integrity.py` — periodic sync integrity
+  verification. Two checks per cycle:
+  1. **Count comparison**: `ai_line_items.count()` vs
+     `ai_invoice_analytics.count()` — catches missing projections or stale
+     tombstones.
+  2. **Sample verification**: picks the N most recent source docs (by
+     `updated_at` descending) and compares each source `updated_at` against
+     the projection's `source_latest_updated_at`. Catches stale field values
+     from direct Mongo edits that bypass the change stream.
+  Divergent claims are automatically re-enqueued into the ClaimQueue for
+  refresh (auto-resync). Results stored in `sync_integrity_state` singleton.
+- `backend/ai_analytics_worker/sync_status.py` — sync status aggregation
+  deriving a single status from worker health + integrity state + metrics:
+  `synced` / `syncing` / `catching-up` / `divergence-detected` / `error` /
+  `stopped`. Pure derivation — no new state tracked.
+- `backend/ai_analytics_worker/routes.py` — extended:
+  - `/status` gains `sync_integrity` section
+  - `GET /api/ai-analytics/worker/sync-health` — sync health summary for
+    the dashboard frontend (auth-protected)
+  - `GET /api/ai-analytics/worker/dead-letters` — unresolved dead-lettered
+    claims list (auth-protected)
+  - `POST /api/ai-analytics/worker/dead-letters/{claim_id}/resolve` — mark
+    a dead-lettered claim as resolved so the worker retries it
+- `backend/ai_analytics_worker/main.py` — sync integrity loop added as
+  fourth concurrent sub-task (alongside change-stream listener, queue
+  consumer, and reconciliation loop)
+- `backend/config.py` — new settings:
+  - `WORKER_SYNC_INTEGRITY_INTERVAL_MINUTES` (default 5) — integrity check
+    cadence (separate from reconciliation's 30-min cadence)
+  - `WORKER_SYNC_INTEGRITY_SAMPLE_SIZE` (default 50) — number of recent
+    source docs to sample-verify per check
+- `backend/ai_analytics_worker/metrics.py` — new counters:
+  `sync_integrity_checks`, `sync_integrity_divergent_found`
+- `frontend/src/services/aiAnalyticsApi.ts` — new types and API calls:
+  `AiSyncHealth`, `SyncStatus`, `AiSyncIntegrity`, `AiSyncMetrics`,
+  `AiDeadLetter`, `getSyncHealth()`, `getDeadLetters()`, `resolveDeadLetter()`
+- `frontend/src/components/ai/SyncHealthIndicator.tsx` — compact badge with
+  expandable detail panel. Shows derived sync status (In Sync / Syncing /
+  Catching Up / Divergence Detected / Sync Error / Sync Stopped), source vs
+  cache counts, divergent/missing counts, throughput metrics, error messages,
+  and dead-letter list with resolve buttons. Auto-refreshes every 30s.
+  Integrated into AiOutcomesDashboard and AiDiagnosticsDashboard.
+- `backend/scripts/measure_v2_projection_size.py` — v2 projection BSON
+  sizing measurement script (Section 9.13.1)
+
+**Why sync integrity is separate from reconciliation (Phase 7):**
+- Reconciliation catches *missed change events* — it looks for source docs
+  with `updated_at > checkpoint`. It does NOT verify existing projections
+  match their source.
+- Sync integrity catches *divergence* — it verifies existing projections are
+  correct by comparing them against the source. This catches direct Mongo
+  edits that bypass the change stream, projection corruption, or backfill
+  gaps that reconciliation wouldn't find because the `updated_at` is old.
+- Both are needed. Reconciliation is "did I miss any events?" Sync integrity
+  is "is the cache actually correct?"
+
+**Sync status states (stable, frontend matches on these):**
+- `synced` — worker running, last integrity check passed, no divergence
+- `syncing` — worker actively processing or integrity check in progress
+- `catching-up` — divergent claims found, auto-resync enqueued
+- `divergence-detected` — count mismatch but sample verification pending
+- `error` — worker in error state or integrity check failed
+- `stopped` — worker disabled or not started
+
+**Tests:**
+- `test_ai_analytics_worker_sync_integrity.py` (22 tests): count comparison,
+  sample verification (stale, missing, up-to-date, newer-than-source),
+  auto-resync enqueue, metrics increment, error handling, cancellation,
+  datetime helpers
+- `test_ai_analytics_sync_health.py` (13 tests): all 6 status derivation
+  paths, snapshot completeness, error preference
+- `test_ai_analytics_worker_metrics.py` — updated for 2 new counters
+- `frontend/src/__tests__/SyncHealthIndicator.test.tsx` (10 tests): loading,
+  all status badges, dead-letter badge, expand/collapse, error display,
+  resolve button, divergence stats
+
+**Test count:** 725 backend tests pass (was 690), 172 frontend tests pass
+(was 162). No regressions.

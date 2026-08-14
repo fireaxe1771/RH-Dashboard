@@ -115,6 +115,8 @@ class TestSnapshot:
             "claim_refresh_retries",
             "dead_letters_created",
             "resume_tokens_saved",
+            "sync_integrity_checks",
+            "sync_integrity_divergent_found",
         }
         assert set(snap.keys()) == expected_counters
 

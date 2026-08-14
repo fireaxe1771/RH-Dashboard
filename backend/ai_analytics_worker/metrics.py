@@ -49,6 +49,8 @@ class WorkerMetrics:
             "claim_refresh_retries": 0,
             "dead_letters_created": 0,
             "resume_tokens_saved": 0,
+            "sync_integrity_checks": 0,
+            "sync_integrity_divergent_found": 0,
         }
 
     def increment(self, name: str, amount: int = 1) -> None:

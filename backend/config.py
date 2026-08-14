@@ -156,6 +156,35 @@ class Settings:
         os.getenv("WORKER_CHANGE_STREAM_MAX_RESTARTS", "0")
     )
 
+    # --- Sync Integrity Check (Phase 11) ---
+    # The sync integrity check verifies that the projection cache matches
+    # the source MongoDB — it catches divergence that change streams and
+    # reconciliation might miss (e.g. direct Mongo edits that bypass the
+    # change stream, or a claim that was never projected by the backfill).
+    #
+    # Two checks run on each cycle:
+    # 1. Count comparison: ai_line_items.count() vs ai_invoice_analytics.count()
+    # 2. Sample verification: pick N recent source docs, compare their
+    #    updated_at against the projection's source_latest_updated_at
+    #
+    # Divergent claims are automatically re-enqueued into the ClaimQueue
+    # for refresh (auto-resync), mirroring FireSquirrel's full-pull
+    # reconciliation pattern.
+    #
+    # Cadence is separate from reconciliation (Phase 7) because the
+    # integrity check verifies existing projections, while reconciliation
+    # catches missed change events. Both are needed.
+    WORKER_SYNC_INTEGRITY_INTERVAL_MINUTES: int = int(
+        os.getenv("WORKER_SYNC_INTEGRITY_INTERVAL_MINUTES", "5")
+    )
+    # Number of recent source documents to sample-verify per check. Each
+    # sample requires one source read + one projection read. 50 is
+    # conservative — at 18K docs, a sample of 50 covers ~0.3% but catches
+    # recent divergence reliably because it samples the newest docs.
+    WORKER_SYNC_INTEGRITY_SAMPLE_SIZE: int = int(
+        os.getenv("WORKER_SYNC_INTEGRITY_SAMPLE_SIZE", "50")
+    )
+
     # --- AI Analytics Dashboard Read Path (Phase 9) ---
     # When true, the AI analytics services (outcome_service,
     # diagnostics_service) read AI-side fields from the worker's
@@ -271,6 +300,10 @@ class Settings:
             missing.append("WORKER_CHANGE_STREAM_RESTART_DELAY_SECONDS (must be >= 0)")
         if self.WORKER_CHANGE_STREAM_MAX_RESTARTS < 0:
             missing.append("WORKER_CHANGE_STREAM_MAX_RESTARTS (must be >= 0)")
+        if self.WORKER_SYNC_INTEGRITY_INTERVAL_MINUTES < 1:
+            missing.append("WORKER_SYNC_INTEGRITY_INTERVAL_MINUTES (must be >= 1)")
+        if self.WORKER_SYNC_INTEGRITY_SAMPLE_SIZE < 1:
+            missing.append("WORKER_SYNC_INTEGRITY_SAMPLE_SIZE (must be >= 1)")
         if not self.AI_ANALYTICS_WORKER_VERSION:
             missing.append("AI_ANALYTICS_WORKER_VERSION (must not be empty)")
 

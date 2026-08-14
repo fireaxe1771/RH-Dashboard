@@ -11,8 +11,12 @@ concurrent sub-tasks:
 3. **Reconciliation loop** (Phase 7) — periodically scans
    ``ai_line_items`` for claims updated since the last checkpoint and
    enqueues them into the same queue (safety net for missed events).
+4. **Sync integrity loop** (Phase 11) — periodically verifies the
+   projection cache matches the source MongoDB (count comparison +
+   sample verification) and auto-re-enqueues divergent claims for
+   refresh.
 
-All three share the same ``stop_event`` and ``ClaimQueue``. On graceful
+All four share the same ``stop_event`` and ``ClaimQueue``. On graceful
 shutdown (``stop_event``) or cancellation (``asyncio.CancelledError``),
 ``run_worker`` shuts down all sub-tasks and marks the worker as stopped.
 
@@ -38,6 +42,7 @@ from .config import worker_config
 from .health import worker_health, STATUS_RUNNING, STATUS_STOPPED
 from .queue import ClaimQueue, run_queue_consumer
 from .reconciliation import run_reconciliation_loop
+from .sync_integrity import run_sync_integrity_loop
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +121,15 @@ async def run_worker(
                 queue=queue,
             ),
             name="reconciliation_loop",
+        ),
+        asyncio.create_task(
+            run_sync_integrity_loop(
+                ai_db=ai_db,
+                db=db,
+                stop_event=stop_event,
+                queue=queue,
+            ),
+            name="sync_integrity_loop",
         ),
     ]
 

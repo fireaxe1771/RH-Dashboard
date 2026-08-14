@@ -23,6 +23,7 @@ import { api } from '../../services/api';
 import { billingStyles, LoadingState, ErrorState, EmptyState, formatPercent } from '../billing/shared';
 import { computeDateRange } from '../FilterBar';
 import { AiAnalyticsFilterBar } from './AiAnalyticsFilterBar';
+import { SyncHealthIndicator } from './SyncHealthIndicator';
 
 // ---------------------------------------------------------------------------
 // KPI Card (shared with outcomes dashboard but duplicated for independence)
@@ -384,6 +385,9 @@ export const AiDiagnosticsDashboard: React.FC = () => {
 
   return (
     <div style={billingStyles.page}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
+        <SyncHealthIndicator />
+      </div>
       <AiAnalyticsFilterBar
         startDate={startDate}
         endDate={endDate}

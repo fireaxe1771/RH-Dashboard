@@ -26,6 +26,7 @@ import { computeDateRange } from '../FilterBar';
 import { AiAnalyticsFilterBar } from './AiAnalyticsFilterBar';
 import { AiInvoiceCohortGrid } from './AiInvoiceCohortGrid';
 import { AiInvoiceTrace } from './AiInvoiceTrace';
+import { SyncHealthIndicator } from './SyncHealthIndicator';
 
 // ---------------------------------------------------------------------------
 // KPI Card
@@ -432,6 +433,9 @@ export const AiOutcomesDashboard: React.FC = () => {
 
   return (
     <div style={billingStyles.page}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
+        <SyncHealthIndicator />
+      </div>
       <AiAnalyticsFilterBar
         startDate={startDate}
         endDate={endDate}

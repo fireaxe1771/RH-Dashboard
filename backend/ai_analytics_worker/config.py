@@ -102,6 +102,23 @@ class WorkerConfig:
         """
         return settings.WORKER_CHANGE_STREAM_MAX_RESTARTS
 
+    # --- Sync integrity (Phase 11) ----------------------------------------
+
+    @property
+    def sync_integrity_interval_minutes(self) -> int:
+        """Cadence (minutes) for the sync integrity verification check.
+
+        Separate from reconciliation (Phase 7) — this verifies existing
+        projections match their source, while reconciliation catches
+        missed change events. Both are needed.
+        """
+        return settings.WORKER_SYNC_INTEGRITY_INTERVAL_MINUTES
+
+    @property
+    def sync_integrity_sample_size(self) -> int:
+        """Number of recent source docs to sample-verify per integrity check."""
+        return settings.WORKER_SYNC_INTEGRITY_SAMPLE_SIZE
+
     # --- Destination collection names (Section 10) -------------------------
     # Defined here so worker modules import them from one place. These are
     # names, not behavior — no DRY conflict with ``config.py``.

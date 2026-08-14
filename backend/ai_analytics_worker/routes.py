@@ -40,11 +40,12 @@ Architectural constraints:
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, Response
 
 from auth import get_current_user
+from database import db_manager
 
 from .config import worker_config
 from .health import (
@@ -55,6 +56,8 @@ from .health import (
     worker_health,
 )
 from .metrics import worker_metrics
+from .sync_integrity import sync_integrity_state
+from .sync_status import sync_health_snapshot
 
 # Router mounted under the "/api/ai-analytics/worker" prefix in main.py.
 # Tags group these endpoints in the OpenAPI docs.
@@ -179,4 +182,98 @@ async def worker_status() -> Dict[str, Any]:
         "enabled": worker_config.enabled,
         "health": worker_health.snapshot(),
         "metrics": worker_metrics.snapshot(),
+        "sync_integrity": sync_integrity_state.snapshot(),
+    }
+
+
+@worker_router.get(
+    "/sync-health",
+    dependencies=[Depends(get_current_user)],
+)
+async def worker_sync_health() -> Dict[str, Any]:
+    """Sync health summary for the dashboard frontend.
+
+    Returns a single derived sync status (synced/syncing/catching-up/
+    divergence-detected/error/stopped) plus the underlying state that
+    produced it. This is the payload the SyncHealthIndicator component
+    consumes — it tells the user whether the projection cache is in sync
+    with MongoDB.
+
+    Auth-protected via ``get_current_user`` — this exposes operational
+    state (worker status, error messages, counts) that is not for
+    anonymous access.
+
+    Unlike ``/health`` and ``/ready``, this endpoint DOES include error
+    text because it is auth-protected. The error text helps the operator
+    diagnose issues visible on the dashboard.
+    """
+    return sync_health_snapshot()
+
+
+@worker_router.get(
+    "/dead-letters",
+    dependencies=[Depends(get_current_user)],
+)
+async def worker_dead_letters(limit: int = 100) -> List[Dict[str, Any]]:
+    """List dead-lettered claims that failed processing after max retries.
+
+    Returns unresolved dead-letter records sorted by last_failed_at
+    descending. Each record includes claim_id, error details, and
+    attempt count. The dashboard's DeadLetterPanel component consumes
+    this to show operators which claims need attention.
+
+    Auth-protected via ``get_current_user`` — error messages may contain
+    internal details (exception class names, driver error fragments).
+
+    Arguments:
+        limit: max records to return (default 100, capped at 500).
+    """
+    capped_limit = min(max(limit, 1), 500)
+    collection = db_manager.db[worker_config.DEAD_LETTERS_COLLECTION]
+
+    cursor = (
+        collection.find({"resolved": False})
+        .sort("last_failed_at", -1)
+        .limit(capped_limit)
+    )
+    docs = await cursor.to_list(length=capped_limit)
+
+    # Convert ObjectId to string for JSON serialization.
+    results: List[Dict[str, Any]] = []
+    for doc in docs:
+        doc["_id"] = str(doc["_id"])
+        results.append(doc)
+    return results
+
+
+@worker_router.post(
+    "/dead-letters/{claim_id}/resolve",
+    dependencies=[Depends(get_current_user)],
+)
+async def resolve_dead_letter(claim_id: int) -> Dict[str, Any]:
+    """Mark a dead-lettered claim as resolved so the worker retries it.
+
+    Sets ``resolved=True`` on all unresolved dead-letter records for the
+    given claim_id. The next change event or reconciliation cycle for
+    that claim will retry the refresh (the dead-letter no longer blocks
+    it).
+
+    Auth-protected via ``get_current_user`` — this is an operational
+    action, not a container probe.
+
+    Arguments:
+        claim_id: the claim to resolve.
+
+    Returns:
+        ``{"resolved": true, "claim_id": claim_id, "updated": <count>}``
+    """
+    collection = db_manager.db[worker_config.DEAD_LETTERS_COLLECTION]
+    result = await collection.update_many(
+        {"claim_id": claim_id, "resolved": False},
+        {"$set": {"resolved": True}},
+    )
+    return {
+        "resolved": True,
+        "claim_id": claim_id,
+        "updated": result.modified_count,
     }

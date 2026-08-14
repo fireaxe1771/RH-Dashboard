@@ -369,3 +369,56 @@ shape and are upgraded lazily on next refresh. The read adapter returns
   1 to 2 in `config.py`. Existing deployments that pin the env var to 1
   continue producing v1 projections (no breaking change). New/restarted
   workers produce v2 projections.
+
+### Sync Integrity & Worker Health Visibility (Phase 11)
+
+Phase 11 reframed the original "staleness = cache age" concept into "sync
+integrity = does the cache match MongoDB?" This mirrors FireSquirrel's
+local-first sync pattern: verify the cache is in sync, surface the status,
+and auto-heal on divergence.
+
+**Sync integrity check** (`sync_integrity.py`) runs on its own cadence
+(default 5 min, separate from reconciliation's 30 min). Two checks:
+1. Count comparison: `ai_line_items.count()` vs `ai_invoice_analytics.count()`
+2. Sample verification: N most recent source docs compared against
+   projection `source_latest_updated_at`
+Divergent claims are auto-enqueued into the ClaimQueue for refresh.
+
+**Why sync integrity is separate from reconciliation:**
+- Reconciliation (Phase 7) catches *missed change events* — looks for
+  `updated_at > checkpoint`. Does NOT verify existing projections.
+- Sync integrity (Phase 11) catches *divergence* — verifies existing
+  projections match their source. Catches direct Mongo edits that bypass
+  the change stream.
+- Both are needed.
+
+**Sync status states** (stable, frontend matches on these):
+- `synced` / `syncing` / `catching-up` / `divergence-detected` / `error` /
+  `stopped`
+
+**New endpoints:**
+- `GET /api/ai-analytics/worker/sync-health` — sync health summary
+  (auth-protected, consumed by SyncHealthIndicator)
+- `GET /api/ai-analytics/worker/dead-letters` — unresolved dead-lettered
+  claims (auth-protected)
+- `POST /api/ai-analytics/worker/dead-letters/{claim_id}/resolve` — mark
+  a dead-lettered claim as resolved for retry
+
+**Frontend SyncHealthIndicator** appears on all AI Analytics dashboard pages
+(Outcomes, Diagnostics). Compact badge with expandable detail panel showing
+sync status, source vs cache counts, divergent/missing counts, throughput
+metrics, errors, and dead-letter list with resolve buttons. Auto-refreshes
+every 30s.
+
+**New config settings:**
+- `WORKER_SYNC_INTEGRITY_INTERVAL_MINUTES` (default 5)
+- `WORKER_SYNC_INTEGRITY_SAMPLE_SIZE` (default 50)
+
+**New metrics counters:**
+- `sync_integrity_checks` — incremented on each check cycle
+- `sync_integrity_divergent_found` — incremented by divergent claim count
+
+**v2 projection sizing** (Section 9.13.1): measured via
+`backend/scripts/measure_v2_projection_size.py`. Median v2 projection is
+~2.9 KB — within the v1 estimate. Annual growth ~68 MB/year, 10-year ~684 MB.
+The 16 MB document limit is not a concern.
