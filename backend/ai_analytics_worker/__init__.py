@@ -28,7 +28,14 @@ historical backfill orchestrator.
 Phase 5 added the change-stream listener (near-real-time incremental
 updates via MongoDB Change Streams with resume token persistence) and the
 shared claim refresh algorithm.
-Subsequent phases add queue/coalescing, reconciliation, and staleness UI.
+Phase 6 added the claim deduplication/debounce queue and queue consumer,
+decoupling event detection from projection rebuilds so bursts of updates
+to the same claim coalesce into a single refresh.
+Phase 7 added the safety-net reconciliation loop that periodically scans
+``ai_line_items`` for claims updated since the last checkpoint and
+enqueues them for refresh, covering events missed by the change stream
+(oplog gaps, crash between enqueue and refresh, deletes).
+Subsequent phases add staleness UI, security hardening, and deployment.
 """
 
 __all__ = [
@@ -41,4 +48,6 @@ __all__ = [
     "claim_refresh",
     "backfill",
     "change_stream_listener",
+    "queue",
+    "reconciliation",
 ]

@@ -1,14 +1,20 @@
 """AI Analytics Worker — entry point, lifecycle, and asyncio task.
 
 This module is the worker's main entry point. It manages the worker lifecycle
-(health state transitions, logging, cancellation) and delegates the real work
-to the change-stream listener (Phase 5).
+(health state transitions, logging, cancellation) and orchestrates three
+concurrent sub-tasks:
 
-The worker runs as a single background asyncio task in the FastAPI event loop.
-On startup, ``run_worker`` marks the worker as running, then enters the
-change-stream listener loop. On graceful shutdown (``stop_event``) or
-cancellation (``asyncio.CancelledError``), it marks the worker as stopped and
-returns/c re-raises.
+1. **Change-stream listener** (Phase 5/6) — watches RecoveryHub_AI MongoDB
+   for changes, extracts claim_ids, and enqueues them into the ClaimQueue.
+2. **Queue consumer** (Phase 6) — drains the ClaimQueue with a debounce
+   window and calls ``refresh_claim`` for each claim.
+3. **Reconciliation loop** (Phase 7) — periodically scans
+   ``ai_line_items`` for claims updated since the last checkpoint and
+   enqueues them into the same queue (safety net for missed events).
+
+All three share the same ``stop_event`` and ``ClaimQueue``. On graceful
+shutdown (``stop_event``) or cancellation (``asyncio.CancelledError``),
+``run_worker`` shuts down all sub-tasks and marks the worker as stopped.
 
 Source: RecoveryHub_AI MongoDB (read-only, via ``db_manager.ai_db`` or
 the ``ai_db`` parameter).
@@ -25,11 +31,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, List, Optional
 
 from .change_stream_listener import run_change_stream_listener
 from .config import worker_config
 from .health import worker_health, STATUS_RUNNING, STATUS_STOPPED
+from .queue import ClaimQueue, run_queue_consumer
+from .reconciliation import run_reconciliation_loop
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +49,9 @@ async def run_worker(
 ) -> None:
     """Run the AI Analytics Worker until ``stop_event`` is set or cancelled.
 
-    Marks the worker as started/running, delegates to the change-stream
-    listener (Phase 5), then marks stopped on exit.
+    Marks the worker as started/running, spawns three concurrent sub-tasks
+    (change-stream listener, queue consumer, reconciliation loop), and
+    supervises them until ``stop_event`` is set or a sub-task fails fatally.
 
     Arguments:
         stop_event: an ``asyncio.Event`` that the caller sets to request a
@@ -55,7 +64,7 @@ async def run_worker(
     Side effects:
         Updates ``worker_health`` (status, started/completed timestamps).
         Logs start and stop events.
-        Delegates all projection writes to the change-stream listener.
+        Delegates projection writes to the queue consumer (via refresh_claim).
 
     Meaningful exceptions:
         ``asyncio.CancelledError`` is re-raised after marking the worker
@@ -78,25 +87,102 @@ async def run_worker(
         worker_config.projection_schema_version,
     )
 
+    queue = ClaimQueue(debounce_seconds=worker_config.debounce_seconds)
+
+    tasks: List[asyncio.Task] = [
+        asyncio.create_task(
+            run_change_stream_listener(
+                ai_db=ai_db,
+                db=db,
+                stop_event=stop_event,
+                queue=queue,
+            ),
+            name="change_stream_listener",
+        ),
+        asyncio.create_task(
+            run_queue_consumer(
+                ai_db=ai_db,
+                db=db,
+                queue=queue,
+                stop_event=stop_event,
+            ),
+            name="queue_consumer",
+        ),
+        asyncio.create_task(
+            run_reconciliation_loop(
+                ai_db=ai_db,
+                db=db,
+                stop_event=stop_event,
+                queue=queue,
+            ),
+            name="reconciliation_loop",
+        ),
+    ]
+
+    first_error: Optional[BaseException] = None
+
     try:
-        await run_change_stream_listener(
-            ai_db=ai_db,
-            db=db,
-            stop_event=stop_event,
+        # Wait for stop_event to be set (external shutdown) or any sub-task
+        # to complete/fail (FIRST_COMPLETED). A stop_waiter task lets us
+        # combine ``stop_event.wait()`` with the sub-task futures in a
+        # single ``asyncio.wait`` call.
+        stop_waiter = asyncio.create_task(stop_event.wait(), name="stop_waiter")
+        done, _ = await asyncio.wait(
+            [*tasks, stop_waiter],
+            return_when=asyncio.FIRST_COMPLETED,
         )
 
-        # Graceful shutdown via stop_event
+        # Collect any sub-task errors.
+        for t in done:
+            if t in tasks:
+                exc = t.exception()
+                if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                    first_error = exc
+                    logger.error(
+                        "Worker sub-task %s failed: %r",
+                        t.get_name(),
+                        exc,
+                    )
+                    stop_event.set()
+
+        # Clean shutdown: close the queue (wakes the consumer) and wait
+        # for all sub-tasks to finish within the cancellation timeout.
+        queue.close()
+        if not stop_waiter.done():
+            stop_waiter.cancel()
+            try:
+                await stop_waiter
+            except asyncio.CancelledError:
+                pass
+
+        _, pending = await asyncio.wait(
+            tasks,
+            timeout=worker_config.CANCELLATION_TIMEOUT_SECONDS,
+        )
+        for t in pending:
+            t.cancel()
+        # Gather with return_exceptions so cancellation errors don't
+        # propagate (they're expected during shutdown).
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        if first_error is not None:
+            worker_health.record_error(str(first_error))
+            logger.exception(
+                "AI Analytics Worker encountered an unexpected error.",
+            )
+            raise first_error
+
         worker_health.mark_completed()
         logger.info("AI Analytics Worker received stop signal; shutting down.")
+
     except asyncio.CancelledError:
-        # Cancellation (e.g. lifespan shutdown timeout) — mark stopped and
-        # re-raise so the awaiting caller observes the cancellation.
+        # Cancellation (e.g. lifespan shutdown timeout) — cancel all
+        # sub-tasks and re-raise so the awaiting caller observes it.
         logger.info("AI Analytics Worker cancelled; shutting down.")
-        raise
-    except Exception as exc:
-        # Unexpected error — record on health state and re-raise.
-        worker_health.record_error(str(exc))
-        logger.exception("AI Analytics Worker encountered an unexpected error.")
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         raise
     finally:
         worker_health.set_status(STATUS_STOPPED)

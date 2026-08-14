@@ -1,20 +1,17 @@
-"""Unit tests for ai_analytics_worker.change_stream_listener (Phase 5).
+"""Unit tests for ai_analytics_worker.change_stream_listener (Phase 5/6).
 
 Feature under test: the change stream listener that watches
 ``ai_line_items`` and ``ai_agent_conversations`` for relevant changes,
-extracts the affected claim_id, calls ``refresh_claim`` to rebuild the
-projection, and persists the resume token.
+extracts the affected claim_id, **enqueues** it into the ClaimQueue
+(Phase 6), and persists the resume token.
 
 Failure prevented:
-- A change stream that can't be cancelled would hang the FastAPI shutdown.
-  The stop_event check must allow prompt cancellation.
-- A change stream that dies on one bad event would miss all subsequent
-  events. Bad events must be dead-lettered (via refresh_claim) and the
-  stream continues.
-- A change stream that loses the resume token on restart would miss events.
-  The token must be persisted after each event.
-- A change stream that never yields would starve the event loop.
-  The max_claims_per_cycle yield prevents this.
+-- A change stream that can't be cancelled would hang the FastAPI shutdown.
+   The stop_event check must allow prompt cancellation.
+-- A change stream that loses the resume token on restart would miss events.
+   The token must be persisted after each event.
+-- A change stream that never yields would starve the event loop.
+   The max_claims_per_cycle yield prevents this.
 
 Test level: unit. The change stream is mocked via a fake async iterator
 since mongomock doesn't support change streams.
@@ -35,6 +32,7 @@ from ai_analytics_worker.change_stream_listener import (
     run_change_stream_listener,
 )
 from ai_analytics_worker.config import worker_config
+from ai_analytics_worker.queue import ClaimQueue
 
 
 # ---------------------------------------------------------------------------
@@ -194,94 +192,60 @@ class TestExtractResumeToken:
 
 
 class TestProcessEvent:
-    """Tests for processing a single change event."""
+    """Tests for processing a single change event (enqueue into ClaimQueue)."""
 
     @pytest.mark.asyncio
-    async def test_insert_event_calls_refresh_claim(self, mock_mongo_db):
+    async def test_insert_event_enqueues_claim_id(self):
+        """An insert event enqueues the claim_id into the queue."""
         event = make_change_event("insert", claim_id=100)
+        queue = ClaimQueue(debounce_seconds=0.0)
 
-        with patch(
-            "ai_analytics_worker.change_stream_listener.refresh_claim",
-            new=AsyncMock(),
-        ) as mock_refresh:
-            token = await _process_change_event(
-                mock_mongo_db, mock_mongo_db, event
-            )
+        token = await _process_change_event(queue, event)
 
-        mock_refresh.assert_called_once_with(
-            ai_db=mock_mongo_db,
-            db=mock_mongo_db,
-            claim_id=100,
-            source_event_type="insert",
-        )
+        assert queue.size == 1
+        assert 100 in queue.pop_ready()
         assert token == event["_id"]
 
     @pytest.mark.asyncio
-    async def test_delete_event_skipped(self, mock_mongo_db):
-        """Delete events are skipped (no refresh_claim call)."""
+    async def test_delete_event_skipped(self):
+        """Delete events are skipped (no enqueue)."""
         event = make_change_event("delete")
+        queue = ClaimQueue(debounce_seconds=0.0)
 
-        with patch(
-            "ai_analytics_worker.change_stream_listener.refresh_claim",
-            new=AsyncMock(),
-        ) as mock_refresh:
-            token = await _process_change_event(
-                mock_mongo_db, mock_mongo_db, event
-            )
+        token = await _process_change_event(queue, event)
 
-        mock_refresh.assert_not_called()
+        assert queue.size == 0
         # Token is still returned so the listener can persist it
         assert token == event["_id"]
 
     @pytest.mark.asyncio
-    async def test_event_with_no_claim_id_skipped(self, mock_mongo_db):
-        """Events with no extractable claim_id are skipped."""
+    async def test_event_with_no_claim_id_skipped(self):
+        """Events with no extractable claim_id are skipped (no enqueue)."""
         event = make_change_event("insert", claim_id=None)
+        queue = ClaimQueue(debounce_seconds=0.0)
 
-        with patch(
-            "ai_analytics_worker.change_stream_listener.refresh_claim",
-            new=AsyncMock(),
-        ) as mock_refresh:
-            token = await _process_change_event(
-                mock_mongo_db, mock_mongo_db, event
-            )
+        token = await _process_change_event(queue, event)
 
-        mock_refresh.assert_not_called()
+        assert queue.size == 0
         assert token == event["_id"]
 
     @pytest.mark.asyncio
-    async def test_update_event_calls_refresh_claim(self, mock_mongo_db):
+    async def test_update_event_enqueues_claim_id(self):
         event = make_change_event("update", claim_id=200)
+        queue = ClaimQueue(debounce_seconds=0.0)
 
-        with patch(
-            "ai_analytics_worker.change_stream_listener.refresh_claim",
-            new=AsyncMock(),
-        ) as mock_refresh:
-            await _process_change_event(mock_mongo_db, mock_mongo_db, event)
+        await _process_change_event(queue, event)
 
-        mock_refresh.assert_called_once_with(
-            ai_db=mock_mongo_db,
-            db=mock_mongo_db,
-            claim_id=200,
-            source_event_type="update",
-        )
+        assert 200 in queue.pop_ready()
 
     @pytest.mark.asyncio
-    async def test_replace_event_calls_refresh_claim(self, mock_mongo_db):
+    async def test_replace_event_enqueues_claim_id(self):
         event = make_change_event("replace", claim_id=300)
+        queue = ClaimQueue(debounce_seconds=0.0)
 
-        with patch(
-            "ai_analytics_worker.change_stream_listener.refresh_claim",
-            new=AsyncMock(),
-        ) as mock_refresh:
-            await _process_change_event(mock_mongo_db, mock_mongo_db, event)
+        await _process_change_event(queue, event)
 
-        mock_refresh.assert_called_once_with(
-            ai_db=mock_mongo_db,
-            db=mock_mongo_db,
-            claim_id=300,
-            source_event_type="replace",
-        )
+        assert 300 in queue.pop_ready()
 
 
 # ---------------------------------------------------------------------------
@@ -290,12 +254,13 @@ class TestProcessEvent:
 
 
 class TestListenerHappyPath:
-    """Tests that the listener processes events and persists resume tokens."""
+    """Tests that the listener enqueues events and persists resume tokens."""
 
     @pytest.mark.asyncio
-    async def test_processes_events_and_saves_tokens(self, mock_mongo_db):
-        """The listener processes change events and saves resume tokens."""
+    async def test_enqueues_events_and_saves_tokens(self, mock_mongo_db):
+        """The listener enqueues change events and saves resume tokens."""
         stop_event = asyncio.Event()
+        queue = ClaimQueue(debounce_seconds=0.0)
         events = [
             make_change_event("insert", claim_id=100),
             make_change_event("update", claim_id=200),
@@ -305,17 +270,15 @@ class TestListenerHappyPath:
         stream = FakeChangeStream(events, stop_event=stop_event)
         ai_db = FakeAIDB(stream)
 
-        with patch(
-            "ai_analytics_worker.change_stream_listener.refresh_claim",
-            new=AsyncMock(),
-        ):
-            task = asyncio.create_task(
-                run_change_stream_listener(ai_db, mock_mongo_db, stop_event)
+        task = asyncio.create_task(
+            run_change_stream_listener(
+                ai_db, mock_mongo_db, stop_event, queue=queue
             )
-            # Give it time to process all events
-            await asyncio.sleep(0.2)
-            stop_event.set()
-            await asyncio.wait_for(task, timeout=2.0)
+        )
+        # Give it time to process all events
+        await asyncio.sleep(0.2)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=2.0)
 
         # Verify resume token was saved (should be the last event's token)
         state = await mock_mongo_db[
@@ -325,10 +288,15 @@ class TestListenerHappyPath:
         assert state["resume_token"] == events[2]["_id"]
         assert state["status"] == "stopped"
 
+        # Verify all 3 claim_ids were enqueued
+        ready = set(queue.pop_ready())
+        assert ready == {100, 200, 300}
+
     @pytest.mark.asyncio
     async def test_no_saved_token_starts_fresh(self, mock_mongo_db):
         """With no prior state, the listener starts without a resume token."""
         stop_event = asyncio.Event()
+        queue = ClaimQueue(debounce_seconds=0.0)
         stream = FakeChangeStream(stop_event=stop_event)
         ai_db = FakeAIDB(stream)
 
@@ -337,7 +305,9 @@ class TestListenerHappyPath:
             stop_event.set()
 
         await asyncio.gather(
-            run_change_stream_listener(ai_db, mock_mongo_db, stop_event),
+            run_change_stream_listener(
+                ai_db, mock_mongo_db, stop_event, queue=queue
+            ),
             set_stop_later(),
         )
 
@@ -358,6 +328,7 @@ class TestListenerHappyPath:
         )
 
         stop_event = asyncio.Event()
+        queue = ClaimQueue(debounce_seconds=0.0)
         stream = FakeChangeStream(stop_event=stop_event)
         ai_db = FakeAIDB(stream)
 
@@ -366,7 +337,9 @@ class TestListenerHappyPath:
             stop_event.set()
 
         await asyncio.gather(
-            run_change_stream_listener(ai_db, mock_mongo_db, stop_event),
+            run_change_stream_listener(
+                ai_db, mock_mongo_db, stop_event, queue=queue
+            ),
             set_stop_later(),
         )
 
@@ -388,10 +361,13 @@ class TestListenerCancellation:
         """If stop_event is already set, the listener exits without opening a stream."""
         stop_event = asyncio.Event()
         stop_event.set()
+        queue = ClaimQueue(debounce_seconds=0.0)
         stream = FakeChangeStream(stop_event=stop_event)
         ai_db = FakeAIDB(stream)
 
-        await run_change_stream_listener(ai_db, mock_mongo_db, stop_event)
+        await run_change_stream_listener(
+            ai_db, mock_mongo_db, stop_event, queue=queue
+        )
 
         # Stream should NOT have been opened — stop was already set
         assert len(ai_db.watch_calls) == 0
@@ -405,11 +381,14 @@ class TestListenerCancellation:
     async def test_cancellation_propagates(self, mock_mongo_db):
         """asyncio.CancelledError propagates and sets status to stopped."""
         stop_event = asyncio.Event()
+        queue = ClaimQueue(debounce_seconds=0.0)
         stream = FakeChangeStream(stop_event=stop_event)
         ai_db = FakeAIDB(stream)
 
         task = asyncio.create_task(
-            run_change_stream_listener(ai_db, mock_mongo_db, stop_event)
+            run_change_stream_listener(
+                ai_db, mock_mongo_db, stop_event, queue=queue
+            )
         )
         await asyncio.sleep(0.05)
         task.cancel()
@@ -435,6 +414,7 @@ class TestListenerStreamRestart:
     async def test_restarts_after_stream_error(self, mock_mongo_db):
         """When the stream breaks, the listener restarts with backoff."""
         stop_event = asyncio.Event()
+        queue = ClaimQueue(debounce_seconds=0.0)
 
         call_count = {"n": 0}
 
@@ -455,20 +435,17 @@ class TestListenerStreamRestart:
             await asyncio.sleep(0.1)
             stop_event.set()
 
-        with patch(
-            "ai_analytics_worker.change_stream_listener.refresh_claim",
-            new=AsyncMock(),
-        ):
-            await asyncio.gather(
-                run_change_stream_listener(
-                    ai_db,
-                    mock_mongo_db,
-                    stop_event,
-                    restart_delay_seconds=0.01,
-                    max_restarts=3,
-                ),
-                set_stop_later(),
-            )
+        await asyncio.gather(
+            run_change_stream_listener(
+                ai_db,
+                mock_mongo_db,
+                stop_event,
+                queue=queue,
+                restart_delay_seconds=0.01,
+                max_restarts=3,
+            ),
+            set_stop_later(),
+        )
 
         # watch() was called twice (first broke, second succeeded)
         assert call_count["n"] == 2
@@ -477,6 +454,7 @@ class TestListenerStreamRestart:
     async def test_exceeds_max_restarts_raises(self, mock_mongo_db):
         """When max_restarts is exceeded, the listener raises RuntimeError."""
         stop_event = asyncio.Event()
+        queue = ClaimQueue(debounce_seconds=0.0)
 
         def always_failing_factory():
             return FakeChangeStream(
@@ -490,6 +468,7 @@ class TestListenerStreamRestart:
                 ai_db,
                 mock_mongo_db,
                 stop_event,
+                queue=queue,
                 restart_delay_seconds=0.001,
                 max_restarts=2,
             )
@@ -504,6 +483,7 @@ class TestListenerStreamRestart:
     async def test_zero_max_restarts_retries_forever(self, mock_mongo_db):
         """With max_restarts=0, the listener retries indefinitely (until stop)."""
         stop_event = asyncio.Event()
+        queue = ClaimQueue(debounce_seconds=0.0)
         call_count = {"n": 0}
 
         def stream_factory():
@@ -526,6 +506,7 @@ class TestListenerStreamRestart:
                 ai_db,
                 mock_mongo_db,
                 stop_event,
+                queue=queue,
                 restart_delay_seconds=0.001,
                 max_restarts=0,
             ),
@@ -548,6 +529,7 @@ class TestListenerStreamRestart:
         handler instead.
         """
         stop_event = asyncio.Event()
+        queue = ClaimQueue(debounce_seconds=0.0)
         call_count = {"n": 0}
 
         def always_ending_factory():
@@ -563,6 +545,7 @@ class TestListenerStreamRestart:
                 ai_db,
                 mock_mongo_db,
                 stop_event,
+                queue=queue,
                 restart_delay_seconds=0.001,
                 max_restarts=2,
             )
@@ -581,6 +564,7 @@ class TestListenerStreamRestart:
     ):
         """A self-ending stream is retried with backoff and can recover."""
         stop_event = asyncio.Event()
+        queue = ClaimQueue(debounce_seconds=0.0)
         call_count = {"n": 0}
 
         def stream_factory():
@@ -602,6 +586,7 @@ class TestListenerStreamRestart:
                 ai_db,
                 mock_mongo_db,
                 stop_event,
+                queue=queue,
                 restart_delay_seconds=0.001,
                 max_restarts=3,
             ),
@@ -627,6 +612,7 @@ class TestListenerEmptyStream:
     async def test_empty_stream_exits_on_stop(self, mock_mongo_db):
         """An empty stream (no events) exits when stop_event is set."""
         stop_event = asyncio.Event()
+        queue = ClaimQueue(debounce_seconds=0.0)
         stream = FakeChangeStream(stop_event=stop_event)
         ai_db = FakeAIDB(stream)
 
@@ -635,7 +621,9 @@ class TestListenerEmptyStream:
             stop_event.set()
 
         await asyncio.gather(
-            run_change_stream_listener(ai_db, mock_mongo_db, stop_event),
+            run_change_stream_listener(
+                ai_db, mock_mongo_db, stop_event, queue=queue
+            ),
             set_stop_later(),
         )
 
@@ -657,6 +645,7 @@ class TestWatchOptions:
     async def test_watch_uses_update_lookup_full_document(self, mock_mongo_db):
         """The stream is opened with full_document='updateLookup'."""
         stop_event = asyncio.Event()
+        queue = ClaimQueue(debounce_seconds=0.0)
         stream = FakeChangeStream(stop_event=stop_event)
         ai_db = FakeAIDB(stream)
 
@@ -665,7 +654,9 @@ class TestWatchOptions:
             stop_event.set()
 
         await asyncio.gather(
-            run_change_stream_listener(ai_db, mock_mongo_db, stop_event),
+            run_change_stream_listener(
+                ai_db, mock_mongo_db, stop_event, queue=queue
+            ),
             set_stop_later(),
         )
 
@@ -677,6 +668,7 @@ class TestWatchOptions:
     async def test_watch_filters_to_watched_collections(self, mock_mongo_db):
         """The pipeline filters to ai_line_items and ai_agent_conversations."""
         stop_event = asyncio.Event()
+        queue = ClaimQueue(debounce_seconds=0.0)
         stream = FakeChangeStream(stop_event=stop_event)
         ai_db = FakeAIDB(stream)
 
@@ -685,7 +677,9 @@ class TestWatchOptions:
             stop_event.set()
 
         await asyncio.gather(
-            run_change_stream_listener(ai_db, mock_mongo_db, stop_event),
+            run_change_stream_listener(
+                ai_db, mock_mongo_db, stop_event, queue=queue
+            ),
             set_stop_later(),
         )
 

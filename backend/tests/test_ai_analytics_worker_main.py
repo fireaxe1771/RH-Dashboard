@@ -4,9 +4,9 @@ Feature under test: the AI Analytics Worker's lifecycle transitions (started →
 running → stopped), graceful shutdown via stop_event, hard cancellation via
 task.cancel(), and the stop_worker_task helper's timeout-then-cancel contract.
 
-Phase 5: ``run_worker`` now delegates to ``run_change_stream_listener``. These
-tests mock the listener so they can test the lifecycle wrapper without a real
-MongoDB change stream.
+Phase 6/7: ``run_worker`` now spawns three concurrent sub-tasks (change-stream
+listener, queue consumer, reconciliation loop). These tests mock all three so
+they can test the lifecycle wrapper without real MongoDB connections.
 
 Failure prevented: a worker that cannot be stopped within the 5-second
 cancellation deadline (Phase 0 plan Section 1.1.4) would hang the FastAPI
@@ -38,22 +38,51 @@ def reset_worker_health():
     yield
 
 
-def _mock_listener_that_waits_for_stop(stop_event=None):
-    """Return an AsyncMock that simulates the listener waiting for stop_event.
+def _mock_subtask_that_waits_for_stop():
+    """Return an AsyncMock that simulates a sub-task waiting for stop_event.
 
-    The real ``run_change_stream_listener`` blocks on the change stream until
+    The real sub-tasks (listener, consumer, reconciliation) all block until
     ``stop_event`` is set. This mock replicates that behavior: it awaits the
     stop_event (with a timeout) so the worker doesn't exit immediately.
     """
-    async def _mock_listener(ai_db, db, stop_event, **kwargs):
-        # Wait for stop_event just like the real listener would, but with
-        # a short timeout so tests don't hang if something goes wrong.
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            pass
 
-    return AsyncMock(side_effect=_mock_listener)
+    async def _mock_subtask(*args, **kwargs):
+        # Extract stop_event from kwargs or positional args
+        stop_event = kwargs.get("stop_event")
+        if stop_event is None:
+            for arg in args:
+                if isinstance(arg, asyncio.Event):
+                    stop_event = arg
+                    break
+        if stop_event is not None:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+
+    return AsyncMock(side_effect=_mock_subtask)
+
+
+def _patch_all_subtasks():
+    """Patch all three sub-task functions to wait for stop_event.
+
+    Returns a list of patch context managers that should be entered with
+    a ``with`` statement or patched individually.
+    """
+    return [
+        patch(
+            "ai_analytics_worker.main.run_change_stream_listener",
+            new=_mock_subtask_that_waits_for_stop(),
+        ),
+        patch(
+            "ai_analytics_worker.main.run_queue_consumer",
+            new=_mock_subtask_that_waits_for_stop(),
+        ),
+        patch(
+            "ai_analytics_worker.main.run_reconciliation_loop",
+            new=_mock_subtask_that_waits_for_stop(),
+        ),
+    ]
 
 
 class TestRunWorkerLifecycle:
@@ -65,11 +94,17 @@ class TestRunWorkerLifecycle:
         stop_event = asyncio.Event()
         with patch(
             "ai_analytics_worker.main.run_change_stream_listener",
-            new=_mock_listener_that_waits_for_stop(),
+            new=_mock_subtask_that_waits_for_stop(),
+        ), patch(
+            "ai_analytics_worker.main.run_queue_consumer",
+            new=_mock_subtask_that_waits_for_stop(),
+        ), patch(
+            "ai_analytics_worker.main.run_reconciliation_loop",
+            new=_mock_subtask_that_waits_for_stop(),
         ):
             task = asyncio.create_task(run_worker(stop_event))
 
-            # Let the worker start and enter the listener
+            # Let the worker start and enter the sub-tasks
             await asyncio.sleep(0.1)
             assert worker_health.status == STATUS_RUNNING
             assert worker_health.last_started_at is not None
@@ -87,7 +122,13 @@ class TestRunWorkerLifecycle:
         stop_event = asyncio.Event()
         with patch(
             "ai_analytics_worker.main.run_change_stream_listener",
-            new=_mock_listener_that_waits_for_stop(),
+            new=_mock_subtask_that_waits_for_stop(),
+        ), patch(
+            "ai_analytics_worker.main.run_queue_consumer",
+            new=_mock_subtask_that_waits_for_stop(),
+        ), patch(
+            "ai_analytics_worker.main.run_reconciliation_loop",
+            new=_mock_subtask_that_waits_for_stop(),
         ):
             task = asyncio.create_task(run_worker(stop_event))
 
@@ -106,7 +147,13 @@ class TestRunWorkerLifecycle:
         stop_event = asyncio.Event()
         with patch(
             "ai_analytics_worker.main.run_change_stream_listener",
-            new=_mock_listener_that_waits_for_stop(),
+            new=_mock_subtask_that_waits_for_stop(),
+        ), patch(
+            "ai_analytics_worker.main.run_queue_consumer",
+            new=_mock_subtask_that_waits_for_stop(),
+        ), patch(
+            "ai_analytics_worker.main.run_reconciliation_loop",
+            new=_mock_subtask_that_waits_for_stop(),
         ):
             task = asyncio.create_task(run_worker(stop_event))
 
@@ -122,7 +169,7 @@ class TestRunWorkerLifecycle:
 
     @pytest.mark.asyncio
     async def test_worker_records_unexpected_error_on_health(self):
-        """An unexpected exception from the listener is recorded on health and re-raised."""
+        """An unexpected exception from a sub-task is recorded on health and re-raised."""
         stop_event = asyncio.Event()
 
         # Mock the listener to raise an unexpected error (not CancelledError)
@@ -133,6 +180,12 @@ class TestRunWorkerLifecycle:
         with patch(
             "ai_analytics_worker.main.run_change_stream_listener",
             new=exploding_listener,
+        ), patch(
+            "ai_analytics_worker.main.run_queue_consumer",
+            new=_mock_subtask_that_waits_for_stop(),
+        ), patch(
+            "ai_analytics_worker.main.run_reconciliation_loop",
+            new=_mock_subtask_that_waits_for_stop(),
         ):
             with pytest.raises(RuntimeError, match="simulated listener failure"):
                 await run_worker(stop_event)
@@ -145,6 +198,43 @@ class TestRunWorkerLifecycle:
         assert worker_health.consecutive_error_count >= 1
         assert worker_health.status == STATUS_STOPPED
 
+    @pytest.mark.asyncio
+    async def test_worker_spawns_three_subtasks(self):
+        """run_worker spawns listener, consumer, and reconciliation tasks."""
+        stop_event = asyncio.Event()
+        call_counts = {"listener": 0, "consumer": 0, "recon": 0}
+
+        async def counting_listener(*args, **kwargs):
+            call_counts["listener"] += 1
+            await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+
+        async def counting_consumer(*args, **kwargs):
+            call_counts["consumer"] += 1
+            await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+
+        async def counting_recon(*args, **kwargs):
+            call_counts["recon"] += 1
+            await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+
+        with patch(
+            "ai_analytics_worker.main.run_change_stream_listener",
+            new=AsyncMock(side_effect=counting_listener),
+        ), patch(
+            "ai_analytics_worker.main.run_queue_consumer",
+            new=AsyncMock(side_effect=counting_consumer),
+        ), patch(
+            "ai_analytics_worker.main.run_reconciliation_loop",
+            new=AsyncMock(side_effect=counting_recon),
+        ):
+            task = asyncio.create_task(run_worker(stop_event))
+            await asyncio.sleep(0.1)
+            stop_event.set()
+            await asyncio.wait_for(task, timeout=2.0)
+
+        assert call_counts["listener"] == 1
+        assert call_counts["consumer"] == 1
+        assert call_counts["recon"] == 1
+
 
 class TestStopWorkerTask:
     """Tests for the stop_worker_task shutdown helper."""
@@ -155,7 +245,13 @@ class TestStopWorkerTask:
         stop_event = asyncio.Event()
         with patch(
             "ai_analytics_worker.main.run_change_stream_listener",
-            new=_mock_listener_that_waits_for_stop(),
+            new=_mock_subtask_that_waits_for_stop(),
+        ), patch(
+            "ai_analytics_worker.main.run_queue_consumer",
+            new=_mock_subtask_that_waits_for_stop(),
+        ), patch(
+            "ai_analytics_worker.main.run_reconciliation_loop",
+            new=_mock_subtask_that_waits_for_stop(),
         ):
             task = asyncio.create_task(run_worker(stop_event))
 
@@ -212,7 +308,13 @@ class TestWorkerConfigIntegration:
         stop_event = asyncio.Event()
         with patch(
             "ai_analytics_worker.main.run_change_stream_listener",
-            new=_mock_listener_that_waits_for_stop(),
+            new=_mock_subtask_that_waits_for_stop(),
+        ), patch(
+            "ai_analytics_worker.main.run_queue_consumer",
+            new=_mock_subtask_that_waits_for_stop(),
+        ), patch(
+            "ai_analytics_worker.main.run_reconciliation_loop",
+            new=_mock_subtask_that_waits_for_stop(),
         ):
             task = asyncio.create_task(run_worker(stop_event))
 

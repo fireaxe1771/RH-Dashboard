@@ -1,10 +1,11 @@
-"""AI Analytics Worker — Change Stream listener (Phase 5).
+"""AI Analytics Worker — Change Stream listener (Phase 5/6).
 
 Watches the ``ai_line_items`` and ``ai_agent_conversations`` collections in
 the RecoveryHub_AI MongoDB database for relevant changes. Extracts the
-affected ``claim_id`` from each change event, calls ``claim_refresh.refresh_claim``
-to rebuild and persist the projection, and persists the resume token so the
-worker can resume after restart without losing events.
+affected ``claim_id`` from each change event, **enqueues** it into the
+``ClaimQueue`` (Phase 6 — the queue consumer calls ``refresh_claim``), and
+persists the resume token so the worker can resume after restart without
+losing events.
 
 Algorithm:
 1. Load the saved resume token from ``ai_analytics_worker_state`` (if any).
@@ -15,8 +16,9 @@ Algorithm:
    a. Extract ``claim_id`` from the event (``fullDocument.claim_id`` for
       insert/replace/update, or skip delete events — reconciliation in
       Phase 7 handles stale projections from deletes).
-   b. Call ``refresh_claim`` to fetch source data, build the projection,
-      and persist it. Errors are dead-lettered inside ``refresh_claim``.
+   b. Enqueue ``claim_id`` into the ``ClaimQueue``. The queue consumer
+      (Phase 6) calls ``refresh_claim`` with a debounce window to coalesce
+      bursts. Errors are dead-lettered inside ``refresh_claim``.
    c. Persist the event's resume token to ``ai_analytics_worker_state``.
    d. Yield control to the event loop every ``max_claims_per_cycle`` events
       (Section 1.1.5 — event-loop starvation guard).
@@ -27,14 +29,14 @@ Algorithm:
    persist the final token, and exit.
 
 Source: RecoveryHub_AI MongoDB (read-only via Motor async client).
-Destination: ``ai_analytics_worker_state`` (resume token, health),
-``ai_invoice_analytics`` and ``ai_analytics_worker_dead_letters`` (via
-``claim_refresh``).
+Destination: ``ai_analytics_worker_state`` (resume token, health). The
+actual projection writes go through the queue consumer (Phase 6) which
+calls ``claim_refresh``.
 Architectural constraints:
 - Never writes to operational AI collections (source is read-only).
 - Never blocks the FastAPI event loop — all I/O is async.
 - Cancellable within 5 seconds (close stream, persist token, exit).
-- One bad event never stops the listener — dead-lettered and continued.
+- One bad event never stops the listener — enqueueing is infallible.
 - Resume token persisted after each event so restart loses no events.
 """
 
@@ -50,9 +52,9 @@ from ai_analytics.mongo_repository import (
     AGENT_CONVERSATIONS_COLLECTION,
 )
 
-from .claim_refresh import refresh_claim
 from .config import worker_config
 from .projection_repository import get_worker_state, update_worker_state
+from .queue import ClaimQueue
 
 logger = logging.getLogger(__name__)
 
@@ -188,18 +190,16 @@ async def _save_resume_token(
 
 
 async def _process_change_event(
-    ai_db: Any,
-    db: Any,
+    queue: ClaimQueue,
     change_event: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
     """Process a single change stream event.
 
-    Extracts the ``claim_id``, calls ``refresh_claim``, and returns the
-    resume token from the event so the caller can persist it.
+    Extracts the ``claim_id``, enqueues it into the ``ClaimQueue`` (Phase 6),
+    and returns the resume token from the event so the caller can persist it.
 
     Arguments:
-        ai_db: the RecoveryHub_AI Motor database handle (read-only).
-        db: the dashboard-owned Motor database handle (writes).
+        queue: the ``ClaimQueue`` to enqueue the claim_id into.
         change_event: the raw change stream event dict.
 
     Returns:
@@ -226,13 +226,10 @@ async def _process_change_event(
         )
         return _extract_resume_token(change_event)
 
-    # Refresh the claim's projection via the shared algorithm (Phase 5 DRY).
-    await refresh_claim(
-        ai_db=ai_db,
-        db=db,
-        claim_id=claim_id,
-        source_event_type=operation_type,
-    )
+    # Enqueue the claim for refresh via the debounce queue (Phase 6).
+    # The queue consumer calls refresh_claim with a debounce window to
+    # coalesce bursts of updates to the same claim.
+    queue.enqueue(claim_id)
 
     return _extract_resume_token(change_event)
 
@@ -241,22 +238,24 @@ async def run_change_stream_listener(
     ai_db: Any,
     db: Any,
     stop_event: asyncio.Event,
+    queue: ClaimQueue,
     max_claims_per_cycle: Optional[int] = None,
     restart_delay_seconds: Optional[float] = None,
     max_restarts: Optional[int] = None,
 ) -> None:
     """Run the change stream listener until ``stop_event`` is set or cancelled.
 
-    Opens a change stream on the RecoveryHub_AI database, processes events,
-    and persists resume tokens. If the stream breaks, restarts with the last
-    saved token after a backoff delay.
+    Opens a change stream on the RecoveryHub_AI database, enqueues claim_ids
+    into the queue, and persists resume tokens. If the stream breaks,
+    restarts with the last saved token after a backoff delay.
 
     Arguments:
         ai_db: the RecoveryHub_AI Motor database handle (read-only).
-        db: the dashboard-owned Motor database handle (writes).
+        db: the dashboard-owned Motor database handle (writes — resume token).
         stop_event: an ``asyncio.Event`` that the caller sets to request
             graceful shutdown. Checked between events and during restart
             backoff.
+        queue: the ``ClaimQueue`` to enqueue claim_ids into (Phase 6).
         max_claims_per_cycle: max events to process before yielding control
             to the event loop. Defaults to ``worker_config.max_claims_per_cycle``.
         restart_delay_seconds: base delay between stream restart attempts.
@@ -267,8 +266,7 @@ async def run_change_stream_listener(
             0 means retry forever.
 
     Side effects:
-        - Upserts projections into ``ai_invoice_analytics`` (via refresh_claim).
-        - Records dead-letters for failing claims (via refresh_claim).
+        - Enqueues claim_ids into ``queue`` (consumer processes them).
         - Persists resume tokens and checkpoint timestamps to
           ``ai_analytics_worker_state``.
         - Updates ``ai_analytics_worker_state.status`` to ``"running"`` on
@@ -318,6 +316,7 @@ async def run_change_stream_listener(
                     stop_event=stop_event,
                     resume_token=resume_token,
                     max_claims_per_cycle=max_claims_per_cycle,
+                    queue=queue,
                 )
                 if not stop_event.is_set():
                     # The iterator ended on its own. A healthy stream blocks
@@ -431,6 +430,7 @@ async def _stream_loop(
     stop_event: asyncio.Event,
     resume_token: Optional[Dict[str, Any]],
     max_claims_per_cycle: int,
+    queue: ClaimQueue,
 ) -> Optional[Dict[str, Any]]:
     """Open and iterate the change stream until ``stop_event`` is set.
 
@@ -474,7 +474,7 @@ async def _stream_loop(
                 # Graceful shutdown — close the stream and return.
                 break
 
-            token = await _process_change_event(ai_db, db, change_event)
+            token = await _process_change_event(queue, change_event)
 
             if token is not None:
                 resume_token = token
