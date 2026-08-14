@@ -33,6 +33,7 @@ from .models import (
 )
 from . import sql_repository as sql_repo
 from . import mongo_repository as mongo_repo
+from . import projection_read_repository as projection_repo
 from .normalization import (
     build_normalized_record,
     classify_business_outcome,
@@ -51,6 +52,7 @@ from .normalization import (
 )
 from .reason_normalization import normalize_reason
 from .cache import cached
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,14 @@ async def _load_normalized_cohort(
     """Load and normalize the full cohort for the given filters.
 
     Returns (normalized_records, source_status, data_complete).
+
+    When ``settings.AI_ANALYTICS_USE_PROJECTION`` is true (Phase 9), step 2
+    reads AI-side fields from the worker's ``ai_invoice_analytics``
+    projection in the dashboard-owned Mongo instead of issuing a
+    per-request ``$in`` against the operational RecoveryHub_AI Mongo.
+    SQL steps (cohort, cancellations, process logs) are unchanged — the
+    projection only caches the AI-Mongo side. When false, behaviour is
+    identical to pre-Phase-9 (direct read from RecoveryHub_AI Mongo).
     """
     t0 = time.perf_counter()
     source_status: Dict[str, str] = {
@@ -111,18 +121,38 @@ async def _load_normalized_cohort(
 
     claim_ids = [int(r["claim_id"]) for r in cohort_rows if r.get("claim_id")]
 
-    # 2. Query Mongo for ai_line_items (batch $in)
-    t_mongo = time.perf_counter()
+    # 2. Query AI-side data — projection (Phase 9) or direct Mongo read.
+    t_ai = time.perf_counter()
     ai_records_by_claim: Dict[int, Dict[str, Any]] = {}
     try:
-        ai_records_by_claim = await mongo_repo.get_ai_line_items_for_claim_ids(
-            ai_db, claim_ids
-        )
+        if settings.AI_ANALYTICS_USE_PROJECTION:
+            # Read from the dashboard-owned projection collection. The
+            # adapter maps projection fields to the raw ai_line_items
+            # shape so build_normalized_record works unchanged.
+            from database import db_manager
+            ai_records_by_claim = (
+                await projection_repo.get_projection_records_for_claim_ids(
+                    db_manager.db, claim_ids
+                )
+            )
+            logger.info(
+                "AI analytics: projection read took "
+                f"{time.perf_counter() - t_ai:.3f}s "
+                f"({len(ai_records_by_claim)} projections)"
+            )
+        else:
+            ai_records_by_claim = await mongo_repo.get_ai_line_items_for_claim_ids(
+                ai_db, claim_ids
+            )
+            logger.info(
+                f"AI analytics: Mongo ai_line_items query took "
+                f"{time.perf_counter() - t_ai:.3f}s "
+                f"({len(ai_records_by_claim)} records)"
+            )
     except Exception as e:
-        logger.error(f"Mongo ai_line_items query failed: {e}")
+        logger.error(f"AI-side data query failed: {e}")
         source_status["recoveryhub_ai_mongo"] = "unavailable"
         data_complete = False
-    logger.info(f"AI analytics: Mongo ai_line_items query took {time.perf_counter() - t_mongo:.3f}s ({len(ai_records_by_claim)} records)")
 
     # 3. Query SQL for cancellation details (batch)
     t_canc = time.perf_counter()

@@ -3,6 +3,16 @@
 Combines all available SQL and Mongo data for a single claim into a
 comprehensive trace: business outcome, AI processing, conversations,
 line items, and comparison.
+
+Phase 9 note: This service is NOT affected by
+``settings.AI_ANALYTICS_USE_PROJECTION``. It reads the raw
+``ai_line_items`` document directly from RecoveryHub_AI Mongo because the
+forensic trace needs the full ``line_items`` array (with nested
+``resources``), the raw ``review_msg``, and the full conversation
+documents — none of which are in the worker's ``ai_invoice_analytics``
+projection (Section 9 only stores a line-item summary and conversation
+counts). Phase 10 will enrich the projection to carry the data needed
+to replace this direct-read path.
 """
 
 from __future__ import annotations

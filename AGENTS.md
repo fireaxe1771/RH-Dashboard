@@ -270,3 +270,47 @@ seconds. Both keep IEEE-754 arithmetic exact. Adding a small delta to a large
 origin does not: `1000.0 + 0.05` rounds to `1000.04999999999995`, so an
 exact-boundary assertion fails for reasons unrelated to the queue. Since no
 real time passes, large window values cost nothing.
+
+### Dashboard Read Path — Projection vs Direct-Read (Phase 9)
+
+The AI analytics endpoints (`/api/ai-analytics/*`) have two read paths for
+AI-side data, gated by `AI_ANALYTICS_USE_PROJECTION` (default `false`):
+
+- **Direct-read (default):** `_load_normalized_cohort` issues a per-request
+  `$in` query against the operational RecoveryHub_AI Mongo cluster for
+  `ai_line_items` documents. This is the pre-Phase-9 path.
+- **Projection read (flag on):** reads from the worker's
+  `ai_invoice_analytics` projection in the dashboard-owned Mongo instead.
+  Eliminates the cross-cluster round-trip; the projection is a cache of the
+  AI-Mongo side.
+
+SQL-side data (business_outcome, cancellation_reason, process_logs,
+claim_created_at) is **always** joined from SQL regardless of the flag — the
+projection only caches the AI-Mongo side. Phase 10 will enrich the projection
+to carry SQL-joined fields.
+
+The adapter (`ai_analytics/projection_read_repository.py`) maps projection
+field names to the raw `ai_line_items` field names that
+`build_normalized_record` expects. The field mapping is explicit
+(`_FIELD_MAP`, `_PASSTHROUGH_FIELDS`, `_MISSING_FROM_PROJECTION`) so a
+schema change is caught there rather than silently producing `None`.
+
+Fields not in the projection (`thread_id`, `retry_thread_id`) are 0%
+populated in production per the Phase 0 audit, so their absence is
+semantically identical to the direct-read path returning `None`.
+
+**Endpoints NOT affected by the flag:**
+- `/invoices/{claim_id}/trace` — needs the raw `ai_line_items` document
+  (full `line_items` array with nested `resources`, raw `review_msg`).
+  The projection only stores summaries. Phase 10 will enrich the projection
+  to replace this path.
+- `/diagnostics/agents` — aggregates raw `ai_agent_conversations` by
+  (agent, status, processing_stage, request_type). The projection only
+  stores conversation counts. This endpoint always reads from
+  RecoveryHub_AI Mongo directly.
+
+**Rolling out the flag:** set `AI_ANALYTICS_USE_PROJECTION=true` only after
+the worker has run a backfill and `ai_invoice_analytics` is populated. When
+false, behaviour is identical to pre-Phase-9. The flag is read at request
+time (not import time), so it can be toggled without a restart in Container
+Apps (env var refresh).

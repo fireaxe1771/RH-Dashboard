@@ -153,6 +153,29 @@ class Settings:
         os.getenv("WORKER_CHANGE_STREAM_MAX_RESTARTS", "0")
     )
 
+    # --- AI Analytics Dashboard Read Path (Phase 9) ---
+    # When true, the AI analytics services (outcome_service,
+    # diagnostics_service) read AI-side fields from the worker's
+    # ``ai_invoice_analytics`` projection in the dashboard-owned Mongo
+    # instead of issuing a per-request ``$in`` query against the
+    # operational RecoveryHub_AI Mongo cluster. SQL-side fields
+    # (business_outcome, cancellation_reason, process_logs) are still
+    # joined from SQL — the projection only caches the AI-Mongo side.
+    #
+    # Default false so the change is safe to land before the worker has
+    # populated the projection. Operators flip it to true after validating
+    # that ``ai_invoice_analytics`` is populated and the worker is
+    # processing change events. When false, behaviour is identical to
+    # pre-Phase-9 (direct read from RecoveryHub_AI Mongo).
+    #
+    # The invoice trace endpoint (``/invoices/{claim_id}/trace``) keeps
+    # its direct-read path regardless of this flag — the projection does
+    # not carry the raw ai_line_items document needed for forensic trace.
+    # Phase 10 will enrich the projection to replace that path.
+    AI_ANALYTICS_USE_PROJECTION: bool = (
+        os.getenv("AI_ANALYTICS_USE_PROJECTION", "false").lower() == "true"
+    )
+
     def validate_settings(self) -> None:
         """Validates configuration parameters, stopping startup if required variables are missing."""
         missing = []
