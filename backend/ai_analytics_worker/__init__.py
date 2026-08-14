@@ -23,8 +23,18 @@ Phase 2 adds the source repository wrapper (timeout, retry, structured
 logging over the existing mongo_repository read functions).
 Phase 3 adds the projection builder (deterministic ai_invoice_analytics
 document construction from source data, reusing normalization_core.py).
-Subsequent phases add persistence, backfill, change-stream listening,
-and reconciliation.
+Phase 4 adds the projection repository (destination writes) and the
+historical backfill orchestrator.
+Subsequent phases add change-stream listening, queue/coalescing, and
+reconciliation.
 """
 
-__all__ = ["config", "health", "metrics", "source_repository", "projection_builder"]
+__all__ = [
+    "config",
+    "health",
+    "metrics",
+    "source_repository",
+    "projection_builder",
+    "projection_repository",
+    "backfill",
+]

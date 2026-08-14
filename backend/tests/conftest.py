@@ -58,6 +58,9 @@ class _AsyncCollection:
     async def find_one(self, *args, **kwargs):
         return self._col.find_one(*args, **kwargs)
 
+    async def replace_one(self, *args, **kwargs):
+        return self._col.replace_one(*args, **kwargs)
+
     async def insert_one(self, *args, **kwargs):
         return self._col.insert_one(*args, **kwargs)
 
@@ -95,13 +98,17 @@ class _AsyncCollection:
 
 
 class _AsyncSortableCursor(_AsyncCursor):
-    """Supports chaining ``.sort()`` before ``.to_list()``."""
+    """Supports chaining ``.sort()`` and ``.limit()`` before ``.to_list()``."""
 
     def __init__(self, cursor):
         super().__init__(cursor)
 
     def sort(self, *args, **kwargs):
         self._cursor = self._cursor.sort(*args, **kwargs)
+        return self
+
+    def limit(self, n, *args, **kwargs):
+        self._cursor = self._cursor.limit(n, *args, **kwargs)
         return self
 
 
