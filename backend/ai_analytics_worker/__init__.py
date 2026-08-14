@@ -19,8 +19,10 @@ docs/ai-analytics/PHASE_0_IMPLEMENTATION_PLAN.md Section 16):
 
 Phase 1 (this package skeleton) introduces the package, worker config
 accessor, in-memory health state, and metrics counters — no business logic.
-Subsequent phases add source repositories, projection building, persistence,
-backfill, change-stream listening, and reconciliation.
+Phase 2 adds the source repository wrapper (timeout, retry, structured
+logging over the existing mongo_repository read functions).
+Subsequent phases add projection building, persistence, backfill,
+change-stream listening, and reconciliation.
 """
 
-__all__ = ["config", "health", "metrics"]
+__all__ = ["config", "health", "metrics", "source_repository"]

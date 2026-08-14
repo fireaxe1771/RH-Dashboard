@@ -129,8 +129,11 @@ class Settings:
     # Backfill batch size for historical population (Phase 4/6) and for
     # stale-checkpoint date-range fallback (Phase 9).
     WORKER_BACKFILL_BATCH_SIZE: int = int(os.getenv("WORKER_BACKFILL_BATCH_SIZE", "500"))
-    # Max retries for a single claim refresh before escalating to the
-    # dead-letter collection (Phase 5). Exponential backoff between attempts.
+    # Max total attempts (including the initial attempt) for a single claim
+    # refresh at the source repository layer before giving up. A value of 3
+    # means 3 total attempts (1 initial + 2 retries), NOT 3 retries after the
+    # first attempt. Exponential backoff between attempts. Phase 5 escalates
+    # to the dead-letter collection after this many attempts.
     WORKER_MAX_RETRIES: int = int(os.getenv("WORKER_MAX_RETRIES", "3"))
     # Attempt count after which a failing claim is moved to the dead-letter
     # collection. Defaults to matching WORKER_MAX_RETRIES.

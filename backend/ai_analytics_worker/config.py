@@ -71,7 +71,12 @@ class WorkerConfig:
 
     @property
     def max_retries(self) -> int:
-        """Max retries for a single claim refresh before dead-letter (Phase 5)."""
+        """Max total attempts (including initial) before dead-letter (Phase 5).
+
+        Note: despite the name, this is the max total attempts, not retries
+        after the first attempt. A value of 3 means 3 total attempts
+        (1 initial + 2 retries). See ``config.WORKER_MAX_RETRIES``.
+        """
         return settings.WORKER_MAX_RETRIES
 
     @property
