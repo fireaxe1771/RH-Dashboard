@@ -349,7 +349,7 @@ const DeadLetterList: React.FC<{
         </span>
         {dl.claim_id !== null && (
           <button
-            onClick={() => onResolve(dl.claim_id)}
+            onClick={() => onResolve(dl.claim_id as number)}
             style={{
               padding: '2px 8px',
               fontSize: '11px',
