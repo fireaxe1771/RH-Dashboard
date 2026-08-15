@@ -1,22 +1,23 @@
 <#
 .SYNOPSIS
-    Build and run the RecoveryHub Dashboard stack locally in Docker Desktop.
+    Build, run, and monitor the RecoveryHub Dashboard stack locally in Docker
+    Desktop.
 
 .DESCRIPTION
-    Builds the backend and frontend Docker images and starts three containers:
-    MongoDB, the FastAPI backend, and the nginx frontend. The frontend nginx
-    container proxies /api/* to the backend container via a shared docker
-    network.
+    A thin wrapper over `docker compose` for the services defined in
+    docker-compose.yml: MongoDB, the FastAPI backend, and the nginx frontend.
+    The frontend nginx container proxies /api/* to the backend container over a
+    shared docker network.
 
-    The script reads VITE_AZURE_CLIENT_ID and VITE_AZURE_TENANT_ID from the
-    local .env file to inject into the frontend build args.
+    Configuration (Azure, Mongo, AI credentials, and the VITE_* build args)
+    comes from the local .env file, which Compose reads automatically.
 
     MongoDB uses a named volume (rhdashboard_mongo-data) so saved dashboards
     persist across restarts.
 
-.PARAMETER Restart
-    Skip the image build and just stop + start the existing containers.
-    Use this for quick restarts when no code has changed.
+    NOTE: MONGODB_URI in .env determines which database the backend uses. If it
+    points at an Atlas cluster, the local mongo container is unused. Set
+    MONGODB_URI=mongodb://mongo:27017 to use the local container instead.
 
 .PARAMETER Build
     (Default) Rebuild both images and restart the containers.
@@ -26,47 +27,80 @@
     containers. Use this when Docker's layer cache is stale or you want to
     guarantee a from-scratch build.
 
+.PARAMETER Restart
+    Skip the image build and just restart the existing containers.
+    Use this for quick restarts when no code has changed.
+
 .PARAMETER Stop
     Stop and remove the dev containers without rebuilding or starting them.
+    The MongoDB volume is preserved.
+
+.PARAMETER Logs
+    Follow the logs of all running services and exit without building or
+    restarting anything. Equivalent to `docker compose logs -f`.
+
+.PARAMETER Follow
+    After starting the stack, follow the logs instead of returning to the
+    prompt. Combine with -Build, -NoCache, or -Restart.
+
+.PARAMETER Service
+    Limit -Logs / -Follow to specific services (mongo, backend, frontend).
+    Defaults to all.
+
+.PARAMETER Tail
+    Number of existing log lines to show per service when following.
+    Defaults to 50. Accepts a number or 'all'.
 
 .EXAMPLE
-    .\dev-start.ps1                 # Build + run (default)
-    .\dev-start.ps1 -Restart        # Just restart existing containers
-    .\dev-start.ps1 -Build          # Rebuild images + restart
-    .\dev-start.ps1 -NoCache        # Full clean rebuild + restart
-    .\dev-start.ps1 -Build -NoCache # Full clean rebuild + restart
-    .\dev-start.ps1 -Stop           # Stop and remove containers
+    .\dev-start.ps1                        # Build + run (default)
+    .\dev-start.ps1 -NoCache               # Full clean rebuild + restart
+    .\dev-start.ps1 -Restart               # Just restart existing containers
+    .\dev-start.ps1 -Stop                  # Stop and remove containers
+    .\dev-start.ps1 -Logs                  # Follow all logs
+    .\dev-start.ps1 -Logs -Service backend # Follow backend logs only
+    .\dev-start.ps1 -Follow                # Build + run, then follow logs
+    .\dev-start.ps1 -Logs -Tail all        # Follow with full history
 #>
 [CmdletBinding(DefaultParameterSetName = 'Build')]
 param(
-    [Parameter(ParameterSetName = 'Restart')]
-    [switch]$Restart,
-
     [Parameter(ParameterSetName = 'Build')]
     [switch]$Build,
 
     [Parameter(ParameterSetName = 'Build')]
     [switch]$NoCache,
 
+    [Parameter(ParameterSetName = 'Restart')]
+    [switch]$Restart,
+
     [Parameter(ParameterSetName = 'Stop')]
-    [switch]$Stop
+    [switch]$Stop,
+
+    [Parameter(ParameterSetName = 'Logs', Mandatory = $true)]
+    [switch]$Logs,
+
+    [Parameter(ParameterSetName = 'Build')]
+    [Parameter(ParameterSetName = 'Restart')]
+    [switch]$Follow,
+
+    [Parameter(ParameterSetName = 'Build')]
+    [Parameter(ParameterSetName = 'Restart')]
+    [Parameter(ParameterSetName = 'Logs')]
+    [ValidateSet('mongo', 'backend', 'frontend')]
+    [string[]]$Service = @(),
+
+    [Parameter(ParameterSetName = 'Build')]
+    [Parameter(ParameterSetName = 'Restart')]
+    [Parameter(ParameterSetName = 'Logs')]
+    [string]$Tail = '50'
 )
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = $PSScriptRoot
-$BackendDir  = Join-Path $RepoRoot 'backend'
-$FrontendDir = Join-Path $RepoRoot 'frontend'
-$EnvFile     = Join-Path $RepoRoot '.env'
+$EnvFile  = Join-Path $RepoRoot '.env'
 
-$BackendImage  = 'rh-dashboard-backend:dev'
-$FrontendImage = 'rh-dashboard-frontend:dev'
-$MongoImage    = 'mongo:6.0'
-
-$BackendContainer  = 'rh-dashboard-backend-dev'
-$FrontendContainer = 'rh-dashboard-frontend-dev'
-$MongoContainer    = 'rh-dashboard-mongo-dev'
-$NetworkName = 'rh-dashboard-dev'
-$MongoVolume = 'rhdashboard_mongo-data'
+# Every docker call is scoped to this repo's compose file so the script works
+# regardless of the caller's working directory.
+$Compose = @('compose', '--project-directory', $RepoRoot, '-f', (Join-Path $RepoRoot 'docker-compose.yml'))
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -76,11 +110,27 @@ function Write-Section([string]$msg) {
     Write-Host "`n=== $msg ===" -ForegroundColor Cyan
 }
 
+function Invoke-Compose {
+    # Runs `docker compose ...` and throws on failure. Output is streamed
+    # straight through so build progress stays interactive.
+    #
+    # Takes an explicit array rather than using ValueFromRemainingArguments:
+    # the binder silently DISCARDS single-dash tokens it cannot match to a
+    # parameter name, so `Invoke-Compose up -d` dropped the -d and started the
+    # stack attached instead of detached.
+    param([Parameter(Mandatory = $true)][string[]]$ComposeArgs)
+
+    & docker @Compose @ComposeArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "docker compose $($ComposeArgs -join ' ') failed with exit code $LASTEXITCODE."
+    }
+}
+
 function Test-DockerReady {
     # Verifies the Docker engine is actually responsive before we issue any
     # docker commands. Without this, a half-started Docker Desktop (UI up but
     # engine WSL distro stopped) makes every `docker` call block forever and
-    # the script appears to hang on "Stopping existing dev containers".
+    # the script appears to hang.
     Write-Section 'Checking Docker engine'
     $job = Start-Job -ScriptBlock {
         $v = docker version --format '{{.Server.Version}}' 2>&1
@@ -122,158 +172,53 @@ Docker Desktop may be mid-startup or in a broken state. Try:
 "@
 }
 
-function Test-ContainerExists([string]$name) {
-    # Returns true if a container (running or stopped) with the given name exists.
-    $found = docker ps -a --filter "name=^/${name}$" --format '{{.Names}}' 2>$null
-    return [bool]$found
-}
-
-function Stop-Containers {
-    Write-Section 'Stopping existing dev containers'
-    foreach ($c in @($FrontendContainer, $BackendContainer, $MongoContainer)) {
-        if (Test-ContainerExists $c) {
-            docker rm -f $c | Out-Null
-            Write-Host "Removed $c"
-        } else {
-            Write-Host "Skipped $c (not present)"
-        }
-    }
-    Write-Host 'Done.'
-}
-
-function Remove-Network {
-    $exists = docker network ls --filter "name=$NetworkName" --format '{{.Name}}' 2>$null
-    if ($exists) {
-        docker network rm $NetworkName | Out-Null
-        Write-Host "Removed network: $NetworkName"
-    }
-}
-
-function New-Network {
-    $exists = docker network ls --filter "name=$NetworkName" --format '{{.Name}}' 2>$null
-    if (-not $exists) {
-        docker network create $NetworkName | Out-Null
-        Write-Host "Created network: $NetworkName"
-    }
-}
-
-function New-Volume {
-    $exists = docker volume ls --filter "name=$MongoVolume" --format '{{.Name}}' 2>$null
-    if (-not $exists) {
-        docker volume create $MongoVolume | Out-Null
-        Write-Host "Created volume: $MongoVolume"
-    }
-}
-
-function Read-EnvVar([string]$key) {
+function Test-EnvFile {
+    # Compose fails with an opaque interpolation error if the VITE_* build args
+    # are missing, so check for them up front with an actionable message.
     if (-not (Test-Path $EnvFile)) {
         throw "Missing .env file at $EnvFile"
     }
-    $line = Get-Content $EnvFile | Where-Object { $_ -match "^$key=" } | Select-Object -First 1
-    if (-not $line) {
-        throw "Missing '$key' in $EnvFile"
-    }
-    return ($line -split '=', 2)[1].Trim()
-}
-
-function Build-Images([bool]$noCache) {
-    $clientId  = Read-EnvVar 'VITE_AZURE_CLIENT_ID'
-    $tenantId  = Read-EnvVar 'VITE_AZURE_TENANT_ID'
-
-    Write-Section 'Building backend image'
-    $buildArgs = @('build', '-t', $BackendImage)
-    if ($noCache) { $buildArgs += '--no-cache' }
-    $buildArgs += $BackendDir
-    & docker @buildArgs
-    if ($LASTEXITCODE -ne 0) { throw 'Backend image build failed.' }
-
-    Write-Section 'Building frontend image'
-    $buildArgs = @(
-        'build',
-        '-t', $FrontendImage,
-        '--build-arg', "VITE_AZURE_CLIENT_ID=$clientId",
-        '--build-arg', "VITE_AZURE_TENANT_ID=$tenantId",
-        '--build-arg', 'VITE_DEV_AUTH_BYPASS=true'
-    )
-    if ($noCache) { $buildArgs += '--no-cache' }
-    $buildArgs += $FrontendDir
-    & docker @buildArgs
-    if ($LASTEXITCODE -ne 0) { throw 'Frontend image build failed.' }
-}
-
-function Start-Containers {
-    Write-Section 'Starting dev containers'
-
-    New-Network
-    New-Volume
-
-    # MongoDB: stores saved dashboards and billing data. Uses the persistent
-    # volume so dashboards survive container rebuilds/restarts.
-    docker run -d `
-        --name $MongoContainer `
-        --network $NetworkName `
-        --network-alias mongo `
-        -p 27017:27017 `
-        -v "${MongoVolume}:/data/db" `
-        $MongoImage
-    if ($LASTEXITCODE -ne 0) { throw 'Failed to start MongoDB container.' }
-
-    Write-Host 'Waiting for MongoDB to accept connections...'
-    $maxWait = 30
-    $waited = 0
-    while ($waited -lt $maxWait) {
-        $ok = docker exec $MongoContainer mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>$null
-        if ($ok -match '1') { break }
-        Start-Sleep -Seconds 1
-        $waited++
-    }
-    if ($waited -ge $maxWait) {
-        Write-Warning 'MongoDB did not respond within 30s — backend may fail to connect.'
-    } else {
-        Write-Host "MongoDB ready (waited ${waited}s)."
-    }
-
-    # Backend: runs on 8001, uses the repo .env for all Azure/Mongo/AI secrets.
-    # MONGODB_URI is rewritten from localhost/127.0.0.1 to the mongo container
-    # alias for local dev, but kept as-is when pointed at a real cluster.
-    $MongodbUri = ''
-    foreach ($line in Get-Content $EnvFile) {
-        if ($line -match '^MONGODB_URI\s*=\s*(.*)$') {
-            $MongodbUri = $Matches[1]
-            break
+    $content = Get-Content $EnvFile
+    foreach ($key in @('VITE_AZURE_CLIENT_ID', 'VITE_AZURE_TENANT_ID')) {
+        $line = $content | Where-Object { $_ -match "^\s*$key\s*=\s*\S" } | Select-Object -First 1
+        if (-not $line) {
+            throw "Missing '$key' in $EnvFile (required as a frontend build arg)."
         }
     }
-    if ($MongodbUri -match 'localhost|127\.0\.0\.1') {
-        $MongodbUri = $MongodbUri -replace 'localhost|127\.0\.0\.1', 'mongo'
+}
+
+function Show-Logs {
+    # `docker compose logs` can return immediately with no useful context when
+    # there are no running containers. Check the Compose-managed services first
+    # and give the user an actionable error instead.
+    $running = @(& docker @Compose ps --format '{{.Service}}' 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not inspect the Compose stack before following logs.'
     }
-    docker run -d `
-        --name $BackendContainer `
-        --network $NetworkName `
-        --network-alias backend `
-        -p 8001:8001 `
-        --env-file $EnvFile `
-        -e "MONGODB_URI=$MongodbUri" `
-        $BackendImage
-    if ($LASTEXITCODE -ne 0) { throw 'Failed to start backend container.' }
+    if (-not $running) {
+        throw "No RecoveryHub Dashboard containers are running. Start the stack first: .\dev-start.ps1"
+    }
 
-    # Frontend: nginx on port 80 -> mapped to 3000 on host.
-    # BACKEND_URL points to the backend container via the shared network.
-    docker run -d `
-        --name $FrontendContainer `
-        --network $NetworkName `
-        -p 3000:80 `
-        -e 'BACKEND_URL=http://backend:8001' `
-        $FrontendImage
-    if ($LASTEXITCODE -ne 0) { throw 'Failed to start frontend container.' }
+    if ($Service.Count -gt 0) {
+        $missing = @($Service | Where-Object { $_ -notin $running })
+        if ($missing.Count -gt 0) {
+            throw "Requested service(s) are not running: $($missing -join ', '). Running services: $($running -join ', ')."
+        }
+    }
 
+    Write-Section 'Following logs (Ctrl+C to stop; containers keep running)'
+    # Not routed through Invoke-Compose: Ctrl+C makes `logs -f` exit non-zero,
+    # which is the normal way to stop following and must not throw.
+    & docker @Compose logs -f --tail $Tail @Service
+}
+
+function Show-Endpoints {
     Write-Host "`n--- Dev stack running ---" -ForegroundColor Green
     Write-Host "Frontend:  http://localhost:3000" -ForegroundColor Yellow
     Write-Host "Backend:   http://localhost:8001/docs" -ForegroundColor Yellow
     Write-Host "MongoDB:   localhost:27017" -ForegroundColor Yellow
     Write-Host "`nLogs:"
-    Write-Host "  docker logs -f $MongoContainer"
-    Write-Host "  docker logs -f $BackendContainer"
-    Write-Host "  docker logs -f $FrontendContainer"
+    Write-Host "  .\dev-start.ps1 -Logs"
     Write-Host "`nStop:"
     Write-Host "  .\dev-start.ps1 -Stop"
 }
@@ -284,22 +229,37 @@ function Start-Containers {
 
 # Fail fast if the Docker engine isn't actually up. Without this, a
 # half-started Docker Desktop makes every docker call block forever and
-# the script appears to hang on "Stopping existing dev containers".
+# the script appears to hang.
 Test-DockerReady
 
+if ($Logs) {
+    Show-Logs
+    return
+}
+
 if ($Stop) {
-    Stop-Containers
-    Remove-Network
+    Write-Section 'Stopping dev containers'
+    # No -v: the mongo-data volume is preserved so dashboards survive.
+    Invoke-Compose @('down', '--remove-orphans')
+    Write-Host 'Done.'
     return
 }
 
-if ($Restart) {
-    Stop-Containers
-    Start-Containers
-    return
+Test-EnvFile
+
+if (-not $Restart) {
+    Write-Section 'Building images'
+    $buildArgs = @('build')
+    if ($NoCache) { $buildArgs += '--no-cache' }
+    Invoke-Compose $buildArgs
 }
 
-# -Build (default) and -NoCache both rebuild
-Stop-Containers
-Build-Images -noCache:$NoCache
-Start-Containers
+Write-Section 'Starting dev containers'
+# Recreates containers whose config or image changed. --wait blocks until the
+# healthchecks that gate depends_on report healthy, so the endpoints printed
+# below are actually serving by the time the script returns.
+Invoke-Compose @('up', '-d', '--remove-orphans', '--wait')
+
+Show-Endpoints
+
+if ($Follow) { Show-Logs }

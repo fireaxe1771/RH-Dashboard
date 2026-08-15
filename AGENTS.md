@@ -98,19 +98,69 @@ display data once the sync service is enabled and has populated MongoDB.
 
 ## Build & Run
 
-Local Docker Desktop development:
+Local Docker Desktop development. `dev-start.ps1` is a thin wrapper over
+`docker compose` — it is the only script; there is no separate logs script:
 ```powershell
 .\dev-start.ps1              # Build + run (default)
-.\dev-start.ps1 -Build       # Rebuild images + restart
 .\dev-start.ps1 -NoCache     # Full clean rebuild + restart
-.\dev-start.ps1 -Restart     # Just restart existing containers
-.\dev-start.ps1 -Stop        # Stop and remove containers
+.\dev-start.ps1 -Restart     # Restart without rebuilding images
+.\dev-start.ps1 -Stop        # Stop and remove containers (volume preserved)
+.\dev-start.ps1 -Logs        # Follow all logs (docker compose logs -f)
+.\dev-start.ps1 -Follow      # Build + run, then follow logs
+.\dev-start.ps1 -Logs -Service backend   # One service
+.\dev-start.ps1 -Logs -Tail all          # Full history
 ```
 
 Stack runs at:
 - Frontend: http://localhost:3000
 - Backend:  http://localhost:8001/docs
 - MongoDB:  localhost:27017
+
+### The stack is Compose-managed
+
+The script previously started containers with individual `docker run` calls,
+which meant they carried none of the `com.docker.compose.*` labels — so
+`docker compose logs -f` matched zero containers and exited silently, and
+`docker-compose.yml` had drifted into a second, divergent definition of the
+same stack (different ports, container names, and Mongo target). That is why
+`docker compose logs -f` originally found nothing: it only follows
+Compose-managed containers, and the old `docker run` containers had no
+`com.docker.compose.*` labels. Compose is now the single source of truth. Keep
+it that way: add services to `docker-compose.yml`, not to the script.
+
+Two PowerShell-specific traps when editing `dev-start.ps1`:
+
+- **Do not use `ValueFromRemainingArguments` to forward docker flags.** The
+  binder silently *discards* single-dash tokens it cannot match to a parameter
+  name, so `Invoke-Compose up -d` dropped the `-d` and started the stack
+  attached, hanging the script. `Invoke-Compose` takes an explicit
+  `[string[]]` array instead.
+- **`Show-Logs` deliberately bypasses `Invoke-Compose`.** Ctrl+C makes
+  `logs -f` exit non-zero, which is the normal way to stop following and must
+  not be treated as a failure.
+
+`docker compose up` is called with `--wait`, so the endpoints the script prints
+are actually serving when it returns.
+
+### MONGODB_URI decides which database you get
+
+`docker-compose.yml` intentionally does **not** override `MONGODB_URI` or
+`MONGODB_DB_NAME`; both come from `.env` via `env_file`. The old compose file
+hardcoded `mongodb://mongo:27017`, which silently repointed the backend at the
+empty local container and away from the Atlas cluster in `.env` — and since
+`_seed_default_dashboards()` upserts on every startup, that came up as a fresh
+empty database.
+
+The `mongo` service is therefore only used when `.env` points at it. To use the
+local container, set `MONGODB_URI=mongodb://mongo:27017`.
+
+### Healthcheck intervals are tuned for log readability
+
+Both healthchecks poll on a long `interval` (60s) with a short
+`start_interval`, because every Mongo probe opens a connection that mongod
+logs and every backend probe is access-logged by uvicorn. Short steady-state
+intervals flood `-Logs`. The fast polling that actually gates `depends_on`
+happens during `start_period` via `start_interval`, so startup is not slowed.
 
 ### Frontend Build-Time Environment Variables
 
@@ -121,12 +171,23 @@ fatal Vite config error at build time.
 Ensure these variables are present in `.env` and mapped in `docker-compose.yml`
 under `services.frontend.build.args`:
 
-- `VITE_AZURE_CLIENT_ID` → sourced from `AZURE_CLIENT_ID`
-- `VITE_AZURE_TENANT_ID` → sourced from `AZURE_TENANT_ID`
-- `VITE_DEV_AUTH_BYPASS`
+- `VITE_AZURE_CLIENT_ID` → sourced from `VITE_AZURE_CLIENT_ID`
+- `VITE_AZURE_TENANT_ID` → sourced from `VITE_AZURE_TENANT_ID`
+
+Both use Compose's `${VAR:?err}` form, so a missing value fails the build with
+a named error instead of an opaque Vite config crash. (The tenant arg was
+previously fed from `AZURE_TENANT_ID` in compose but from `VITE_AZURE_TENANT_ID`
+in the script — the two could disagree.)
 
 `frontend/Dockerfile` declares `ARG VITE_AZURE_CLIENT_ID` and
 `ARG VITE_AZURE_TENANT_ID` and exposes them as `ENV` for the Vite build.
+
+**`VITE_DEV_AUTH_BYPASS` is deliberately not a build arg.**
+`frontend/Dockerfile` documents a security decision not to declare it as an
+`ARG` so it cannot be baked into an image. Both the old script and the old
+compose file passed it anyway, where Docker silently ignored it — it never had
+any effect. It has been removed from compose rather than wired up; do not
+re-add it without the security review the Dockerfile calls for.
 
 ## Test Commands
 
