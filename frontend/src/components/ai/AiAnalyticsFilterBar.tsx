@@ -2,9 +2,10 @@ import React, { useMemo, useState } from 'react';
 import { Calendar, Clock } from 'lucide-react';
 import { billingStyles } from '../billing/shared';
 import { AiAnalyticsFilters } from '../../services/aiAnalyticsApi';
+import { api } from '../../services/api';
 import {
   RangeType,
-  computeDateRange,
+  DEFAULT_RANGE_TYPE,
   periodOptions,
 } from '../FilterBar';
 
@@ -51,7 +52,7 @@ export const AiAnalyticsFilterBar: React.FC<Props> = ({
   onStartDateChange,
   onEndDateChange,
   serverDate,
-  defaultRangeType = 'month',
+  defaultRangeType = DEFAULT_RANGE_TYPE,
   defaultPeriodsBack = 0,
   departmentId,
   onDepartmentIdChange,
@@ -64,22 +65,29 @@ export const AiAnalyticsFilterBar: React.FC<Props> = ({
 
   const periods = useMemo(() => periodOptions(rangeType), [rangeType]);
 
-  const handleRangeTypeChange = (newType: RangeType) => {
-    setRangeType(newType);
-    setPeriodsBack(0);
-    if (newType !== 'day') {
-      const dates = computeDateRange(newType, 0, serverDate);
+  /** Resolve a period via the backend (the single source of range arithmetic)
+   *  and push the dates up. Leaves the current dates in place on failure. */
+  const applyRange = async (type: RangeType, pb: number) => {
+    try {
+      const dates = await api.getDateRange(type, pb);
       onStartDateChange(dates.start_date);
       onEndDateChange(dates.end_date);
+    } catch (err) {
+      console.error('Failed to resolve date range:', err);
     }
-    // For 'day' (Custom), keep current dates — user will pick manually
   };
 
-  const handlePeriodsBackChange = (pb: number) => {
+  const handleRangeTypeChange = async (newType: RangeType) => {
+    setRangeType(newType);
+    setPeriodsBack(0);
+    // For 'day' (Custom), keep current dates — user will pick manually
+    if (newType === 'day') return;
+    await applyRange(newType, 0);
+  };
+
+  const handlePeriodsBackChange = async (pb: number) => {
     setPeriodsBack(pb);
-    const dates = computeDateRange(rangeType, pb, serverDate);
-    onStartDateChange(dates.start_date);
-    onEndDateChange(dates.end_date);
+    await applyRange(rangeType, pb);
   };
 
   return (

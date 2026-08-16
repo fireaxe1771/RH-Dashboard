@@ -1,7 +1,19 @@
 import { describe, test, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import React from 'react';
 import { AiAnalyticsFilterBar } from '../components/ai/AiAnalyticsFilterBar';
+
+// The filter bar resolves period boundaries via the backend (the single source
+// of range arithmetic), so the API call is mocked rather than recomputed here.
+vi.mock('../services/api', () => ({
+  api: {
+    getDateRange: vi.fn().mockResolvedValue({
+      server_date: '2026-08-13',
+      start_date: '2026-08-09',
+      end_date: '2026-08-15',
+    }),
+  },
+}));
 
 describe('AiAnalyticsFilterBar', () => {
   const defaultProps = {
@@ -13,7 +25,7 @@ describe('AiAnalyticsFilterBar', () => {
 
   test('renders range type selector with Custom/Week/Month/Year options', () => {
     render(<AiAnalyticsFilterBar {...defaultProps} />);
-    const select = screen.getByDisplayValue('Month');
+    const select = screen.getByDisplayValue('Week');
     expect(select).toBeInTheDocument();
     // Verify all options exist
     const options = Array.from(select.querySelectorAll('option')).map((o) => o.textContent);
@@ -23,7 +35,7 @@ describe('AiAnalyticsFilterBar', () => {
     expect(options).toContain('Year');
   });
 
-  test('shows period selector (not date inputs) in month mode', () => {
+  test('shows period selector (not date inputs) in a period mode', () => {
     render(<AiAnalyticsFilterBar {...defaultProps} />);
     expect(screen.getByText('Period')).toBeInTheDocument();
     expect(screen.queryByText('Start Date')).not.toBeInTheDocument();
@@ -64,7 +76,7 @@ describe('AiAnalyticsFilterBar', () => {
     expect(onEndDateChange).toHaveBeenCalledWith('2026-02-28');
   });
 
-  test('switching to week range type calls date change handlers with computed range', () => {
+  test('switching range type applies the range resolved by the backend', async () => {
     const onStartDateChange = vi.fn();
     const onEndDateChange = vi.fn();
     render(
@@ -72,19 +84,19 @@ describe('AiAnalyticsFilterBar', () => {
         {...defaultProps}
         onStartDateChange={onStartDateChange}
         onEndDateChange={onEndDateChange}
-        serverDate="2026-08-13"
       />
     );
-    const select = screen.getByDisplayValue('Month');
-    fireEvent.change(select, { target: { value: 'week' } });
-    expect(onStartDateChange).toHaveBeenCalledTimes(1);
+    const select = screen.getByDisplayValue('Week');
+    fireEvent.change(select, { target: { value: 'month' } });
+
+    // Dates come from GET /api/date-range, not from local arithmetic.
+    await waitFor(() => expect(onStartDateChange).toHaveBeenCalledTimes(1));
     expect(onEndDateChange).toHaveBeenCalledTimes(1);
-    // Computed dates should be YYYY-MM-DD
-    expect(onStartDateChange.mock.calls[0][0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(onEndDateChange.mock.calls[0][0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(onStartDateChange).toHaveBeenCalledWith('2026-08-09');
+    expect(onEndDateChange).toHaveBeenCalledWith('2026-08-15');
   });
 
-  test('changing period calls date change handlers with computed range', () => {
+  test('changing period applies the range resolved by the backend', async () => {
     const onStartDateChange = vi.fn();
     const onEndDateChange = vi.fn();
     render(
@@ -92,14 +104,30 @@ describe('AiAnalyticsFilterBar', () => {
         {...defaultProps}
         onStartDateChange={onStartDateChange}
         onEndDateChange={onEndDateChange}
-        serverDate="2026-08-13"
       />
     );
-    // Default is month mode — find the period select (Current Month)
-    const periodSelect = screen.getByDisplayValue('Current Month');
+    // Default is week mode - find the period select (Current Week)
+    const periodSelect = screen.getByDisplayValue('Current Week');
     fireEvent.change(periodSelect, { target: { value: '1' } });
-    expect(onStartDateChange).toHaveBeenCalledTimes(1);
+
+    await waitFor(() => expect(onStartDateChange).toHaveBeenCalledTimes(1));
     expect(onEndDateChange).toHaveBeenCalledTimes(1);
+  });
+
+  test('switching to Custom does not overwrite the dates', async () => {
+    const onStartDateChange = vi.fn();
+    const onEndDateChange = vi.fn();
+    render(
+      <AiAnalyticsFilterBar
+        {...defaultProps}
+        onStartDateChange={onStartDateChange}
+        onEndDateChange={onEndDateChange}
+      />
+    );
+    fireEvent.change(screen.getByDisplayValue('Week'), { target: { value: 'day' } });
+    await waitFor(() => expect(screen.getByText('Start Date')).toBeInTheDocument());
+    expect(onStartDateChange).not.toHaveBeenCalled();
+    expect(onEndDateChange).not.toHaveBeenCalled();
   });
 
   test('renders department filter when onDepartmentIdChange is provided', () => {

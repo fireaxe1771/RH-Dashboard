@@ -43,7 +43,7 @@ const kpiCardStyle: React.CSSProperties = {
 };
 
 export const AiAdoptionDashboard: React.FC = () => {
-  const { serverDate, startDate, endDate, dateReady, setStartDate, setEndDate, defaultRangeType } = useAiDateRange();
+  const { serverDate, startDate, endDate, dateReady, rangeError, setStartDate, setEndDate, defaultRangeType } = useAiDateRange();
   const [limit, setLimit] = useState(50);
   const [aiStatus, setAiStatus] = useState<string>('all');
   const [data, setData] = useState<AiAdoptionResponse | null>(null);
@@ -116,6 +116,7 @@ export const AiAdoptionDashboard: React.FC = () => {
 
   const tabs: string[] = ['all', 'using_ai', 'not_using_ai'];
 
+  if (rangeError) return <ErrorState message={rangeError} />;
   if (!dateReady || (loading && !data)) return <LoadingState label="Loading AI adoption data…" />;
   if (error) return <ErrorState message={error} />;
   if (!data) return null;
@@ -186,19 +187,34 @@ export const AiAdoptionDashboard: React.FC = () => {
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
             <Users size={14} style={{ color: 'var(--accent-primary)' }} /> Active Departments
           </span>
-          <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>{summary.active_departments}</span>
+          <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            {summary.active_departments.toLocaleString()}{' '}
+            <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-muted)' }}>
+              / {summary.total_drafts.toLocaleString()}
+            </span>
+          </span>
         </div>
         <div style={kpiCardStyle}>
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
             <CheckCircle2 size={14} style={{ color: '#22c55e' }} /> Using AI
           </span>
-          <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>{summary.departments_using_ai}</span>
+          <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            {summary.departments_using_ai.toLocaleString()}{' '}
+            <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-muted)' }}>
+              / {summary.total_drafts.toLocaleString()}
+            </span>
+          </span>
         </div>
         <div style={kpiCardStyle}>
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
             <XCircle size={14} style={{ color: '#ef4444' }} /> Not Using AI
           </span>
-          <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>{summary.departments_not_using_ai}</span>
+          <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            {summary.departments_not_using_ai.toLocaleString()}{' '}
+            <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-muted)' }}>
+              / {summary.total_drafts.toLocaleString()}
+            </span>
+          </span>
         </div>
         <div style={kpiCardStyle}>
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>

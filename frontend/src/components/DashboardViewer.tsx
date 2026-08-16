@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Dashboard, QueryResult, api } from '../services/api';
-import { FilterBar, DashboardFilters, computeDateRange } from './FilterBar';
+import { FilterBar, DashboardFilters } from './FilterBar';
 import { WidgetCard } from './WidgetCard';
 import { X, AlertCircle } from 'lucide-react';
 
@@ -34,20 +34,24 @@ export const DashboardViewer: React.FC<DashboardViewerProps> = ({ dashboard }) =
   // a double round of queries (browser dates → server dates).
   useEffect(() => {
     let active = true;
-    api.getServerDate()
-      .then((dateStr) => {
+    // Range arithmetic is resolved by the backend so it matches the dates the
+    // SQL layer will use; see api.getDateRange().
+    api.getDateRange('week', 1)
+      .then((range) => {
         if (!active) return;
-        setServerDate(dateStr);
-        const dates = computeDateRange('week', 1, dateStr);
-        setFilters((prev) => ({ ...prev, ...dates }));
+        setServerDate(range.server_date);
+        setFilters((prev) => ({
+          ...prev,
+          start_date: range.start_date,
+          end_date: range.end_date,
+        }));
         setServerDateLoaded(true);
       })
       .catch((err) => {
-        console.warn('Failed to fetch server date, using browser time:', err);
+        console.warn('Failed to resolve date range:', err);
         if (!active) return;
-        // Fallback to browser dates
-        const dates = computeDateRange('week', 1);
-        setFilters((prev) => ({ ...prev, ...dates }));
+        // Widgets send range_type/periods_back, which the backend resolves
+        // server-side, so they still query the right window without dates here.
         setServerDateLoaded(true);
       });
     return () => { active = false; };

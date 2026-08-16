@@ -339,7 +339,7 @@ const BillabilityView: React.FC<{ stats: AiBillabilityStat | null }> = ({ stats 
 // ---------------------------------------------------------------------------
 
 export const AiOutcomesDashboard: React.FC = () => {
-  const { serverDate, startDate, endDate, dateReady, setStartDate, setEndDate, defaultRangeType } = useAiDateRange();
+  const { serverDate, startDate, endDate, dateReady, rangeError, setStartDate, setEndDate, defaultRangeType } = useAiDateRange();
   const [departmentId, setDepartmentId] = useState<number | undefined>(undefined);
   const [businessOutcome, setBusinessOutcome] = useState<string | undefined>(undefined);
 
@@ -401,6 +401,7 @@ export const AiOutcomesDashboard: React.FC = () => {
     };
   }, [filters, dateReady, refreshKey]);
 
+  if (rangeError) return <ErrorState message={rangeError} />;
   if (!dateReady || (loading && !summary)) return <LoadingState label="Loading AI outcomes data…" />;
   if (error) return <ErrorState message={error} />;
   if (!summary) return null;

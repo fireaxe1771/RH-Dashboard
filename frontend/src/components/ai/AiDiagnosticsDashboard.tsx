@@ -301,7 +301,7 @@ const AgentStatsView: React.FC<{ stats: AiAgentStat[] }> = ({ stats }) => {
 // ---------------------------------------------------------------------------
 
 export const AiDiagnosticsDashboard: React.FC = () => {
-  const { serverDate, startDate, endDate, dateReady, setStartDate, setEndDate, defaultRangeType } = useAiDateRange();
+  const { serverDate, startDate, endDate, dateReady, rangeError, setStartDate, setEndDate, defaultRangeType } = useAiDateRange();
   const [departmentId, setDepartmentId] = useState<number | undefined>(undefined);
 
   const [summary, setSummary] = useState<AiDiagnosticsSummary | null>(null);
@@ -357,6 +357,7 @@ export const AiDiagnosticsDashboard: React.FC = () => {
     return () => { active = false; };
   }, [filters, dateReady, refreshKey]);
 
+  if (rangeError) return <ErrorState message={rangeError} />;
   if (!dateReady || (loading && !summary)) return <LoadingState label="Loading AI diagnostics…" />;
   if (error) return <ErrorState message={error} />;
   if (!summary) return null;
