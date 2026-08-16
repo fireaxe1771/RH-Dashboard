@@ -20,12 +20,13 @@ import {
   AiDepartmentOutcomeStat,
   AiBillabilityStat,
 } from '../../services/aiAnalyticsApi';
-import { api } from '../../services/api';
 import { billingStyles, LoadingState, ErrorState, EmptyState, formatPercent } from '../billing/shared';
-import { computeDateRange } from '../FilterBar';
 import { AiAnalyticsFilterBar } from './AiAnalyticsFilterBar';
 import { AiInvoiceCohortGrid } from './AiInvoiceCohortGrid';
 import { AiInvoiceTrace } from './AiInvoiceTrace';
+import { SyncHealthIndicator } from './SyncHealthIndicator';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import { useAiDateRange } from '../../hooks/useAiDateRange';
 
 // ---------------------------------------------------------------------------
 // KPI Card
@@ -338,10 +339,7 @@ const BillabilityView: React.FC<{ stats: AiBillabilityStat | null }> = ({ stats 
 // ---------------------------------------------------------------------------
 
 export const AiOutcomesDashboard: React.FC = () => {
-  const [serverDate, setServerDate] = useState<string | undefined>(undefined);
-  const [dateReady, setDateReady] = useState(false);
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const { serverDate, startDate, endDate, dateReady, rangeError, setStartDate, setEndDate, defaultRangeType } = useAiDateRange();
   const [departmentId, setDepartmentId] = useState<number | undefined>(undefined);
   const [businessOutcome, setBusinessOutcome] = useState<string | undefined>(undefined);
 
@@ -354,28 +352,9 @@ export const AiOutcomesDashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [selectedClaimId, setSelectedClaimId] = useState<number | null>(null);
 
-  // Fetch the database server date once on mount, then compute the initial
-  // date range (current month) so queries align with SQL Server's GETDATE().
-  useEffect(() => {
-    let active = true;
-    api.getServerDate()
-      .then((dateStr) => {
-        if (!active) return;
-        setServerDate(dateStr);
-        const dates = computeDateRange('month', 0, dateStr);
-        setStartDate(dates.start_date);
-        setEndDate(dates.end_date);
-        setDateReady(true);
-      })
-      .catch(() => {
-        if (!active) return;
-        const dates = computeDateRange('month', 0);
-        setStartDate(dates.start_date);
-        setEndDate(dates.end_date);
-        setDateReady(true);
-      });
-    return () => { active = false; };
-  }, []);
+  // Auto-refresh every 30s so projection changes from the worker are visible
+  // without a manual page reload.
+  const refreshKey = useAutoRefresh(30000);
 
   const filters: AiAnalyticsFilters = useMemo(
     () => ({
@@ -420,8 +399,9 @@ export const AiOutcomesDashboard: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [filters, dateReady]);
+  }, [filters, dateReady, refreshKey]);
 
+  if (rangeError) return <ErrorState message={rangeError} />;
   if (!dateReady || (loading && !summary)) return <LoadingState label="Loading AI outcomes data…" />;
   if (error) return <ErrorState message={error} />;
   if (!summary) return null;
@@ -432,13 +412,16 @@ export const AiOutcomesDashboard: React.FC = () => {
 
   return (
     <div style={billingStyles.page}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
+        <SyncHealthIndicator />
+      </div>
       <AiAnalyticsFilterBar
         startDate={startDate}
         endDate={endDate}
         onStartDateChange={setStartDate}
         onEndDateChange={setEndDate}
         serverDate={serverDate}
-        defaultRangeType="month"
+        defaultRangeType={defaultRangeType}
         defaultPeriodsBack={0}
         departmentId={departmentId}
         onDepartmentIdChange={setDepartmentId}

@@ -211,6 +211,64 @@ class TestBillingSettingsValidation:
             s.validate_billing_settings()
 
 
+class TestWorkerSettingsValidation:
+    """Tests for AI Analytics Worker settings validation (config.py)."""
+
+    def test_validate_settings_passes_with_default_worker_values(self, fresh_settings):
+        """Default worker settings (worker disabled) should not raise."""
+        fresh_settings.validate_settings()
+
+    def test_validate_settings_passes_when_worker_enabled(self, fresh_settings):
+        """Enabling the worker with valid settings should not raise."""
+        fresh_settings.AI_ANALYTICS_WORKER_ENABLED = True
+        fresh_settings.validate_settings()
+
+    def test_validate_settings_rejects_schema_version_below_one(self):
+        s = SettingsStub(AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION=0)
+        with pytest.raises(ValueError, match="AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION"):
+            s.validate_settings()
+
+    def test_validate_settings_rejects_negative_debounce(self):
+        s = SettingsStub(WORKER_DEBOUNCE_SECONDS=-1.0)
+        with pytest.raises(ValueError, match="WORKER_DEBOUNCE_SECONDS"):
+            s.validate_settings()
+
+    def test_validate_settings_rejects_zero_max_claims_per_cycle(self):
+        s = SettingsStub(WORKER_MAX_CLAIMS_PER_CYCLE=0)
+        with pytest.raises(ValueError, match="WORKER_MAX_CLAIMS_PER_CYCLE"):
+            s.validate_settings()
+
+    def test_validate_settings_rejects_zero_source_query_timeout(self):
+        s = SettingsStub(WORKER_SOURCE_QUERY_TIMEOUT_MS=0)
+        with pytest.raises(ValueError, match="WORKER_SOURCE_QUERY_TIMEOUT_MS"):
+            s.validate_settings()
+
+    def test_validate_settings_rejects_zero_reconciliation_interval(self):
+        s = SettingsStub(WORKER_RECONCILIATION_INTERVAL_MINUTES=0)
+        with pytest.raises(ValueError, match="WORKER_RECONCILIATION_INTERVAL_MINUTES"):
+            s.validate_settings()
+
+    def test_validate_settings_rejects_zero_backfill_batch_size(self):
+        s = SettingsStub(WORKER_BACKFILL_BATCH_SIZE=0)
+        with pytest.raises(ValueError, match="WORKER_BACKFILL_BATCH_SIZE"):
+            s.validate_settings()
+
+    def test_validate_settings_rejects_negative_max_retries(self):
+        s = SettingsStub(WORKER_MAX_RETRIES=-1)
+        with pytest.raises(ValueError, match="WORKER_MAX_RETRIES"):
+            s.validate_settings()
+
+    def test_validate_settings_rejects_zero_dead_letter_threshold(self):
+        s = SettingsStub(WORKER_DEAD_LETTER_THRESHOLD=0)
+        with pytest.raises(ValueError, match="WORKER_DEAD_LETTER_THRESHOLD"):
+            s.validate_settings()
+
+    def test_validate_settings_rejects_empty_worker_version(self):
+        s = SettingsStub(AI_ANALYTICS_WORKER_VERSION="")
+        with pytest.raises(ValueError, match="AI_ANALYTICS_WORKER_VERSION"):
+            s.validate_settings()
+
+
 class SettingsStub:
     """Minimal stub that mimics config.Settings for validation method testing."""
     PORT = 8001
@@ -245,6 +303,17 @@ class SettingsStub:
     BILLING_SYNC_ENABLED = False
     BILLING_DAILY_SYNC_HOUR = 2
     BILLING_HISTORY_MONTHS = 12
+    # --- AI Analytics Worker ---
+    AI_ANALYTICS_WORKER_ENABLED = False
+    AI_ANALYTICS_WORKER_VERSION = "0.1.0"
+    AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION = 1
+    WORKER_DEBOUNCE_SECONDS = 2.0
+    WORKER_MAX_CLAIMS_PER_CYCLE = 100
+    WORKER_SOURCE_QUERY_TIMEOUT_MS = 5000
+    WORKER_RECONCILIATION_INTERVAL_MINUTES = 30
+    WORKER_BACKFILL_BATCH_SIZE = 500
+    WORKER_MAX_RETRIES = 3
+    WORKER_DEAD_LETTER_THRESHOLD = 3
 
     def __init__(self, **overrides):
         for key, value in overrides.items():

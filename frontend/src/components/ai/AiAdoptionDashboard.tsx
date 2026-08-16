@@ -9,11 +9,11 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { aiAdoptionApi, AiAdoptionResponse } from '../../services/aiAdoptionApi';
-import { api } from '../../services/api';
 import { exportToCsv, exportToExcel } from '../../utils/export';
 import { billingStyles, LoadingState, ErrorState } from '../billing/shared';
-import { computeDateRange } from '../FilterBar';
 import { AiAnalyticsFilterBar } from './AiAnalyticsFilterBar';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import { useAiDateRange } from '../../hooks/useAiDateRange';
 
 const statusLabels: Record<string, string> = {
   all: 'All Departments',
@@ -43,38 +43,16 @@ const kpiCardStyle: React.CSSProperties = {
 };
 
 export const AiAdoptionDashboard: React.FC = () => {
-  const [serverDate, setServerDate] = useState<string | undefined>(undefined);
-  const [dateReady, setDateReady] = useState(false);
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const { serverDate, startDate, endDate, dateReady, rangeError, setStartDate, setEndDate, defaultRangeType } = useAiDateRange();
   const [limit, setLimit] = useState(50);
   const [aiStatus, setAiStatus] = useState<string>('all');
   const [data, setData] = useState<AiAdoptionResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch the database server date once on mount, then compute the initial
-  // date range (current week) so queries align with SQL Server's GETDATE().
-  useEffect(() => {
-    let active = true;
-    api.getServerDate()
-      .then((dateStr) => {
-        if (!active) return;
-        setServerDate(dateStr);
-        const dates = computeDateRange('week', 0, dateStr);
-        setStartDate(dates.start_date);
-        setEndDate(dates.end_date);
-        setDateReady(true);
-      })
-      .catch(() => {
-        if (!active) return;
-        const dates = computeDateRange('week', 0);
-        setStartDate(dates.start_date);
-        setEndDate(dates.end_date);
-        setDateReady(true);
-      });
-    return () => { active = false; };
-  }, []);
+  // Auto-refresh every 30s so the dashboard picks up new SQL drafts and
+  // MongoDB projection changes without a manual page reload.
+  const refreshKey = useAutoRefresh(30000);
 
   useEffect(() => {
     if (!dateReady) return;
@@ -98,7 +76,7 @@ export const AiAdoptionDashboard: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [startDate, endDate, limit, aiStatus, dateReady]);
+  }, [startDate, endDate, limit, aiStatus, dateReady, refreshKey]);
 
   const columns = useMemo(
     () => [
@@ -138,6 +116,7 @@ export const AiAdoptionDashboard: React.FC = () => {
 
   const tabs: string[] = ['all', 'using_ai', 'not_using_ai'];
 
+  if (rangeError) return <ErrorState message={rangeError} />;
   if (!dateReady || (loading && !data)) return <LoadingState label="Loading AI adoption data…" />;
   if (error) return <ErrorState message={error} />;
   if (!data) return null;
@@ -152,7 +131,7 @@ export const AiAdoptionDashboard: React.FC = () => {
         onStartDateChange={setStartDate}
         onEndDateChange={setEndDate}
         serverDate={serverDate}
-        defaultRangeType="week"
+        defaultRangeType={defaultRangeType}
         defaultPeriodsBack={0}
       />
 
@@ -208,19 +187,34 @@ export const AiAdoptionDashboard: React.FC = () => {
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
             <Users size={14} style={{ color: 'var(--accent-primary)' }} /> Active Departments
           </span>
-          <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>{summary.active_departments}</span>
+          <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            {summary.active_departments.toLocaleString()}{' '}
+            <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-muted)' }}>
+              / {summary.total_drafts.toLocaleString()}
+            </span>
+          </span>
         </div>
         <div style={kpiCardStyle}>
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
             <CheckCircle2 size={14} style={{ color: '#22c55e' }} /> Using AI
           </span>
-          <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>{summary.departments_using_ai}</span>
+          <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            {summary.departments_using_ai.toLocaleString()}{' '}
+            <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-muted)' }}>
+              / {summary.ai_department_drafts.toLocaleString()}
+            </span>
+          </span>
         </div>
         <div style={kpiCardStyle}>
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
             <XCircle size={14} style={{ color: '#ef4444' }} /> Not Using AI
           </span>
-          <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>{summary.departments_not_using_ai}</span>
+          <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            {summary.departments_not_using_ai.toLocaleString()}{' '}
+            <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-muted)' }}>
+              / {summary.non_ai_department_drafts.toLocaleString()}
+            </span>
+          </span>
         </div>
         <div style={kpiCardStyle}>
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>

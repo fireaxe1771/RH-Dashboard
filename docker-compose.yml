@@ -1,55 +1,103 @@
-version: '3.8'
+# Local Docker Desktop development stack for the RecoveryHub Dashboard.
+#
+# Driven by dev-start.ps1 — see that script for the supported flags.
+#
+# The project name is pinned so the MongoDB volume always resolves to
+# `rhdashboard_mongo-data`. Compose derives the project name from the
+# directory otherwise, and this directory ("RH Dashboard") contains a space,
+# which makes that derivation fragile. Pinning it also preserves the existing
+# volume created by the pre-Compose version of dev-start.ps1.
+name: rhdashboard
 
 services:
-  # Local Metadata Store (MongoDB) to isolate development configs from production
+  # Local metadata store. Only used when MONGODB_URI in .env points here
+  # (mongodb://mongo:27017); when it points at Atlas the backend talks to
+  # Atlas directly and this container is just an idle local scratch DB.
   mongo:
     image: mongo:6.0
-    container_name: rh-dashboard-mongo
+    container_name: rh-dashboard-mongo-dev
     ports:
       - "27017:27017"
     volumes:
       - mongo-data:/data/db
     networks:
       - rh-network
+    # Gates `depends_on` below. Without this, Compose only waits for the
+    # container to start, not for mongod to accept connections, so the
+    # backend can lose a startup race against an un-ready database.
+    #
+    # Every probe opens a mongosh connection, which mongod logs. A short
+    # steady-state interval therefore floods `dev-start.ps1 -Logs`, so the
+    # frequent polling is confined to start_interval (used only during
+    # start_period, while the gate actually matters).
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
+      interval: 60s
+      start_interval: 1s
+      start_period: 30s
+      timeout: 5s
+      retries: 3
 
-  # Python FastAPI server
+  # Python FastAPI server.
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: rh-dashboard-backend
+    container_name: rh-dashboard-backend-dev
     ports:
+      # PORT comes from .env (8001) and must match the published port here,
+      # since the Dockerfile CMD binds ${PORT:-8000}.
       - "8001:8001"
+    # All Azure/Mongo/AI configuration comes from .env. MONGODB_URI and
+    # MONGODB_DB_NAME are deliberately NOT overridden here: doing so silently
+    # repointed the backend at the empty local container and away from the
+    # Atlas cluster configured in .env. To use the local container instead,
+    # set MONGODB_URI=mongodb://mongo:27017 in .env.
     env_file:
       - .env
-    environment:
-      # Point to local mongo container for application metadata store
-      - MONGODB_URI=mongodb://mongo:27017
-      - MONGODB_DB_NAME=recoveryhub_dashboard_dev
     depends_on:
-      - mongo
+      mongo:
+        condition: service_healthy
     networks:
       - rh-network
+    # This app exposes no /health route, so /docs is the cheapest reliable
+    # 200. Gates the frontend's depends_on. uvicorn access-logs every probe,
+    # so the interval is kept long for the same reason as mongo above.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8001/docs"]
+      interval: 60s
+      start_interval: 2s
+      start_period: 60s
+      timeout: 5s
+      retries: 3
 
-  # React Web application
+  # React web application, served as a static bundle by nginx.
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      # Vite inlines these at build time, so they must be build args rather
+      # than runtime env vars — a static bundle cannot read container env.
+      #
+      # VITE_DEV_AUTH_BYPASS is intentionally absent: frontend/Dockerfile
+      # deliberately does not declare it as an ARG so it can never be baked
+      # into an image. Passing it here had no effect (Docker ignores build
+      # args the Dockerfile does not declare). Do not re-add it without the
+      # security review called for in frontend/Dockerfile.
       args:
-        VITE_AZURE_CLIENT_ID: ${VITE_AZURE_CLIENT_ID}
-        VITE_AZURE_TENANT_ID: ${AZURE_TENANT_ID}
-        VITE_DEV_AUTH_BYPASS: ${VITE_DEV_AUTH_BYPASS}
-    container_name: rh-dashboard-frontend
+        VITE_AZURE_CLIENT_ID: ${VITE_AZURE_CLIENT_ID:?VITE_AZURE_CLIENT_ID must be set in .env}
+        VITE_AZURE_TENANT_ID: ${VITE_AZURE_TENANT_ID:?VITE_AZURE_TENANT_ID must be set in .env}
+    container_name: rh-dashboard-frontend-dev
     ports:
-      - "3001:80"
+      - "3000:80"
     environment:
-      - VITE_AZURE_CLIENT_ID=${VITE_AZURE_CLIENT_ID}
-      - VITE_AZURE_TENANT_ID=${AZURE_TENANT_ID}
-      # nginx proxies /api/* to the backend container on the shared network
+      # nginx proxies /api/* to the backend container over the shared network.
+      # This is a real runtime value (envsubst renders it into nginx.conf at
+      # container start), unlike the VITE_* vars above.
       - BACKEND_URL=http://backend:8001
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - rh-network
 

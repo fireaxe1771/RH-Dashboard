@@ -19,6 +19,7 @@ from .models import (
 )
 from . import sql_repository as sql_repo
 from . import mongo_repository as mongo_repo
+from . import projection_read_repository as projection_repo
 from .normalization import (
     classify_writeback_status,
     calculate_retry_count,
@@ -30,6 +31,8 @@ from .normalization import (
     AI_NOT_ENABLED_STATUSES,
 )
 from .outcome_service import _load_normalized_cohort, _apply_filters, _validate_date_span
+from config import settings
+from database import db_manager
 
 logger = logging.getLogger(__name__)
 
@@ -272,57 +275,88 @@ async def get_agent_stats(
     ai_db,
     filters: AiAnalyticsFilters,
 ) -> List[AiAgentStat]:
-    """Agent execution statistics from ai_agent_conversations."""
+    """Agent execution statistics from ai_agent_conversations.
+
+    When ``settings.AI_ANALYTICS_USE_PROJECTION`` is true (Phase 10),
+    aggregates from the projection's ``conversation_summaries`` array
+    instead of reading the ``ai_agent_conversations`` collection
+    directly. This eliminates the batch cross-cluster read. v1
+    projections (no ``conversation_summaries``) contribute nothing —
+    stats are incomplete until all projections are refreshed to v2,
+    but never incorrect.
+    """
     _validate_date_span(filters.start_date, filters.end_date)
 
-    # For agent stats, we query the conversations collection directly
-    # Build a date filter if provided
-    match_stage: Dict[str, Any] = {}
-    if filters.start_date or filters.end_date:
-        date_filter: Dict[str, Any] = {}
-        if filters.start_date:
-            date_filter["$gte"] = filters.start_date
-        if filters.end_date:
-            try:
-                end_exclusive = (
-                    datetime.fromisoformat(filters.end_date) + timedelta(days=1)
-                ).date().isoformat()
-            except ValueError:
-                end_exclusive = filters.end_date
-            date_filter["$lt"] = end_exclusive
-        match_stage["created_at"] = date_filter
+    if settings.AI_ANALYTICS_USE_PROJECTION:
+        try:
+            results = await projection_repo.aggregate_agent_stats_from_projections(
+                db_manager.db,
+                start_date=filters.start_date,
+                end_date=filters.end_date,
+            )
+        except Exception as e:
+            logger.error(f"Failed to fetch agent stats from projection: {e}")
+            return []
+    else:
+        # Direct-read path: aggregate on the conversations collection.
+        match_stage: Dict[str, Any] = {}
+        if filters.start_date or filters.end_date:
+            date_filter: Dict[str, Any] = {}
+            if filters.start_date:
+                date_filter["$gte"] = filters.start_date
+            if filters.end_date:
+                try:
+                    end_exclusive = (
+                        datetime.fromisoformat(filters.end_date) + timedelta(days=1)
+                    ).date().isoformat()
+                except ValueError:
+                    end_exclusive = filters.end_date
+                date_filter["$lt"] = end_exclusive
+            match_stage["created_at"] = date_filter
 
-    try:
-        collection = ai_db[mongo_repo.AGENT_CONVERSATIONS_COLLECTION]
-        pipeline = [
-            {"$match": match_stage} if match_stage else {"$match": {}},
-            {
-                "$group": {
-                    "_id": {
-                        "agent": "$agent",
-                        "status": "$status",
-                        "processing_stage": "$processing_stage",
-                        "request_type": "$request_type",
-                    },
-                    "count": {"$sum": 1},
-                }
-            },
-            {"$sort": {"count": -1}},
-        ]
-        cursor = collection.aggregate(pipeline)
-        results = await cursor.to_list(length=1000)
-    except Exception as e:
-        logger.error(f"Failed to fetch agent stats: {e}")
-        return []
+        try:
+            collection = ai_db[mongo_repo.AGENT_CONVERSATIONS_COLLECTION]
+            pipeline = [
+                {"$match": match_stage} if match_stage else {"$match": {}},
+                {
+                    "$group": {
+                        "_id": {
+                            "agent": "$agent",
+                            "status": "$status",
+                            "processing_stage": "$processing_stage",
+                            "request_type": "$request_type",
+                        },
+                        "count": {"$sum": 1},
+                    }
+                },
+                {"$sort": {"count": -1}},
+            ]
+            cursor = collection.aggregate(pipeline)
+            raw_results = await cursor.to_list(length=1000)
+        except Exception as e:
+            logger.error(f"Failed to fetch agent stats: {e}")
+            return []
+
+        # Convert direct-read results to the same shape as the projection
+        # aggregation results.
+        results = []
+        for r in raw_results:
+            group = r.get("_id", {})
+            results.append({
+                "agent": group.get("agent") or "unknown",
+                "status": group.get("status") or "unknown",
+                "processing_stage": group.get("processing_stage") or "unknown",
+                "request_type": group.get("request_type") or "unknown",
+                "count": r.get("count", 0),
+            })
 
     stats: List[AiAgentStat] = []
     for r in results:
-        group = r.get("_id", {})
         stats.append(AiAgentStat(
-            agent=group.get("agent", "unknown"),
-            status=group.get("status", "unknown"),
-            processing_stage=group.get("processing_stage", "unknown"),
-            request_type=group.get("request_type", "unknown"),
+            agent=r.get("agent", "unknown"),
+            status=r.get("status", "unknown"),
+            processing_stage=r.get("processing_stage", "unknown"),
+            request_type=r.get("request_type", "unknown"),
             count=r.get("count", 0),
         ))
 

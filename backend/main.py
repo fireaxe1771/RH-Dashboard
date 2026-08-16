@@ -9,7 +9,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from bson import ObjectId
 from datetime import UTC, datetime
@@ -31,6 +31,9 @@ from billing.sync_service import run_full_backfill
 from billing_routes import billing_router
 from ai_adoption_routes import ai_adoption_router
 from ai_analytics_routes import ai_analytics_router
+from ai_analytics_worker.config import worker_config
+from ai_analytics_worker.routes import worker_router
+from ai_analytics_worker import runtime as worker_runtime
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -39,6 +42,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handles startup and shutdown database connections lifespan events."""
+
     try:
         # Establish connection to application metadata database
         db_manager.connect()
@@ -53,14 +57,32 @@ async def lifespan(app: FastAPI):
             logger.info("Billing sync scheduler started.")
             # Run initial backfill in background (no-op if already populated)
             asyncio.create_task(_run_billing_backfill_if_needed())
+        # Start the AI Analytics Worker if enabled via env. The worker runs
+        # as a background asyncio task in this event loop (Phase 0 plan
+        # Section 1.1). Phase 5: change-stream listener that processes
+        # events in near-real-time. The runtime controller centralises the
+        # task management so the /worker/start endpoint can also start it.
+        if worker_config.enabled:
+            await worker_runtime.start_worker()
+            logger.info("AI Analytics Worker task started.")
+            # Run an initial backfill in the background if the projection
+            # cache is empty — the change-stream listener only catches new
+            # events, so a fresh deployment needs a one-time historical scan
+            # to populate ai_invoice_analytics from existing ai_line_items.
+            asyncio.create_task(_run_worker_backfill_if_needed())
     except Exception as e:
         logger.critical(f"Database Initialization Failed during startup: {e}")
         # Fail loudly to prevent running app in unconfigured state
         raise e
-    
+
     yield
-    
+
     # Clean disconnect on shutdown
+    # Stop the AI Analytics Worker first — it must drain within
+    # CANCELLATION_TIMEOUT_SECONDS (5s) per the Phase 0 plan Section 1.1.4.
+    logger.info("Stopping AI Analytics Worker task...")
+    await worker_runtime.shutdown()
+    logger.info("AI Analytics Worker task stopped.")
     if settings.BILLING_SYNC_ENABLED and billing_scheduler.running:
         logger.info("Shutting down billing scheduler, waiting for in-flight jobs to complete...")
         billing_scheduler.shutdown(wait=True)
@@ -78,6 +100,32 @@ async def _run_billing_backfill_if_needed() -> None:
             await run_full_backfill(db, settings.BILLING_HISTORY_MONTHS, "startup_backfill")
     except Exception as e:
         logger.error(f"Billing backfill check failed: {e}")
+
+
+async def _run_worker_backfill_if_needed() -> None:
+    """Checks if the AI analytics projection is empty; runs backfill if so.
+
+    The change-stream listener only processes new events, so a fresh
+    deployment (or a projection collection that was cleared) needs a
+    one-time historical scan to populate ``ai_invoice_analytics`` from
+    existing ``ai_line_items`` records. This runs as a background task
+    so it does not block startup.
+    """
+    try:
+        db = db_manager.db
+        count = await db[worker_config.PROJECTIONS_COLLECTION].count_documents({})
+        if count == 0:
+            logger.info(
+                "AI analytics projection is empty. Starting historical backfill..."
+            )
+            await worker_runtime.start_backfill()
+        else:
+            logger.info(
+                "AI analytics projection already populated (%d docs). Skipping backfill.",
+                count,
+            )
+    except Exception as e:
+        logger.error(f"Worker backfill check failed: {e}")
 
 app = FastAPI(
     title="RecoveryHub Dashboard Portal API",
@@ -100,6 +148,11 @@ app.add_middleware(
 app.include_router(billing_router, prefix="/api/billing")
 app.include_router(ai_adoption_router, prefix="/api/ai-adoption")
 app.include_router(ai_analytics_router, prefix="/api")
+# AI Analytics Worker health/operations endpoints (Phase 8). Mounted under
+# /api/ai-analytics/worker so they sit alongside the existing AI analytics
+# routes. /health and /ready are unauthenticated container probes; /status
+# is auth-protected via get_current_user in the route definition.
+app.include_router(worker_router, prefix="/api/ai-analytics/worker")
 
 def serialize_mongo_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Helper to convert MongoDB ObjectId to JSON-serializable string identifier."""
@@ -664,6 +717,44 @@ def get_server_date():
         return {"date": server_date.isoformat()}
     except Exception as e:
         logger.error(f"Failed to fetch server date: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@app.get(
+    "/api/date-range",
+    dependencies=[Depends(get_current_user)]
+)
+def get_date_range(
+    range_type: str = Query(..., description="day | week | month | year"),
+    periods_back: int = Query(0, ge=0, description="0 = current period, 1 = previous, etc."),
+):
+    """Resolve a named period into concrete start/end dates.
+
+    This is the **single source of truth** for what "current week" (or month,
+    or year) means. ``target_db.compute_date_range`` is the one implementation;
+    the frontend calls this endpoint rather than reimplementing the arithmetic,
+    so the two can never disagree about period boundaries. Ranges are computed
+    against SQL Server's ``GETDATE()``, not the browser clock.
+    """
+    if range_type not in {"day", "week", "month", "year"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="range_type must be one of: day, week, month, year",
+        )
+    try:
+        server_date = target_db.get_server_date()
+        start_date, end_date = target_db.compute_date_range(
+            server_date, range_type, periods_back,
+        )
+        return {
+            "server_date": server_date.isoformat(),
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+    except Exception as e:
+        logger.error(f"Failed to compute date range: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)

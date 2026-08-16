@@ -287,6 +287,92 @@ export interface AiInvoiceTrace {
   data_complete: boolean;
 }
 
+// Sync health types (Phase 11)
+
+export type SyncStatus =
+  | 'synced'
+  | 'syncing'
+  | 'catching-up'
+  | 'divergence-detected'
+  | 'error'
+  | 'stopped';
+
+export interface AiSyncIntegrity {
+  last_check_at: string | null;
+  check_in_progress: boolean;
+  source_count: number;
+  projection_count: number;
+  count_mismatch: boolean;
+  divergent_count: number;
+  missing_count: number;
+  last_error: string | null;
+}
+
+export interface AiSyncMetrics {
+  events_received: number;
+  claims_refreshed: number;
+  projections_created: number;
+  projections_updated: number;
+  dead_letters_created: number;
+  sync_integrity_checks: number;
+  sync_integrity_divergent_found: number;
+}
+
+export interface AiSyncHealth {
+  status: SyncStatus;
+  worker_enabled: boolean;
+  worker_status: string;
+  last_started_at: string | null;
+  last_successful_event_at: string | null;
+  last_checkpoint_at: string | null;
+  consecutive_error_count: number;
+  sync_integrity: AiSyncIntegrity;
+  metrics: AiSyncMetrics;
+  last_error: string | null;
+}
+
+export interface AiDeadLetter {
+  _id: string;
+  claim_id: number | null;
+  source_event_type: string;
+  error_type: string;
+  error_message: string;
+  first_failed_at: string;
+  last_failed_at: string;
+  attempt_count: number;
+  worker_version: string;
+  resolved: boolean;
+}
+
+export interface AiWorkerHealth {
+  status: string;
+  last_started_at: string | null;
+  last_completed_at: string | null;
+  last_checkpoint_at: string | null;
+  last_successful_event_at: string | null;
+  consecutive_error_count: number;
+  last_error: string | null;
+}
+
+export interface AiWorkerMetrics {
+  events_received: number;
+  claims_refreshed: number;
+  projections_created: number;
+  projections_updated: number;
+  dead_letters_created: number;
+  reconciliation_runs: number;
+  claim_refresh_errors: number;
+  claim_refresh_retries: number;
+}
+
+export interface AiWorkerStatus {
+  enabled: boolean;
+  health: AiWorkerHealth;
+  metrics: AiWorkerMetrics;
+  sync_integrity: AiSyncIntegrity;
+  backfill_running?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // API client
 // ---------------------------------------------------------------------------
@@ -395,5 +481,39 @@ export const aiAnalyticsApi = {
 
   getInvoiceTrace: (claimId: number): Promise<AiInvoiceTrace> => {
     return aiAnalyticsFetch<AiInvoiceTrace>(`/invoices/${claimId}/trace`);
+  },
+
+  // Sync health (Phase 11)
+
+  getSyncHealth: (): Promise<AiSyncHealth> => {
+    return aiAnalyticsFetch<AiSyncHealth>(`/worker/sync-health`);
+  },
+
+  // Dead-letters (Phase 11)
+
+  getDeadLetters: (limit: number = 100): Promise<AiDeadLetter[]> => {
+    return aiAnalyticsFetch<AiDeadLetter[]>(`/worker/dead-letters?limit=${limit}`);
+  },
+
+  resolveDeadLetter: (claimId: number): Promise<{ resolved: boolean; claim_id: number; updated: number }> => {
+    return aiAnalyticsFetch(`/worker/dead-letters/${claimId}/resolve`, { method: 'POST' });
+  },
+
+  // Runtime control — start/stop the worker and trigger backfill
+
+  startWorker: (): Promise<{ action: string; running: boolean }> => {
+    return aiAnalyticsFetch('/worker/start', { method: 'POST' });
+  },
+
+  stopWorker: (): Promise<{ action: string; running: boolean }> => {
+    return aiAnalyticsFetch('/worker/stop', { method: 'POST' });
+  },
+
+  triggerBackfill: (): Promise<{ action: string; backfill_running: boolean }> => {
+    return aiAnalyticsFetch('/worker/backfill', { method: 'POST' });
+  },
+
+  getWorkerStatus: (): Promise<AiWorkerStatus> => {
+    return aiAnalyticsFetch<AiWorkerStatus>('/worker/status');
   },
 };

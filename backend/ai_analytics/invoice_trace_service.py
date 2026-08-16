@@ -3,6 +3,18 @@
 Combines all available SQL and Mongo data for a single claim into a
 comprehensive trace: business outcome, AI processing, conversations,
 line items, and comparison.
+
+Phase 10: When ``settings.AI_ANALYTICS_USE_PROJECTION`` is true, the
+AI summary fields (line items with resources, review_msg, timestamps,
+processing status, etc.) are read from the worker's
+``ai_invoice_analytics`` projection instead of fetching the raw
+``ai_line_items`` document from RecoveryHub_AI Mongo. This eliminates
+one cross-cluster read. Full conversation documents (with input_data,
+incident_json, results, output_data) are still fetched from
+RecoveryHub_AI Mongo because the projection only stores conversation
+summaries (not the large payload fields). When the flag is false,
+behaviour is identical to pre-Phase-10 (direct read from
+RecoveryHub_AI Mongo for both ai_line_items and conversations).
 """
 
 from __future__ import annotations
@@ -13,6 +25,7 @@ from typing import Any, Dict, List, Optional
 from .models import AiInvoiceTrace, AiConversationRecord, AiLineItemEntry, AiFinalLineItemEntry, AiLineItemComparison
 from . import sql_repository as sql_repo
 from . import mongo_repository as mongo_repo
+from . import projection_read_repository as projection_repo
 from .normalization import (
     classify_business_outcome,
     classify_writeback_status,
@@ -22,6 +35,8 @@ from .normalization import (
     CANCELLED_LOG_TEXT,
 )
 from .reason_normalization import normalize_reason
+from config import settings
+from database import db_manager
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +48,31 @@ def _serialize_datetime(val: Any) -> Optional[str]:
     if hasattr(val, "isoformat"):
         return val.isoformat()
     return str(val)
+
+
+def _conversation_records_from_summaries(
+    summaries: List[Dict[str, Any]],
+) -> List[AiConversationRecord]:
+    """Build lightweight conversation records from projection summaries.
+
+    Summary records are the intentional fallback when full conversation
+    payloads cannot be loaded from RecoveryHub_AI. Large payload fields remain
+    ``None`` rather than causing the entire trace to disappear.
+    """
+    records: List[AiConversationRecord] = []
+    for summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        records.append(AiConversationRecord(
+            conversation_id=str(summary.get("conversation_id") or ""),
+            agent=summary.get("agent"),
+            status=summary.get("status"),
+            created_at=_serialize_datetime(summary.get("created_at")),
+            processing_stage=summary.get("processing_stage"),
+            request_type=summary.get("request_type"),
+            execution_time_seconds=summary.get("execution_time_seconds"),
+        ))
+    return records
 
 
 def _extract_ai_line_items(ai_record: Dict[str, Any]) -> List[AiLineItemEntry]:
@@ -196,16 +236,41 @@ async def get_invoice_trace(ai_db, claim_id: int) -> AiInvoiceTrace:
         has_cancellation_record=has_cancellation_record,
     )
 
-    # 5. Mongo: AI line items
+    # 5. AI line items — projection (Phase 10) or direct Mongo read.
     ai_record = None
+    projection_conversation_summaries: List[Dict[str, Any]] = []
     try:
-        ai_record = await mongo_repo.get_ai_line_items_for_claim(ai_db, claim_id)
+        if settings.AI_ANALYTICS_USE_PROJECTION:
+            projection_data = await projection_repo.get_projection_for_trace(
+                db_manager.db, claim_id
+            )
+            if projection_data is None:
+                # No projection (or a pre-worker claim): use the authoritative
+                # source until the worker has produced a projection.
+                ai_record = await mongo_repo.get_ai_line_items_for_claim(
+                    ai_db, claim_id
+                )
+            else:
+                projection_conversation_summaries = projection_data.pop(
+                    "conversation_summaries", []
+                )
+                has_ai_record = projection_data.pop(
+                    "has_ai_line_item_record", True
+                )
+                # Do not treat an explicit missing-source projection as an
+                # AI record with all-null fields.
+                ai_record = projection_data if has_ai_record else None
+        else:
+            ai_record = await mongo_repo.get_ai_line_items_for_claim(ai_db, claim_id)
     except Exception as e:
         logger.error(f"Failed to fetch ai_line_items for claim {claim_id}: {e}")
         source_status["recoveryhub_ai_mongo"] = "unavailable"
         data_complete = False
 
-    # 6. Mongo: Agent conversations
+    # 6. Agent conversations. In projection mode, v2 summaries provide a
+    # usable fallback; full source documents are merged when available so
+    # forensic payload fields remain present without leaking summaries into
+    # raw_ai_record.
     conversations: List[AiConversationRecord] = []
     try:
         conv_docs = await mongo_repo.get_agent_conversations_for_claim(ai_db, claim_id)
@@ -223,8 +288,17 @@ async def get_invoice_trace(ai_db, claim_id: int) -> AiInvoiceTrace:
                 results=doc.get("results"),
                 output_data=doc.get("output_data"),
             ))
+        if not conversations and projection_conversation_summaries:
+            conversations = _conversation_records_from_summaries(
+                projection_conversation_summaries
+            )
     except Exception as e:
         logger.error(f"Failed to fetch conversations for claim {claim_id}: {e}")
+        if projection_conversation_summaries:
+            conversations = _conversation_records_from_summaries(
+                projection_conversation_summaries
+            )
+        data_complete = False
 
     # 7. SQL: Final line items
     final_line_items: List[AiFinalLineItemEntry] = []

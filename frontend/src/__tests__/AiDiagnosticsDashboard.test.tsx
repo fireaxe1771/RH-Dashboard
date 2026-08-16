@@ -17,6 +17,7 @@ vi.mock('../services/aiAnalyticsApi', () => ({
 vi.mock('../services/api', () => ({
   api: {
     getServerDate: vi.fn().mockResolvedValue('2026-08-13'),
+    getDateRange: vi.fn().mockResolvedValue({ server_date: '2026-08-13', start_date: '2026-08-09', end_date: '2026-08-15' }),
   },
 }));
 

@@ -235,12 +235,60 @@ def test_compute_date_range_week_sunday_saturday():
 
 
 def test_compute_date_range_week_current():
-    """Current week (periodsBack=0) ends on today, not Saturday."""
+    """Current week spans the full Sunday→Saturday window, not Sunday→today.
+
+    The end bound is deliberately in the future: the range is a filter
+    window, and future days simply have no rows yet. Clamping to today made
+    "current week" a single day when today was Sunday.
+    """
     from datetime import date as _date
     wednesday = _date(2026, 6, 10)  # Wednesday
     start, end = target_db.compute_date_range(wednesday, 'week', 0)
     assert start == "2026-06-07"  # Sunday
-    assert end == "2026-06-10"    # today (Wednesday)
+    assert end == "2026-06-13"    # Saturday, even though it is in the future
+
+
+def test_compute_date_range_week_current_on_sunday():
+    """On a Sunday the current week must not collapse to a single day."""
+    from datetime import date as _date
+    sunday = _date(2026, 8, 16)
+    start, end = target_db.compute_date_range(sunday, 'week', 0)
+    assert start == "2026-08-16"
+    assert end == "2026-08-22"
+    assert start != end
+
+
+def test_compute_date_range_month_current_spans_full_month():
+    """Current month runs to the last day of the month, not today."""
+    from datetime import date as _date
+    start, end = target_db.compute_date_range(_date(2026, 8, 16), 'month', 0)
+    assert start == "2026-08-01"
+    assert end == "2026-08-31"
+
+
+def test_compute_date_range_year_current_spans_full_year():
+    """Current year runs to Dec 31, not today."""
+    from datetime import date as _date
+    start, end = target_db.compute_date_range(_date(2026, 8, 16), 'year', 0)
+    assert start == "2026-01-01"
+    assert end == "2026-12-31"
+
+
+def test_end_of_day_expands_bare_date_to_last_instant():
+    """A bare end date must cover the whole final day.
+
+    Claim date columns are datetimes filtered with BETWEEN, so a bare date
+    end bound reads as midnight and drops the final day's rows entirely.
+    """
+    assert target_db.end_of_day("2026-08-16") == "2026-08-16 23:59:59.997"
+
+
+def test_end_of_day_passes_through_non_dates():
+    """Values already carrying a time, or unparseable, are returned as-is."""
+    assert target_db.end_of_day(None) is None
+    assert target_db.end_of_day("") == ""
+    assert target_db.end_of_day("2026-08-16 12:00:00") == "2026-08-16 12:00:00"
+    assert target_db.end_of_day("not-a-date") == "not-a-date"
 
 
 def test_compute_date_range_week_two_back():
