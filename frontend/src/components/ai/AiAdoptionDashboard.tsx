@@ -201,7 +201,7 @@ export const AiAdoptionDashboard: React.FC = () => {
           <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>
             {summary.departments_using_ai.toLocaleString()}{' '}
             <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-muted)' }}>
-              / {summary.total_drafts.toLocaleString()}
+              / {summary.ai_department_drafts.toLocaleString()}
             </span>
           </span>
         </div>
@@ -212,7 +212,7 @@ export const AiAdoptionDashboard: React.FC = () => {
           <span style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text-primary)' }}>
             {summary.departments_not_using_ai.toLocaleString()}{' '}
             <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-muted)' }}>
-              / {summary.total_drafts.toLocaleString()}
+              / {summary.non_ai_department_drafts.toLocaleString()}
             </span>
           </span>
         </div>
