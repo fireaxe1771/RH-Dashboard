@@ -206,4 +206,26 @@ describe('SyncHealthIndicator', () => {
       expect(screen.getByText('Missing:')).toBeInTheDocument();
     });
   });
+
+  it('should surface resolve failure inline instead of swallowing it', async () => {
+    mockGetDeadLetters.mockResolvedValue([DEAD_LETTER]);
+    mockResolveDeadLetter.mockRejectedValue(new Error('Database unavailable'));
+    render(<SyncHealthIndicator />);
+    await waitFor(() => {
+      expect(screen.getByText(/1 dead-letter/)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText(/1 dead-letter/));
+
+    await waitFor(() => {
+      expect(screen.getByText('Resolve')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Resolve'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Resolve failed:/)).toBeInTheDocument();
+      expect(screen.getByText(/Database unavailable/)).toBeInTheDocument();
+    });
+  });
 });

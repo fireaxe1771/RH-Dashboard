@@ -86,6 +86,7 @@ export const SyncHealthIndicator: React.FC = () => {
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [resolveError, setResolveError] = useState<string | null>(null);
 
   const fetchHealth = useCallback(async () => {
     try {
@@ -111,11 +112,16 @@ export const SyncHealthIndicator: React.FC = () => {
   }, [fetchHealth]);
 
   const handleResolve = useCallback(async (claimId: number) => {
+    setResolveError(null);
     try {
       await aiAnalyticsApi.resolveDeadLetter(claimId);
       void fetchHealth();
     } catch (err) {
-      // Error is surfaced via the health polling — no separate toast needed.
+      // The 30s health polling only refreshes the dead-letter list — it
+      // doesn't tell the user their resolve attempt failed. Surface the
+      // error inline so they can retry or investigate.
+      const msg = err instanceof Error ? err.message : 'Failed to resolve dead-letter';
+      setResolveError(`Claim #${claimId}: ${msg}`);
     }
   }, [fetchHealth]);
 
@@ -288,6 +294,23 @@ export const SyncHealthIndicator: React.FC = () => {
           {/* Dead-letter list */}
           {deadLetters.length > 0 && (
             <DeadLetterList deadLetters={deadLetters} onResolve={handleResolve} />
+          )}
+
+          {/* Resolve attempt error — surfaced inline because the 30s
+              health poll only refreshes the dead-letter list, not the
+              resolve attempt outcome. */}
+          {resolveError && (
+            <div
+              style={{
+                padding: '8px 10px',
+                backgroundColor: '#fee2e2',
+                borderRadius: '6px',
+                fontSize: '12px',
+                color: '#dc2626',
+              }}
+            >
+              <strong>Resolve failed:</strong> {resolveError}
+            </div>
           )}
         </div>
       )}
