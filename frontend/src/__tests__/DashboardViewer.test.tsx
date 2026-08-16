@@ -8,6 +8,7 @@ import { Dashboard } from '../services/api';
 vi.mock('../services/api', () => ({
   api: {
     getServerDate: vi.fn(),
+    getDateRange: vi.fn(),
     getDrillDownData: vi.fn(),
   },
   setAuthToken: vi.fn(),
@@ -19,7 +20,6 @@ vi.mock('../components/FilterBar', () => ({
   FilterBar: ({ filters }: { filters: any }) => (
     <div data-testid="filter-bar">FilterBar: {filters.range_type}</div>
   ),
-  computeDateRange: vi.fn(() => ({ start_date: '2026-06-01', end_date: '2026-06-07' })),
   DashboardFilters: {} as any,
 }));
 
@@ -48,13 +48,13 @@ describe('DashboardViewer', () => {
   });
 
   test('shows loading state while fetching server date', () => {
-    (api.getServerDate as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}));
+    (api.getDateRange as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}));
     render(<DashboardViewer dashboard={MOCK_DASHBOARD} />);
     expect(screen.getByText(/Loading server date/i)).toBeInTheDocument();
   });
 
   test('renders widgets after server date loads', async () => {
-    (api.getServerDate as ReturnType<typeof vi.fn>).mockResolvedValue('2026-06-07');
+    (api.getDateRange as ReturnType<typeof vi.fn>).mockResolvedValue({ server_date: '2026-06-07', start_date: '2026-05-31', end_date: '2026-06-06' });
     render(<DashboardViewer dashboard={MOCK_DASHBOARD} />);
     await waitFor(() => expect(screen.getByTestId('widget-w1')).toBeInTheDocument());
     expect(screen.getByTestId('widget-w2')).toBeInTheDocument();
@@ -62,9 +62,9 @@ describe('DashboardViewer', () => {
     expect(screen.getByText('Claims by Type')).toBeInTheDocument();
   });
 
-  test('falls back to browser date when server date fetch fails', async () => {
+  test('still renders widgets when the date-range lookup fails', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    (api.getServerDate as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network error'));
+    (api.getDateRange as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network error'));
     render(<DashboardViewer dashboard={MOCK_DASHBOARD} />);
     // Should still render widgets despite the error
     await waitFor(() => expect(screen.getByTestId('widget-w1')).toBeInTheDocument());
@@ -73,13 +73,13 @@ describe('DashboardViewer', () => {
   });
 
   test('renders FilterBar component', async () => {
-    (api.getServerDate as ReturnType<typeof vi.fn>).mockResolvedValue('2026-06-07');
+    (api.getDateRange as ReturnType<typeof vi.fn>).mockResolvedValue({ server_date: '2026-06-07', start_date: '2026-05-31', end_date: '2026-06-06' });
     render(<DashboardViewer dashboard={MOCK_DASHBOARD} />);
     await waitFor(() => expect(screen.getByTestId('filter-bar')).toBeInTheDocument());
   });
 
   test('renders dashboard with no widgets gracefully', async () => {
-    (api.getServerDate as ReturnType<typeof vi.fn>).mockResolvedValue('2026-06-07');
+    (api.getDateRange as ReturnType<typeof vi.fn>).mockResolvedValue({ server_date: '2026-06-07', start_date: '2026-05-31', end_date: '2026-06-06' });
     const emptyDashboard = { ...MOCK_DASHBOARD, widgets: [] };
     render(<DashboardViewer dashboard={emptyDashboard} />);
     await waitFor(() => expect(screen.getByTestId('filter-bar')).toBeInTheDocument());
