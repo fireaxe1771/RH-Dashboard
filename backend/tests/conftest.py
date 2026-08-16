@@ -19,6 +19,13 @@ os.environ["BILLING_SYNC_ENABLED"] = "false"
 # Disable the AI Analytics Worker during tests — Phase 1 no-op stub is tested
 # directly via run_worker/stop_worker_task, not through the lifespan.
 os.environ["AI_ANALYTICS_WORKER_ENABLED"] = "false"
+# Force the direct-read path in tests. The local .env may set
+# AI_ANALYTICS_USE_PROJECTION=true (operator toggle for production), which
+# would leak into the test suite via load_dotenv() in config.py and route
+# _load_normalized_cohort through the projection path (empty mongomock)
+# instead of the mocked direct-read path. Phase 10 tests that exercise the
+# projection path override this per-test via monkeypatch.
+os.environ["AI_ANALYTICS_USE_PROJECTION"] = "false"
 
 # Ensure backend directory is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
