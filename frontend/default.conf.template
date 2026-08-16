@@ -33,9 +33,29 @@ server {
         proxy_send_timeout 60s;
     }
 
+    # Hashed assets (Vite content-hashed JS/CSS) — safe to cache aggressively.
+    # The filename changes when content changes, so a stale cache entry is never
+    # served. immutable tells the browser to skip even conditional revalidation.
+    location /assets/ {
+        root /usr/share/nginx/html;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    # index.html must NEVER be cached — it references the hashed asset files by
+    # name, so a stale index.html points at asset filenames that no longer exist
+    # on the server after a rebuild. no-store forces the browser to fetch a
+    # fresh copy on every navigation, ensuring it always references the current
+    # hashed assets.
+    location = /index.html {
+        root /usr/share/nginx/html;
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+
     location / {
         root /usr/share/nginx/html;
         index index.html index.htm;
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
         try_files $uri $uri/ /index.html;
     }
 

@@ -19,10 +19,10 @@ import {
   AiRetryAnalysis,
   AiWritebackAnalysis,
 } from '../../services/aiAnalyticsApi';
-import { api } from '../../services/api';
 import { billingStyles, LoadingState, ErrorState, EmptyState, formatPercent } from '../billing/shared';
-import { computeDateRange } from '../FilterBar';
 import { AiAnalyticsFilterBar } from './AiAnalyticsFilterBar';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import { useAiDateRange } from '../../hooks/useAiDateRange';
 import { SyncHealthIndicator } from './SyncHealthIndicator';
 
 // ---------------------------------------------------------------------------
@@ -301,10 +301,7 @@ const AgentStatsView: React.FC<{ stats: AiAgentStat[] }> = ({ stats }) => {
 // ---------------------------------------------------------------------------
 
 export const AiDiagnosticsDashboard: React.FC = () => {
-  const [serverDate, setServerDate] = useState<string | undefined>(undefined);
-  const [dateReady, setDateReady] = useState(false);
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const { serverDate, startDate, endDate, dateReady, setStartDate, setEndDate, defaultRangeType } = useAiDateRange();
   const [departmentId, setDepartmentId] = useState<number | undefined>(undefined);
 
   const [summary, setSummary] = useState<AiDiagnosticsSummary | null>(null);
@@ -316,28 +313,9 @@ export const AiDiagnosticsDashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch the database server date once on mount, then compute the initial
-  // date range (current month) so queries align with SQL Server's GETDATE().
-  useEffect(() => {
-    let active = true;
-    api.getServerDate()
-      .then((dateStr) => {
-        if (!active) return;
-        setServerDate(dateStr);
-        const dates = computeDateRange('month', 0, dateStr);
-        setStartDate(dates.start_date);
-        setEndDate(dates.end_date);
-        setDateReady(true);
-      })
-      .catch(() => {
-        if (!active) return;
-        const dates = computeDateRange('month', 0);
-        setStartDate(dates.start_date);
-        setEndDate(dates.end_date);
-        setDateReady(true);
-      });
-    return () => { active = false; };
-  }, []);
+  // Auto-refresh every 30s so projection changes from the worker are visible
+  // without a manual page reload.
+  const refreshKey = useAutoRefresh(30000);
 
   const filters: AiAnalyticsFilters = useMemo(
     () => ({ start_date: startDate, end_date: endDate, department_id: departmentId }),
@@ -377,7 +355,7 @@ export const AiDiagnosticsDashboard: React.FC = () => {
       });
 
     return () => { active = false; };
-  }, [filters, dateReady]);
+  }, [filters, dateReady, refreshKey]);
 
   if (!dateReady || (loading && !summary)) return <LoadingState label="Loading AI diagnostics…" />;
   if (error) return <ErrorState message={error} />;
@@ -394,7 +372,7 @@ export const AiDiagnosticsDashboard: React.FC = () => {
         onStartDateChange={setStartDate}
         onEndDateChange={setEndDate}
         serverDate={serverDate}
-        defaultRangeType="month"
+        defaultRangeType={defaultRangeType}
         defaultPeriodsBack={0}
         departmentId={departmentId}
         onDepartmentIdChange={setDepartmentId}

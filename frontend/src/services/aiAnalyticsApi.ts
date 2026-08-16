@@ -370,6 +370,7 @@ export interface AiWorkerStatus {
   health: AiWorkerHealth;
   metrics: AiWorkerMetrics;
   sync_integrity: AiSyncIntegrity;
+  backfill_running?: boolean;
 }
 
 // ---------------------------------------------------------------------------

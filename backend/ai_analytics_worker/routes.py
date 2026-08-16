@@ -190,6 +190,7 @@ async def worker_status() -> Dict[str, Any]:
         "health": worker_health.snapshot(),
         "metrics": worker_metrics.snapshot(),
         "sync_integrity": sync_integrity_state.snapshot(),
+        "backfill_running": is_backfill_running(),
     }
 
 

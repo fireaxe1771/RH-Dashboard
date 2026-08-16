@@ -96,6 +96,37 @@ The billing dashboard views (Cost Overview, Top Spenders, Budgets & Alerts,
 Advisor, Invoices, Reservations, AI Cost Analyst) are all built and ready to
 display data once the sync service is enabled and has populated MongoDB.
 
+## DRY Rule (Enforced)
+
+**Don't Repeat Yourself.** This is a hard rule, not a suggestion.
+
+When multiple components need the same logic (date-range initialization, auth
+token handling, data-fetching patterns, filter state management), extract it
+into a single shared hook, utility, or service — and consume that one
+implementation everywhere. If a change requires editing the same logic in more
+than one file, that's a DRY violation that must be fixed before the change is
+considered complete.
+
+Existing examples in this codebase:
+
+- **`useAiDateRange`** (`frontend/src/hooks/useAiDateRange.ts`) — the single
+  source of truth for AI dashboard date-range initialization (server-date
+  fetch + `computeDateRange` + state). All three AI dashboards (Adoption,
+  Outcomes, Diagnostics) consume it. Change the default range type in one
+  place and all dashboards pick it up.
+- **`useAutoRefresh`** (`frontend/src/hooks/useAutoRefresh.ts`) — the single
+  auto-refresh polling hook consumed by all AI dashboards.
+- **`normalization_core.py`** (`backend/ai_analytics/`) — the single source of
+  truth for normalization logic shared between direct-read services and the
+  AI Analytics Worker.
+- **`createApiFetch`** (`frontend/src/services/fetchWrapper.ts`) — the single
+  fetch wrapper with auth-header injection and 401 retry used by all API
+  service clients.
+
+When adding a new dashboard or component that needs date-range initialization,
+use `useAiDateRange`. Do not copy the `useEffect` + `api.getServerDate()` +
+`computeDateRange()` block into the component.
+
 ## Build & Run
 
 Local Docker Desktop development. `dev-start.ps1` is a thin wrapper over

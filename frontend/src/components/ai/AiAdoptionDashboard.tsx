@@ -9,11 +9,11 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { aiAdoptionApi, AiAdoptionResponse } from '../../services/aiAdoptionApi';
-import { api } from '../../services/api';
 import { exportToCsv, exportToExcel } from '../../utils/export';
 import { billingStyles, LoadingState, ErrorState } from '../billing/shared';
-import { computeDateRange } from '../FilterBar';
 import { AiAnalyticsFilterBar } from './AiAnalyticsFilterBar';
+import { useAutoRefresh } from '../../hooks/useAutoRefresh';
+import { useAiDateRange } from '../../hooks/useAiDateRange';
 
 const statusLabels: Record<string, string> = {
   all: 'All Departments',
@@ -43,41 +43,16 @@ const kpiCardStyle: React.CSSProperties = {
 };
 
 export const AiAdoptionDashboard: React.FC = () => {
-  const [serverDate, setServerDate] = useState<string | undefined>(undefined);
-  const [dateReady, setDateReady] = useState(false);
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const { serverDate, startDate, endDate, dateReady, setStartDate, setEndDate, defaultRangeType } = useAiDateRange();
   const [limit, setLimit] = useState(50);
   const [aiStatus, setAiStatus] = useState<string>('all');
   const [data, setData] = useState<AiAdoptionResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch the database server date once on mount, then compute the initial
-  // date range (current month) so queries align with SQL Server's GETDATE().
-  // Defaults to 'month' rather than 'week' because "current week" on the
-  // first day of the week (Sunday) is a single-day window that typically
-  // has no data yet.
-  useEffect(() => {
-    let active = true;
-    api.getServerDate()
-      .then((dateStr) => {
-        if (!active) return;
-        setServerDate(dateStr);
-        const dates = computeDateRange('month', 0, dateStr);
-        setStartDate(dates.start_date);
-        setEndDate(dates.end_date);
-        setDateReady(true);
-      })
-      .catch(() => {
-        if (!active) return;
-        const dates = computeDateRange('month', 0);
-        setStartDate(dates.start_date);
-        setEndDate(dates.end_date);
-        setDateReady(true);
-      });
-    return () => { active = false; };
-  }, []);
+  // Auto-refresh every 30s so the dashboard picks up new SQL drafts and
+  // MongoDB projection changes without a manual page reload.
+  const refreshKey = useAutoRefresh(30000);
 
   useEffect(() => {
     if (!dateReady) return;
@@ -101,7 +76,7 @@ export const AiAdoptionDashboard: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [startDate, endDate, limit, aiStatus, dateReady]);
+  }, [startDate, endDate, limit, aiStatus, dateReady, refreshKey]);
 
   const columns = useMemo(
     () => [
@@ -155,7 +130,7 @@ export const AiAdoptionDashboard: React.FC = () => {
         onStartDateChange={setStartDate}
         onEndDateChange={setEndDate}
         serverDate={serverDate}
-        defaultRangeType="month"
+        defaultRangeType={defaultRangeType}
         defaultPeriodsBack={0}
       />
 

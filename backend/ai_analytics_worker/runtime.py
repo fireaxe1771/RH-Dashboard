@@ -98,8 +98,12 @@ async def stop_worker() -> str:
         _worker_stop_event = None
         return "not_running"
 
-    assert _worker_task is not None
-    assert _worker_stop_event is not None
+    if _worker_task is None or _worker_stop_event is None:
+        # Defensive: is_worker_running() returned True but handles are None.
+        # Should not happen, but avoid AssertionError if it does.
+        _worker_task = None
+        _worker_stop_event = None
+        return "not_running"
 
     await stop_worker_task(_worker_task, _worker_stop_event)
     _worker_task = None
