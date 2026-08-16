@@ -36,7 +36,12 @@ export const WorkerToggle: React.FC = () => {
 
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 5000);
+    // 15s aligns with the sidebar's low-urgency status display. The
+    // SyncHealthIndicator uses 30s; 5s was overly aggressive for a
+    // sidebar widget and produced unnecessary backend hits. The toggle
+    // itself triggers an immediate fetchStatus() after start/stop, so
+    // user-initiated state changes still reflect instantly.
+    const interval = setInterval(fetchStatus, 15000);
     return () => clearInterval(interval);
   }, [fetchStatus]);
 
