@@ -154,6 +154,27 @@ export const api = {
   },
 
   /**
+   * Resolve a named period ('week', 'month', ...) into concrete start/end dates.
+   *
+   * The backend owns this arithmetic (`target_db.compute_date_range`) so there
+   * is exactly one definition of what "current week" means. Do NOT reimplement
+   * period math in the frontend — that drift is what this endpoint exists to
+   * prevent. Ranges are computed against SQL Server's clock, not the browser's.
+   */
+  getDateRange: async (
+    rangeType: 'day' | 'week' | 'month' | 'year',
+    periodsBack: number = 0,
+  ): Promise<{ server_date: string; start_date: string; end_date: string }> => {
+    const params = new URLSearchParams({
+      range_type: rangeType,
+      periods_back: String(periodsBack),
+    });
+    return fetchJson<{ server_date: string; start_date: string; end_date: string }>(
+      `/api/date-range?${params.toString()}`,
+    );
+  },
+
+  /**
    * Get dropdown filter options (departments, processors, claim types).
    */
   getFilterOptions: async (): Promise<FilterOptions> => {

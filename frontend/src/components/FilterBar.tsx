@@ -4,6 +4,10 @@ import { Calendar, Filter, Users, ShieldAlert, AlertCircle, Clock } from 'lucide
 
 export type RangeType = 'day' | 'week' | 'month' | 'year';
 
+/** The default period every dashboard opens on. Defined once so a filter bar
+ *  and the hook that seeds it can never disagree about the initial range. */
+export const DEFAULT_RANGE_TYPE: RangeType = 'week';
+
 export interface DashboardFilters {
   department_id?: string;
   processor_id?: string;
@@ -21,75 +25,15 @@ interface FilterBarProps {
   serverDate?: string;
 }
 
-// ── Date helpers (Sunday-based weeks: Sunday 00:00 → Saturday 23:59) ────
-// All date arithmetic uses the database server date (fetched via /api/server-date)
-// so the dashboard always aligns with SQL Server's GETDATE().
-
-/** Format a Date as YYYY-MM-DD using LOCAL calendar values (not UTC). */
-const fmt = (d: Date): string => {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-};
-
-/**
- * Compute a date range for display purposes.
- * @param rangeType  day | week | month | year
- * @param periodsBack  0 = current period, 1 = previous, etc.
- * @param serverDate  ISO date string from the DB server (e.g. "2026-06-08").
- *                     Falls back to the browser's local date if omitted.
- */
-export function computeDateRange(
-  rangeType: RangeType,
-  periodsBack: number,
-  serverDate?: string,
-): { start_date: string; end_date: string } {
-  // Parse the server date (YYYY-MM-DD) into local-calendar components
-  let today: Date;
-  if (serverDate) {
-    const [y, m, d] = serverDate.split('-').map(Number);
-    today = new Date(y, m - 1, d);
-  } else {
-    today = new Date();
-    today.setHours(0, 0, 0, 0);
-  }
-
-  if (rangeType === 'week') {
-    // getDay(): Sunday=0 … Saturday=6
-    const diffToSunday = today.getDay();
-    const sunday = new Date(today);
-    sunday.setDate(today.getDate() - diffToSunday - periodsBack * 7);
-    const saturday = new Date(sunday);
-    saturday.setDate(sunday.getDate() + 6);
-    return {
-      start_date: fmt(sunday),
-      end_date: periodsBack === 0 ? fmt(today) : fmt(saturday),
-    };
-  }
-
-  if (rangeType === 'month') {
-    const ref = new Date(today.getFullYear(), today.getMonth() - periodsBack, 1);
-    const lastDay = new Date(ref.getFullYear(), ref.getMonth() + 1, 0);
-    return {
-      start_date: fmt(ref),
-      end_date: periodsBack === 0 ? fmt(today) : fmt(lastDay),
-    };
-  }
-
-  if (rangeType === 'year') {
-    const yr = today.getFullYear() - periodsBack;
-    const start = new Date(yr, 0, 1);
-    const end = new Date(yr, 11, 31);
-    return {
-      start_date: fmt(start),
-      end_date: periodsBack === 0 ? fmt(today) : fmt(end),
-    };
-  }
-
-  // 'day' — dates are chosen manually, return today as fallback
-  return { start_date: fmt(today), end_date: fmt(today) };
-}
+// ── Date ranges ─────────────────────────────────────────────────────────
+// Period arithmetic (what "current week" / "last month" resolves to) lives
+// ONLY in the backend: target_db.compute_date_range, exposed as
+// GET /api/date-range and reached via api.getDateRange().
+//
+// It deliberately does not exist here. A second TypeScript implementation
+// existed previously and drifted from the Python one — the same off-by-a-period
+// bug had to be fixed twice, in two languages. Call api.getDateRange() instead
+// of recomputing dates locally.
 
 // Build dropdown options for each range type
 export function periodOptions(rangeType: RangeType): { value: number; label: string }[] {
@@ -157,20 +101,44 @@ export const FilterBar: React.FC<FilterBarProps> = ({ filters, onChange, serverD
   const rangeType = filters.range_type || 'week';
   const periodsBack = filters.periods_back ?? 0;
 
-  const handleRangeTypeChange = (newType: RangeType) => {
+  const handleRangeTypeChange = async (newType: RangeType) => {
     const pb = 0;
     if (newType === 'day') {
       // Keep current dates, just switch mode
       onChange({ ...filters, range_type: newType, periods_back: pb });
-    } else {
-      const dates = computeDateRange(newType, pb, serverDate);
-      onChange({ ...filters, range_type: newType, periods_back: pb, ...dates });
+      return;
+    }
+    // range_type/periods_back are sent to the backend, which recomputes the
+    // range server-side anyway; the resolved dates here are for display. If
+    // the lookup fails, still switch mode so the UI stays responsive.
+    try {
+      const dates = await api.getDateRange(newType, pb);
+      onChange({
+        ...filters,
+        range_type: newType,
+        periods_back: pb,
+        start_date: dates.start_date,
+        end_date: dates.end_date,
+      });
+    } catch (err) {
+      console.error('Failed to resolve date range:', err);
+      onChange({ ...filters, range_type: newType, periods_back: pb });
     }
   };
 
-  const handlePeriodsBackChange = (pb: number) => {
-    const dates = computeDateRange(rangeType, pb, serverDate);
-    onChange({ ...filters, periods_back: pb, ...dates });
+  const handlePeriodsBackChange = async (pb: number) => {
+    try {
+      const dates = await api.getDateRange(rangeType, pb);
+      onChange({
+        ...filters,
+        periods_back: pb,
+        start_date: dates.start_date,
+        end_date: dates.end_date,
+      });
+    } catch (err) {
+      console.error('Failed to resolve date range:', err);
+      onChange({ ...filters, periods_back: pb });
+    }
   };
 
   const handleSelectChange = (key: keyof DashboardFilters, value: string) => {
