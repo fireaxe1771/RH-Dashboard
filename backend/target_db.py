@@ -40,12 +40,20 @@ class SQLConnection:
     # share a single token instead of each acquiring their own (~0.9 s each).
     _TOKEN_REFRESH_MARGIN = 300  # seconds
 
+    # The server date changes once a day, but /api/date-range is called on
+    # every range-selector change. Cache it briefly so the endpoint costs a
+    # dict lookup instead of a SQL round trip, while still rolling over near
+    # midnight without a restart.
+    _SERVER_DATE_TTL = 60  # seconds
+
     def __init__(self):
         self._claims_date_column: str | None = None
         self._claims_column_map: Dict[str, str] | None = None
         self._cached_token: str | None = None
         self._token_expiry: float = 0.0  # epoch seconds
         self._token_lock = threading.Lock()
+        self._cached_server_date: date | None = None
+        self._server_date_expiry: float = 0.0  # epoch seconds
 
     def _get_odbc_connection(self, access_token: str):
         """Connect to Azure SQL using an Azure AD access token via pyodbc."""
@@ -205,7 +213,15 @@ class SQLConnection:
         return re.sub(pattern, _replace, query, flags=re.IGNORECASE)
 
     def get_server_date(self) -> date:
-        """Return the current date from SQL Server via ``CAST(GETDATE() AS DATE)``."""
+        """Return the current date from SQL Server via ``CAST(GETDATE() AS DATE)``.
+
+        Cached for ``_SERVER_DATE_TTL`` seconds so repeated range computations
+        (one per range-selector change) do not each open a SQL connection.
+        """
+        now = time.time()
+        if self._cached_server_date is not None and now < self._server_date_expiry:
+            return self._cached_server_date
+
         conn = self._get_connection()
         try:
             with conn.cursor() as cursor:
@@ -213,13 +229,16 @@ class SQLConnection:
                 row = cursor.fetchone()
                 if row and row[0]:
                     val = row[0]
-                    if isinstance(val, date):
-                        return val
-                    return date.fromisoformat(str(val))
+                    resolved = val if isinstance(val, date) else date.fromisoformat(str(val))
+                    self._cached_server_date = resolved
+                    self._server_date_expiry = now + self._SERVER_DATE_TTL
+                    return resolved
         except Exception as e:
             logger.warning(f"Failed to fetch server date, falling back to UTC: {e}")
         finally:
             conn.close()
+        # Deliberately not cached: a fallback date should not be pinned for the
+        # TTL when the next call might reach the database successfully.
         return date.today()
 
     @staticmethod
@@ -228,7 +247,12 @@ class SQLConnection:
         """Compute a (start, end) date range based on *server_today*.
 
         Week boundaries are **Sunday → Saturday**.
-        For the current period (periods_back == 0), end_date is today.
+
+        The current period (``periods_back == 0``) spans the **whole** period,
+        not today. "Current week" means Sunday through Saturday even when
+        Saturday is in the future: the range is a window to filter on, and
+        future dates simply have no rows yet. Clamping the end to today made
+        the range a single day on Sundays, which read as "no data".
         """
         if range_type == 'week':
             dow = server_today.weekday()  # Mon=0 … Sun=6
@@ -236,8 +260,7 @@ class SQLConnection:
             days_since_sunday = (dow + 1) % 7
             sunday = server_today - timedelta(days=days_since_sunday + periods_back * 7)
             saturday = sunday + timedelta(days=6)
-            end = server_today if periods_back == 0 else saturday
-            return sunday.isoformat(), end.isoformat()
+            return sunday.isoformat(), saturday.isoformat()
 
         if range_type == 'month':
             # Walk back *periods_back* months from the 1st of the current month
@@ -254,17 +277,44 @@ class SQLConnection:
                 next_month = 1
                 next_year += 1
             last_day = date(next_year, next_month, 1) - timedelta(days=1)
-            end = server_today if periods_back == 0 else last_day
-            return start.isoformat(), end.isoformat()
+            return start.isoformat(), last_day.isoformat()
 
         if range_type == 'year':
             yr = server_today.year - periods_back
             start = date(yr, 1, 1)
-            end = server_today if periods_back == 0 else date(yr, 12, 31)
-            return start.isoformat(), end.isoformat()
+            return start.isoformat(), date(yr, 12, 31).isoformat()
 
         # 'day' or unknown — return today
         return server_today.isoformat(), server_today.isoformat()
+
+    @staticmethod
+    def end_of_day(end_str: str | None) -> str | None:
+        """Expand a ``YYYY-MM-DD`` end date to the last instant of that day.
+
+        Claim date columns (``date_of_submitted``, ``created``) are datetimes,
+        but the widget SQL filters them with
+        ``BETWEEN %(start_date)s AND %(end_date)s``. Binding a bare date makes
+        SQL Server read the end bound as midnight, so **everything submitted
+        during the final day of the range is excluded** — a "current week"
+        range ending today returned nothing for today's activity.
+
+        ``.997`` is the largest fraction representable by SQL Server's
+        ``datetime`` type; ``.999`` rounds *up* to the next day's midnight and
+        would pull in rows outside the range.
+
+        Returns the value unchanged if it already carries a time component or
+        is not a parseable date, so callers can pass either form.
+        """
+        if not end_str:
+            return end_str
+        text = str(end_str)
+        if len(text) != 10:
+            return end_str
+        try:
+            date.fromisoformat(text)
+        except (ValueError, TypeError):
+            return end_str
+        return f"{text} 23:59:59.997"
 
     @staticmethod
     def compute_prior_period(start_str: str | None, end_str: str | None):
@@ -483,9 +533,11 @@ class SQLConnection:
             "department_id": filters.department_id if filters else None,
             "processor_id": filters.processor_id if filters else None,
             "start_date": start_date,
-            "end_date": end_date,
+            # Bound to the last instant of the end day so the final day's rows
+            # are included — see end_of_day().
+            "end_date": self.end_of_day(end_date),
             "prior_start_date": prior_start,
-            "prior_end_date": prior_end,
+            "prior_end_date": self.end_of_day(prior_end),
             "ytd_start": ytd_start,
         }
 

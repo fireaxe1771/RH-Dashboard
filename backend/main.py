@@ -9,7 +9,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from bson import ObjectId
 from datetime import UTC, datetime
@@ -717,6 +717,44 @@ def get_server_date():
         return {"date": server_date.isoformat()}
     except Exception as e:
         logger.error(f"Failed to fetch server date: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@app.get(
+    "/api/date-range",
+    dependencies=[Depends(get_current_user)]
+)
+def get_date_range(
+    range_type: str = Query(..., description="day | week | month | year"),
+    periods_back: int = Query(0, ge=0, description="0 = current period, 1 = previous, etc."),
+):
+    """Resolve a named period into concrete start/end dates.
+
+    This is the **single source of truth** for what "current week" (or month,
+    or year) means. ``target_db.compute_date_range`` is the one implementation;
+    the frontend calls this endpoint rather than reimplementing the arithmetic,
+    so the two can never disagree about period boundaries. Ranges are computed
+    against SQL Server's ``GETDATE()``, not the browser clock.
+    """
+    if range_type not in {"day", "week", "month", "year"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="range_type must be one of: day, week, month, year",
+        )
+    try:
+        server_date = target_db.get_server_date()
+        start_date, end_date = target_db.compute_date_range(
+            server_date, range_type, periods_back,
+        )
+        return {
+            "server_date": server_date.isoformat(),
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+    except Exception as e:
+        logger.error(f"Failed to compute date range: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
