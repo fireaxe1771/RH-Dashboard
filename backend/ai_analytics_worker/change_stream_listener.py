@@ -244,8 +244,9 @@ async def _process_change_event(
 
     # Enqueue the claim for refresh via the debounce queue (Phase 6).
     # The queue consumer calls refresh_claim with a debounce window to
-    # coalesce bursts of updates to the same claim.
-    queue.enqueue(claim_id)
+    # coalesce bursts of updates to the same claim. The source label is
+    # recorded on any resulting dead-letter for audit traceability.
+    queue.enqueue(claim_id, source="change_stream")
 
     return _extract_resume_token(change_event)
 

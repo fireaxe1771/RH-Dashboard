@@ -200,10 +200,11 @@ class Settings:
     # processing change events. When false, behaviour is identical to
     # pre-Phase-9 (direct read from RecoveryHub_AI Mongo).
     #
-    # The invoice trace endpoint (``/invoices/{claim_id}/trace``) keeps
-    # its direct-read path regardless of this flag — the projection does
-    # not carry the raw ai_line_items document needed for forensic trace.
-    # Phase 10 will enrich the projection to replace that path.
+    # The invoice trace endpoint (``/invoices/{claim_id}/trace``) reads AI
+    # line-item fields from the projection when this flag is true (Phase 10),
+    # falling back to the direct ``ai_line_items`` Mongo read when no
+    # projection exists yet. Full conversation payloads are always fetched
+    # from RecoveryHub_AI Mongo because the projection only stores summaries.
     AI_ANALYTICS_USE_PROJECTION: bool = (
         os.getenv("AI_ANALYTICS_USE_PROJECTION", "false").lower() == "true"
     )

@@ -344,7 +344,7 @@ async def run_sync_integrity_once(
                 len(result.divergent_claims),
             )
             for cid in result.divergent_claims:
-                queue.enqueue(cid)
+                queue.enqueue(cid, source="sync_integrity")
                 result.claims_enqueued += 1
             logger.info(
                 "Sync integrity: enqueued %d divergent claims for refresh "

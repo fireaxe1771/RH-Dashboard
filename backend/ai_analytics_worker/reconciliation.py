@@ -227,7 +227,7 @@ async def run_reconciliation_once(
 
                 if claim_id not in seen_claim_ids:
                     seen_claim_ids.add(claim_id)
-                    queue.enqueue(claim_id)
+                    queue.enqueue(claim_id, source="reconciliation")
                     result.claims_enqueued += 1
 
             if stop_event is not None and stop_event.is_set():

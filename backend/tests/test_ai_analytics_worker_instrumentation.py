@@ -413,6 +413,44 @@ class TestQueueConsumerCheckpoint:
         ].find_one({"_id": worker_config.WORKER_NAME})
         assert state["last_checkpoint_at"] is not None
 
+    @pytest.mark.asyncio
+    async def test_consumer_passes_source_label_to_refresh_claim(
+        self, mock_mongo_db, monkeypatch
+    ):
+        """The source label enqueued by each producer (change_stream,
+        reconciliation, sync_integrity) must flow through the consumer
+        to ``refresh_claim`` so dead-letters carry an accurate audit
+        trail — not a hardcoded ``change_stream`` for every claim.
+        """
+        from unittest.mock import AsyncMock
+
+        refresh_mock = AsyncMock()
+        monkeypatch.setattr("ai_analytics_worker.queue.refresh_claim", refresh_mock)
+        queue = ClaimQueue(debounce_seconds=0.0)
+        queue.enqueue(100, source="reconciliation")
+        queue.enqueue(200, source="sync_integrity")
+        queue.enqueue(300, source="change_stream")
+        stop_event = asyncio.Event()
+
+        task = asyncio.create_task(
+            run_queue_consumer(mock_mongo_db, mock_mongo_db, queue, stop_event)
+        )
+        await asyncio.sleep(0.15)
+        stop_event.set()
+        queue.close()
+        await asyncio.wait_for(task, timeout=2.0)
+
+        # refresh_claim must have been called once per claim with the
+        # source label that was passed to enqueue (not a hardcoded
+        # "change_stream" for all of them).
+        calls_by_claim = {
+            call.kwargs["claim_id"]: call.kwargs["source_event_type"]
+            for call in refresh_mock.call_args_list
+        }
+        assert calls_by_claim.get(100) == "reconciliation"
+        assert calls_by_claim.get(200) == "sync_integrity"
+        assert calls_by_claim.get(300) == "change_stream"
+
 
 # ---------------------------------------------------------------------------
 # reconciliation — run and found counters

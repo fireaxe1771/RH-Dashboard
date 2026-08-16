@@ -236,7 +236,7 @@ class TestSampleVerification:
         assert 100 in result.divergent_claims
         assert 100 not in result.missing_projections
         assert result.claims_enqueued == 1
-        queue.enqueue.assert_called_once_with(100)
+        queue.enqueue.assert_called_once_with(100, source="sync_integrity")
 
     @pytest.mark.asyncio
     async def test_missing_projection_detected(self, mock_mongo_db):
@@ -261,7 +261,7 @@ class TestSampleVerification:
 
         assert 200 in result.missing_projections
         assert 200 in result.divergent_claims
-        queue.enqueue.assert_called_with(200)
+        queue.enqueue.assert_called_with(200, source="sync_integrity")
 
     @pytest.mark.asyncio
     async def test_up_to_date_projection_not_flagged(self, mock_mongo_db):

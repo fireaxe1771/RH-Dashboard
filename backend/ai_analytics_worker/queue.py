@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .claim_refresh import refresh_claim
 from .config import worker_config
@@ -93,12 +93,19 @@ class ClaimQueue:
         self._clock = clock
         # claim_id -> monotonic timestamp of the most recent enqueue.
         self._pending: Dict[int, float] = {}
+        # claim_id -> source label of the most recent enqueue, used by the
+        # consumer to label dead-letters with the originating pipeline
+        # (change_stream / reconciliation / sync_integrity). A re-enqueue
+        # overwrites the source so the last producer wins — consistent with
+        # the timer-reset semantics, and the right call for audit purposes
+        # since the most recent event is the one that triggered the refresh.
+        self._sources: Dict[int, str] = {}
         # Set when items are added or the queue is closed, to wake the
         # consumer's ``asyncio.Event.wait()``.
         self._wakeup = asyncio.Event()
         self._closed = False
 
-    def enqueue(self, claim_id: int) -> bool:
+    def enqueue(self, claim_id: int, source: str = "change_stream") -> bool:
         """Add or refresh a claim_id in the queue.
 
         If the claim_id is already pending, its debounce timer is reset
@@ -108,6 +115,12 @@ class ClaimQueue:
 
         Arguments:
             claim_id: the claim to enqueue for refresh.
+            source: the originating pipeline label, recorded on the
+                dead-letter audit trail by the consumer. One of
+                ``"change_stream"`` / ``"reconciliation"`` /
+                ``"sync_integrity"``. Defaults to ``"change_stream"`` for
+                backward compatibility with existing callers that don't
+                pass it explicitly.
 
         Returns:
             True if the claim_id was newly added.
@@ -118,6 +131,7 @@ class ClaimQueue:
             return False
         is_new = claim_id not in self._pending
         self._pending[claim_id] = self._clock()
+        self._sources[claim_id] = source
         self._wakeup.set()
         return is_new
 
@@ -141,6 +155,31 @@ class ClaimQueue:
         """Number of claim_ids currently pending (not yet drained)."""
         return len(self._pending)
 
+    def pop_ready_with_source(self) -> List[Tuple[int, str]]:
+        """Remove and return ready (claim_id, source) pairs.
+
+        Same semantics as ``pop_ready`` but returns the source label
+        alongside each claim_id so the consumer can pass it through to
+        ``refresh_claim`` for the dead-letter audit trail.
+
+        Returns:
+            List of ``(claim_id, source)`` tuples (arbitrary order).
+            Empty if none are ready.
+        """
+        if not self._pending:
+            return []
+        now = self._clock()
+        ready: List[Tuple[int, str]] = []
+        for claim_id, enqueue_time in list(self._pending.items()):
+            if now - enqueue_time >= self._debounce_seconds:
+                ready.append((claim_id, self._sources.pop(claim_id, "change_stream")))
+                del self._pending[claim_id]
+        if not self._pending:
+            # No pending items left — clear the wakeup so the consumer
+            # blocks until the next enqueue or close.
+            self._wakeup.clear()
+        return ready
+
     def pop_ready(self) -> List[int]:
         """Remove and return all claim_ids that have passed the debounce window.
 
@@ -152,19 +191,7 @@ class ClaimQueue:
             List of ready claim_ids (arbitrary order). Empty if none are
             ready.
         """
-        if not self._pending:
-            return []
-        now = self._clock()
-        ready: List[int] = []
-        for claim_id, enqueue_time in list(self._pending.items()):
-            if now - enqueue_time >= self._debounce_seconds:
-                ready.append(claim_id)
-                del self._pending[claim_id]
-        if not self._pending:
-            # No pending items left — clear the wakeup so the consumer
-            # blocks until the next enqueue or close.
-            self._wakeup.clear()
-        return ready
+        return [claim_id for claim_id, _ in self.pop_ready_with_source()]
 
     def seconds_until_next_ready(self) -> Optional[float]:
         """Return seconds until the next claim_id becomes ready.
@@ -244,9 +271,9 @@ async def run_queue_consumer(
     claims_since_yield = 0
 
     while not stop_event.is_set():
-        ready = queue.pop_ready()
+        ready = queue.pop_ready_with_source()
         if ready:
-            for claim_id in ready:
+            for claim_id, source in ready:
                 if stop_event.is_set():
                     break
 
@@ -254,7 +281,7 @@ async def run_queue_consumer(
                     ai_db=ai_db,
                     db=db,
                     claim_id=claim_id,
-                    source_event_type="change_stream",
+                    source_event_type=source,
                 )
 
                 # Update the checkpoint so reconciliation knows the
@@ -285,7 +312,7 @@ async def run_queue_consumer(
         # pop_ready to avoid a missed-wakeup race (asyncio is
         # single-threaded, so this sequence is atomic).
         queue._wakeup_event.clear()
-        ready = queue.pop_ready()
+        ready = queue.pop_ready_with_source()
         if ready:
             continue
 
