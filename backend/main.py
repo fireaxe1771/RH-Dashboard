@@ -32,23 +32,16 @@ from billing_routes import billing_router
 from ai_adoption_routes import ai_adoption_router
 from ai_analytics_routes import ai_analytics_router
 from ai_analytics_worker.config import worker_config
-from ai_analytics_worker.main import run_worker, stop_worker_task
 from ai_analytics_worker.routes import worker_router
+from ai_analytics_worker import runtime as worker_runtime
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Module-level handle for the worker task and its stop event, set during
-# lifespan startup and awaited during shutdown. Kept at module scope so the
-# shutdown branch can reference them without threading them through `yield`.
-_worker_task: asyncio.Task | None = None
-_worker_stop_event: asyncio.Event | None = None
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handles startup and shutdown database connections lifespan events."""
-    global _worker_task, _worker_stop_event
 
     try:
         # Establish connection to application metadata database
@@ -64,19 +57,19 @@ async def lifespan(app: FastAPI):
             logger.info("Billing sync scheduler started.")
             # Run initial backfill in background (no-op if already populated)
             asyncio.create_task(_run_billing_backfill_if_needed())
-        # Start the AI Analytics Worker if enabled. The worker runs as a
-        # background asyncio task in this event loop (Phase 0 plan Section 1.1).
-        # Phase 5: change-stream listener that processes events in near-real-time.
+        # Start the AI Analytics Worker if enabled via env. The worker runs
+        # as a background asyncio task in this event loop (Phase 0 plan
+        # Section 1.1). Phase 5: change-stream listener that processes
+        # events in near-real-time. The runtime controller centralises the
+        # task management so the /worker/start endpoint can also start it.
         if worker_config.enabled:
-            _worker_stop_event = asyncio.Event()
-            _worker_task = asyncio.create_task(
-                run_worker(
-                    _worker_stop_event,
-                    ai_db=db_manager.ai_db,
-                    db=db_manager.db,
-                )
-            )
+            await worker_runtime.start_worker()
             logger.info("AI Analytics Worker task started.")
+            # Run an initial backfill in the background if the projection
+            # cache is empty — the change-stream listener only catches new
+            # events, so a fresh deployment needs a one-time historical scan
+            # to populate ai_invoice_analytics from existing ai_line_items.
+            asyncio.create_task(_run_worker_backfill_if_needed())
     except Exception as e:
         logger.critical(f"Database Initialization Failed during startup: {e}")
         # Fail loudly to prevent running app in unconfigured state
@@ -87,12 +80,9 @@ async def lifespan(app: FastAPI):
     # Clean disconnect on shutdown
     # Stop the AI Analytics Worker first — it must drain within
     # CANCELLATION_TIMEOUT_SECONDS (5s) per the Phase 0 plan Section 1.1.4.
-    if _worker_task is not None and _worker_stop_event is not None:
-        logger.info("Stopping AI Analytics Worker task...")
-        await stop_worker_task(_worker_task, _worker_stop_event)
-        _worker_task = None
-        _worker_stop_event = None
-        logger.info("AI Analytics Worker task stopped.")
+    logger.info("Stopping AI Analytics Worker task...")
+    await worker_runtime.shutdown()
+    logger.info("AI Analytics Worker task stopped.")
     if settings.BILLING_SYNC_ENABLED and billing_scheduler.running:
         logger.info("Shutting down billing scheduler, waiting for in-flight jobs to complete...")
         billing_scheduler.shutdown(wait=True)
@@ -110,6 +100,32 @@ async def _run_billing_backfill_if_needed() -> None:
             await run_full_backfill(db, settings.BILLING_HISTORY_MONTHS, "startup_backfill")
     except Exception as e:
         logger.error(f"Billing backfill check failed: {e}")
+
+
+async def _run_worker_backfill_if_needed() -> None:
+    """Checks if the AI analytics projection is empty; runs backfill if so.
+
+    The change-stream listener only processes new events, so a fresh
+    deployment (or a projection collection that was cleared) needs a
+    one-time historical scan to populate ``ai_invoice_analytics`` from
+    existing ``ai_line_items`` records. This runs as a background task
+    so it does not block startup.
+    """
+    try:
+        db = db_manager.db
+        count = await db[worker_config.PROJECTIONS_COLLECTION].count_documents({})
+        if count == 0:
+            logger.info(
+                "AI analytics projection is empty. Starting historical backfill..."
+            )
+            await worker_runtime.start_backfill()
+        else:
+            logger.info(
+                "AI analytics projection already populated (%d docs). Skipping backfill.",
+                count,
+            )
+    except Exception as e:
+        logger.error(f"Worker backfill check failed: {e}")
 
 app = FastAPI(
     title="RecoveryHub Dashboard Portal API",

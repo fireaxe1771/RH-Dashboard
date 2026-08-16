@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { Dashboard } from '../services/api';
 import { BillingView } from './billing/types';
+import { WorkerToggle } from './ai/WorkerToggle';
 
 export type AiAnalyticsView = 'adoption' | 'outcomes' | 'diagnostics';
 
@@ -227,6 +228,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
           })
         )}
       </nav>
+
+      <WorkerToggle />
 
       {user && (
         <div className="sidebar-footer">

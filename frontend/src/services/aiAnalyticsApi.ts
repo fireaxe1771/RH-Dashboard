@@ -344,6 +344,34 @@ export interface AiDeadLetter {
   resolved: boolean;
 }
 
+export interface AiWorkerHealth {
+  status: string;
+  last_started_at: string | null;
+  last_completed_at: string | null;
+  last_checkpoint_at: string | null;
+  last_successful_event_at: string | null;
+  consecutive_error_count: number;
+  last_error: string | null;
+}
+
+export interface AiWorkerMetrics {
+  events_received: number;
+  claims_refreshed: number;
+  projections_created: number;
+  projections_updated: number;
+  dead_letters_created: number;
+  reconciliation_runs: number;
+  claim_refresh_errors: number;
+  claim_refresh_retries: number;
+}
+
+export interface AiWorkerStatus {
+  enabled: boolean;
+  health: AiWorkerHealth;
+  metrics: AiWorkerMetrics;
+  sync_integrity: AiSyncIntegrity;
+}
+
 // ---------------------------------------------------------------------------
 // API client
 // ---------------------------------------------------------------------------
@@ -468,5 +496,23 @@ export const aiAnalyticsApi = {
 
   resolveDeadLetter: (claimId: number): Promise<{ resolved: boolean; claim_id: number; updated: number }> => {
     return aiAnalyticsFetch(`/worker/dead-letters/${claimId}/resolve`, { method: 'POST' });
+  },
+
+  // Runtime control — start/stop the worker and trigger backfill
+
+  startWorker: (): Promise<{ action: string; running: boolean }> => {
+    return aiAnalyticsFetch('/worker/start', { method: 'POST' });
+  },
+
+  stopWorker: (): Promise<{ action: string; running: boolean }> => {
+    return aiAnalyticsFetch('/worker/stop', { method: 'POST' });
+  },
+
+  triggerBackfill: (): Promise<{ action: string; backfill_running: boolean }> => {
+    return aiAnalyticsFetch('/worker/backfill', { method: 'POST' });
+  },
+
+  getWorkerStatus: (): Promise<AiWorkerStatus> => {
+    return aiAnalyticsFetch<AiWorkerStatus>('/worker/status');
   },
 };

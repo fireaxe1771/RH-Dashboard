@@ -56,6 +56,13 @@ from .health import (
     worker_health,
 )
 from .metrics import worker_metrics
+from .runtime import (
+    is_backfill_running,
+    is_worker_running,
+    start_backfill,
+    start_worker,
+    stop_worker,
+)
 from .sync_integrity import sync_integrity_state
 from .sync_status import sync_health_snapshot
 
@@ -277,3 +284,71 @@ async def resolve_dead_letter(claim_id: int) -> Dict[str, Any]:
         "claim_id": claim_id,
         "updated": result.modified_count,
     }
+
+
+# ---------------------------------------------------------------------------
+# Runtime control endpoints (start / stop / backfill)
+# ---------------------------------------------------------------------------
+
+
+@worker_router.post(
+    "/start",
+    dependencies=[Depends(get_current_user)],
+)
+async def worker_start() -> Dict[str, Any]:
+    """Start the AI Analytics Worker at runtime.
+
+    Spawns the worker as a background asyncio task in the current event
+    loop — the same task that the lifespan would create when
+    ``AI_ANALYTICS_WORKER_ENABLED=true``. This endpoint lets an operator
+    enable the worker without restarting the container.
+
+    Auth-protected via ``get_current_user`` — starting the worker is an
+    operational action.
+
+    Returns:
+        ``{"action": "started" | "already_running", "running": bool}``
+    """
+    status = await start_worker()
+    return {"action": status, "running": is_worker_running()}
+
+
+@worker_router.post(
+    "/stop",
+    dependencies=[Depends(get_current_user)],
+)
+async def worker_stop() -> Dict[str, Any]:
+    """Stop the running AI Analytics Worker gracefully.
+
+    Sets the worker's stop event and waits up to
+    ``CANCELLATION_TIMEOUT_SECONDS`` (5s) for it to drain before
+    cancelling the task.
+
+    Auth-protected via ``get_current_user``.
+
+    Returns:
+        ``{"action": "stopped" | "not_running", "running": false}``
+    """
+    status = await stop_worker()
+    return {"action": status, "running": is_worker_running()}
+
+
+@worker_router.post(
+    "/backfill",
+    dependencies=[Depends(get_current_user)],
+)
+async def worker_backfill() -> Dict[str, Any]:
+    """Trigger a historical backfill of all ai_line_items claims.
+
+    Reads every ``ai_line_items`` document from the RecoveryHub_AI Mongo
+    and upserts a projection into ``ai_invoice_analytics``. The worker
+    does not need to be running for a backfill to proceed — the backfill
+    is a one-shot scan, not the incremental change-stream path.
+
+    Auth-protected via ``get_current_user``.
+
+    Returns:
+        ``{"action": "started" | "already_running", "backfill_running": bool}``
+    """
+    status = await start_backfill()
+    return {"action": status, "backfill_running": is_backfill_running()}

@@ -54,21 +54,24 @@ export const AiAdoptionDashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   // Fetch the database server date once on mount, then compute the initial
-  // date range (current week) so queries align with SQL Server's GETDATE().
+  // date range (current month) so queries align with SQL Server's GETDATE().
+  // Defaults to 'month' rather than 'week' because "current week" on the
+  // first day of the week (Sunday) is a single-day window that typically
+  // has no data yet.
   useEffect(() => {
     let active = true;
     api.getServerDate()
       .then((dateStr) => {
         if (!active) return;
         setServerDate(dateStr);
-        const dates = computeDateRange('week', 0, dateStr);
+        const dates = computeDateRange('month', 0, dateStr);
         setStartDate(dates.start_date);
         setEndDate(dates.end_date);
         setDateReady(true);
       })
       .catch(() => {
         if (!active) return;
-        const dates = computeDateRange('week', 0);
+        const dates = computeDateRange('month', 0);
         setStartDate(dates.start_date);
         setEndDate(dates.end_date);
         setDateReady(true);
@@ -152,7 +155,7 @@ export const AiAdoptionDashboard: React.FC = () => {
         onStartDateChange={setStartDate}
         onEndDateChange={setEndDate}
         serverDate={serverDate}
-        defaultRangeType="week"
+        defaultRangeType="month"
         defaultPeriodsBack={0}
       />
 
