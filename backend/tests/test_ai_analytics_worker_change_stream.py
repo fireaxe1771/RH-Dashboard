@@ -492,16 +492,18 @@ class TestListenerStreamRestart:
                 return FakeChangeStream(
                     raise_on_iterate=ConnectionError("broken")
                 )
-            # 4th call: block until stop_event (healthy stream)
+            # 4th call: set stop_event so the stream ends immediately and
+            # the listener exits gracefully. This makes the test fully
+            # deterministic — no timed set_stop_later coroutine that races
+            # the backoff sleeps (which on Windows can take ~15.6ms each
+            # due to timer granularity, causing the stop_event to fire
+            # before the 4th watch() call).
+            stop_event.set()
             return FakeChangeStream(stop_event=stop_event)
 
         ai_db = FakeAIDB(stream_factory=stream_factory)
 
-        async def set_stop_later():
-            await asyncio.sleep(0.2)
-            stop_event.set()
-
-        await asyncio.gather(
+        await asyncio.wait_for(
             run_change_stream_listener(
                 ai_db,
                 mock_mongo_db,
@@ -510,7 +512,7 @@ class TestListenerStreamRestart:
                 restart_delay_seconds=0.001,
                 max_restarts=0,
             ),
-            set_stop_later(),
+            timeout=5.0,
         )
 
         # Should have retried at least 3 times before succeeding on 4th
