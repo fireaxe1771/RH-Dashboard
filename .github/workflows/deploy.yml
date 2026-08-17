@@ -97,8 +97,6 @@ jobs:
       # VITE_AZURE_CLIENT_ID and the backend's AZURE_CLIENT_ID (JWT
       # audience) both derive from this secret.
       TF_VAR_azure_spa_client_id: ${{ secrets['AZURE_SPA_CLIENT_ID'] }}
-      # FRONTEND_URL is resolved from the Terraform state output in a later
-      # step, with a fallback to the FRONTEND_URL secret for first deploys.
       # Billing integration secrets
       TF_VAR_azure_billing_client_id: ${{ secrets['AZURE_BILLING_CLIENT_ID'] }}
       TF_VAR_azure_billing_client_secret: ${{ secrets['AZURE_BILLING_CLIENT_SECRET'] }}
@@ -166,24 +164,6 @@ jobs:
       - name: Terraform Init
         run: terraform init
         working-directory: terraform
-
-      # Resolve the deployed frontend origin from Terraform state so the
-      # backend's CORS setting stays in sync with the actual Container App
-      # FQDN. Falls back to the FRONTEND_URL secret for first-time deploys.
-      - name: Resolve FRONTEND_URL from Terraform state
-        id: frontend_url
-        working-directory: terraform
-        run: |
-          FRONTEND_URL=$(terraform output -raw frontend_url 2>/dev/null || true)
-          if [ -z "$FRONTEND_URL" ]; then
-            FRONTEND_URL="${{ secrets.FRONTEND_URL }}"
-          fi
-          if [ -z "$FRONTEND_URL" ]; then
-            echo "ERROR: FRONTEND_URL is required. Set the FRONTEND_URL secret or ensure Terraform state has a frontend_url output." >&2
-            exit 1
-          fi
-          echo "TF_VAR_frontend_url=$FRONTEND_URL" >> "$GITHUB_ENV"
-          echo "frontend_url=$FRONTEND_URL"
 
       # Validate Terraform configuration (catches syntax/type errors before apply)
       - name: Terraform Validate
