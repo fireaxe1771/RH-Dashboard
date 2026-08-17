@@ -324,6 +324,7 @@ export const AppContent: React.FC = () => {
         {/* Top Navbar */}
         <Navbar
           title={title}
+          titleNote={activeAiAnalyticsView ? 'excluding rural metro departments' : undefined}
           description={description}
           isConnecting={dashboardsLoading}
           onRefresh={!isDesignerOpen && !activeBillingView && !activeAiAnalyticsView ? loadDashboards : undefined}
@@ -349,27 +350,6 @@ export const AppContent: React.FC = () => {
             >
               <AlertCircle size={18} />
               <span><strong>Metadata Fetch Error:</strong> {dashboardsError}</span>
-            </div>
-          )}
-
-          {activeAiAnalyticsView && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                padding: '10px 16px',
-                marginBottom: '12px',
-                backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                border: '1px solid rgba(245, 158, 11, 0.25)',
-                borderRadius: '8px',
-                color: '#f59e0b',
-                fontSize: '13px',
-                fontWeight: 600,
-              }}
-            >
-              <AlertCircle size={16} />
-              <span>Excluding Rural Metro contract departments</span>
             </div>
           )}
 

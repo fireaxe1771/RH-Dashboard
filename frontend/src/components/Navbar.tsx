@@ -3,6 +3,7 @@ import { Database, RefreshCw, AlertCircle } from 'lucide-react';
 
 interface NavbarProps {
   title: string;
+  titleNote?: string;
   description?: string;
   isConnecting?: boolean;
   onRefresh?: () => void;
@@ -11,6 +12,7 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({
   title,
+  titleNote,
   description,
   isConnecting = false,
   onRefresh,
@@ -19,7 +21,14 @@ export const Navbar: React.FC<NavbarProps> = ({
   return (
     <header className="navbar" data-testid="navbar">
       <div>
-        <h1 className="navbar-title">{title}</h1>
+        <h1 className="navbar-title">
+          {title}
+          {titleNote && (
+            <span style={{ fontSize: '13px', fontWeight: 500, color: '#f59e0b', marginLeft: '10px' }}>
+              ({titleNote})
+            </span>
+          )}
+        </h1>
         {description && (
           <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
             {description}
