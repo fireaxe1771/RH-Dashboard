@@ -83,7 +83,6 @@ jobs:
       TF_VAR_backend_image_tag: ${{ github.sha }}
       TF_VAR_frontend_image_tag: ${{ github.sha }}
       TF_VAR_mongodb_uri: ${{ secrets.MONGODB_URI }}
-      TF_VAR_mongodb_db_name: ${{ secrets['MONGODB_DB_NAME'] || 'recoveryhub_dashboard' }}
       TF_VAR_recoveryhub_ai_mongodb_db_name: AI_FEE_CALC_MULTI_AGENT_PROD
       TF_VAR_azure_sql_host: ${{ secrets.AZURE_SQL_HOST }}
       TF_VAR_azure_sql_db: ${{ secrets.AZURE_SQL_DB }}
@@ -97,20 +96,12 @@ jobs:
       # VITE_AZURE_CLIENT_ID and the backend's AZURE_CLIENT_ID (JWT
       # audience) both derive from this secret.
       TF_VAR_azure_spa_client_id: ${{ secrets['AZURE_SPA_CLIENT_ID'] }}
-      # Billing integration secrets
-      TF_VAR_azure_billing_client_id: ${{ secrets['AZURE_BILLING_CLIENT_ID'] }}
-      TF_VAR_azure_billing_client_secret: ${{ secrets['AZURE_BILLING_CLIENT_SECRET'] }}
       TF_VAR_azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      TF_VAR_azure_billing_account_id: ${{ secrets['AZURE_BILLING_ACCOUNT_ID'] }}
-      TF_VAR_azure_billing_account_type: ${{ secrets['AZURE_BILLING_ACCOUNT_TYPE'] }}
-      TF_VAR_azure_management_group_id: ${{ secrets['AZURE_MANAGEMENT_GROUP_ID'] }}
-      # AI integration secrets (Azure OpenAI / Foundry; OpenAI.com optional).
-      # API version and chat/embedding deployment names use the Terraform
-      # defaults (2024-10-21, gpt-5.4-mini, text-embedding-3-small); override
-      # them in terraform/billing_variables.tf if your deployments differ.
-      TF_VAR_openai_api_key: ${{ secrets['OPENAI_API_KEY'] }}
-      TF_VAR_azure_openai_endpoint: ${{ secrets['AZURE_OPENAI_ENDPOINT'] }}
-      TF_VAR_azure_openai_api_key: ${{ secrets['AZURE_OPENAI_API_KEY'] }}
+      # Billing and AI integration secrets are intentionally not referenced
+      # here: those GitHub secrets do not exist yet (billing is deferred per
+      # AGENTS.md), so the Terraform defaults (empty = not configured) apply.
+      # When billing/AI are configured, create the secrets and re-add the
+      # TF_VAR_azure_billing_* and TF_VAR_openai/azure_openai lines here.
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4.2.2
@@ -156,7 +147,7 @@ jobs:
 
       # Setup Terraform
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4.0.1
         with:
           terraform_version: 1.6.2
 

@@ -2,12 +2,14 @@
 
 variable "azure_billing_client_id" {
   type        = string
+  default     = ""
   description = "Azure Entra ID Application (client) ID for the billing service principal."
 }
 
 variable "azure_billing_client_secret" {
   type        = string
   sensitive   = true
+  default     = ""
   description = "Client secret for the billing service principal. Never logged or printed."
 }
 
@@ -18,6 +20,7 @@ variable "azure_subscription_id" {
 
 variable "azure_billing_account_id" {
   type        = string
+  default     = ""
   description = "Azure billing account ID (numeric string for EA, UUID for MCA)."
 }
 
