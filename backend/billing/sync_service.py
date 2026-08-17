@@ -12,7 +12,15 @@ from datetime import datetime, timezone
 from bson import ObjectId
 
 from config import settings
-from billing import advisor, billing_accounts, consumption, cost_management, resource_graph, retail_prices
+from billing import (
+    BillingAPIError,
+    advisor,
+    billing_accounts,
+    consumption,
+    cost_management,
+    resource_graph,
+    retail_prices,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -319,7 +327,7 @@ async def sync_cost_details(db, billing_period: str, triggered_by: str = "manual
                         await _upsert_cost_row(db, cleaned)
                         count += 1
                 await _rebuild_cost_summary(db, billing_period)
-            except Exception as detail_exc:
+            except BillingAPIError as detail_exc:
                 logger.warning(
                     f"Cost details report failed for {billing_period} ({detail_exc}). "
                     f"Falling back to aggregated query API for summary."

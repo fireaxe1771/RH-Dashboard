@@ -187,7 +187,7 @@ class TestBillingSettingsValidation:
         )
         s.validate_billing_settings()
 
-    def test_billing_validation_raises_on_missing_azure_openai_key(self):
+    def test_billing_validation_warns_on_missing_azure_openai_key(self, caplog):
         s = SettingsStub(
             AZURE_BILLING_CLIENT_ID="client",
             AZURE_BILLING_CLIENT_SECRET="secret",
@@ -196,10 +196,10 @@ class TestBillingSettingsValidation:
             AZURE_OPENAI_ENDPOINT="https://my.openai.azure.com/",
             AZURE_OPENAI_API_KEY="",
         )
-        with pytest.raises(ValueError, match="AZURE_OPENAI_API_KEY"):
-            s.validate_billing_settings()
+        s.validate_billing_settings()
+        assert "AZURE_OPENAI_API_KEY" in caplog.text
 
-    def test_billing_validation_raises_on_missing_all_ai_keys(self):
+    def test_billing_validation_warns_on_missing_all_ai_keys(self, caplog):
         s = SettingsStub(
             AZURE_BILLING_CLIENT_ID="client",
             AZURE_BILLING_CLIENT_SECRET="secret",
@@ -207,8 +207,8 @@ class TestBillingSettingsValidation:
             OPENAI_API_KEY="",
             AZURE_OPENAI_ENDPOINT="",
         )
-        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
-            s.validate_billing_settings()
+        s.validate_billing_settings()
+        assert "OPENAI_API_KEY" in caplog.text
 
 
 class TestWorkerSettingsValidation:

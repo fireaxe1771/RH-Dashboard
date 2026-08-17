@@ -45,6 +45,15 @@ class _AsyncCursor:
     def __init__(self, cursor):
         self._cursor = cursor
 
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._cursor)
+        except StopIteration:
+            raise StopAsyncIteration
+
     async def to_list(self, length=None):
         items = list(self._cursor)
         if length is not None:
