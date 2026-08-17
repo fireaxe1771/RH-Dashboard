@@ -6,9 +6,9 @@
  * re-exported here so existing imports from 'services/api' keep working.
  */
 
-import { createApiFetch, setAuthToken, getAuthToken, setMsalInstance } from './fetchWrapper';
+import { createApiFetch, setAuthToken, getAuthToken, setMsalInstance, refreshAccessToken, isTokenExpired, secondsUntilExpiry } from './fetchWrapper';
 
-export { setAuthToken, getAuthToken, setMsalInstance };
+export { setAuthToken, getAuthToken, setMsalInstance, refreshAccessToken, isTokenExpired, secondsUntilExpiry };
 
 export interface WidgetLayout {
   x: number;
