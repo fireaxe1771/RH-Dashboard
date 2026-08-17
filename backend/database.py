@@ -62,7 +62,7 @@ class DatabaseManager:
             await self.db["azure_cost_details"].create_index([("pre_tax_cost", -1)])
 
             await self.db["azure_cost_summary"].create_index(
-                [("period", 1), ("dimension", 1), ("subscription_id", 1)],
+                [("period", 1), ("dimension", 1), ("subscription_id", 1), ("dimension_value", 1)],
                 unique=True
             )
             await self.db["azure_cost_summary"].create_index([("period", 1), ("total_cost", -1)])

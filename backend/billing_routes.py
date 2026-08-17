@@ -5,10 +5,11 @@ recommendations, invoices, reservations, and the AI cost-analyst Q&A
 endpoint. Also provides sync trigger/status endpoints for the billing
 data slave process.
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth import get_current_user
 from config import settings
@@ -32,18 +33,23 @@ billing_router = APIRouter(tags=["Azure Billing"])
 # All billing read endpoints cap at 1000 rows to prevent unbounded memory
 # consumption. If a collection grows beyond this, pagination should be added.
 
-# Allowed manual sync types -> sync_service coroutine
-_SYNC_DISPATCH = {
-    "full": lambda db: sync_service.run_full_backfill(db, settings.BILLING_HISTORY_MONTHS, "manual_api"),
-    "daily": lambda db: sync_service.run_daily_sync(db),
-    "advisor": lambda db: sync_service.sync_advisor_recommendations(db, "manual_api"),
-    "budgets": lambda db: sync_service.sync_budgets(db, "manual_api"),
-    "alerts": lambda db: sync_service.sync_alerts(db, "manual_api"),
-    "invoices": lambda db: sync_service.sync_invoices(db, "manual_api"),
-    "reservations": lambda db: sync_service.sync_reservations(db, "manual_api"),
-    "resource_inventory": lambda db: sync_service.sync_resource_inventory(db, "manual_api"),
-    "retail_prices": lambda db: sync_service.sync_retail_prices(db, "manual_api"),
-    "vectorize": lambda db: vectorizer.run_vectorization(db),
+# Allowed manual sync types -> (coroutine function, fixed kwargs).
+# Using functools.partial preserves the coroutine-function nature of the
+# async functions so that asyncio.create_task properly schedules them.
+# (Lambda wrappers return a coroutine object that gets garbage-collected
+# without ever being awaited — "coroutine was never awaited" warning.)
+_SYNC_DISPATCH: dict[str, tuple] = {
+    "cost_details": (sync_service.sync_cost_details, {"triggered_by": "manual_api"}),
+    "full": (sync_service.run_full_backfill, {"months": settings.BILLING_HISTORY_MONTHS, "triggered_by": "manual_api"}),
+    "daily": (sync_service.run_daily_sync, {}),
+    "advisor": (sync_service.sync_advisor_recommendations, {"triggered_by": "manual_api"}),
+    "budgets": (sync_service.sync_budgets, {"triggered_by": "manual_api"}),
+    "alerts": (sync_service.sync_alerts, {"triggered_by": "manual_api"}),
+    "invoices": (sync_service.sync_invoices, {"triggered_by": "manual_api"}),
+    "reservations": (sync_service.sync_reservations, {"triggered_by": "manual_api"}),
+    "resource_inventory": (sync_service.sync_resource_inventory, {"triggered_by": "manual_api"}),
+    "retail_prices": (sync_service.sync_retail_prices, {"triggered_by": "manual_api"}),
+    "vectorize": (vectorizer.run_vectorization, {}),
 }
 
 
@@ -98,18 +104,17 @@ async def get_sync_status(db=Depends(get_db)):
 @billing_router.post("/sync/trigger", dependencies=[Depends(get_current_user)])
 async def trigger_sync(
     request: BillingSyncRequest,
-    background_tasks: BackgroundTasks,
     db=Depends(get_db),
 ):
-    """Validates the sync type and dispatches the sync as a background task."""
+    """Validates the sync type and dispatches the sync as a background asyncio task."""
     if request.sync_type not in _SYNC_DISPATCH:
         raise HTTPException(status_code=400, detail=f"Invalid sync_type: {request.sync_type}")
 
-    dispatch = _SYNC_DISPATCH[request.sync_type]
+    func, fixed_kwargs = _SYNC_DISPATCH[request.sync_type]
     if request.sync_type == "cost_details" and request.billing_period:
-        background_tasks.add_task(sync_service.sync_cost_details, db, request.billing_period, "manual_api")
+        asyncio.create_task(sync_service.sync_cost_details(db, request.billing_period, "manual_api"))
     else:
-        background_tasks.add_task(dispatch, db)
+        asyncio.create_task(func(db, **fixed_kwargs))
     return {"status": "queued", "sync_type": request.sync_type}
 
 

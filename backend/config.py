@@ -5,9 +5,12 @@ Defines the ``Settings`` class that centralises all runtime configuration
 settings, vectorizer limits) with validation at startup. Environment
 variables are loaded from ``.env`` for local development.
 """
+import logging
 import os
 import sys
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 # Load local environment file if present (for local testing outside Docker or compose env setup)
 load_dotenv()
@@ -325,7 +328,14 @@ class Settings:
             self.validate_billing_settings()
 
     def validate_billing_settings(self) -> None:
-        """Validates billing service principal and AI credentials when sync is enabled."""
+        """Validates billing service principal credentials when sync is enabled.
+
+        AI credentials (OpenAI/Azure OpenAI) are optional — they are only used
+        by the AI Cost Analyst feature (/api/billing/ai/query), which degrades
+        gracefully (returns 503) when no AI key is configured. The core billing
+        sync (cost details, budgets, alerts, advisor, invoices, reservations)
+        does not require any AI credentials.
+        """
         missing = []
         if not self.AZURE_BILLING_CLIENT_ID:
             missing.append("AZURE_BILLING_CLIENT_ID")
@@ -333,14 +343,22 @@ class Settings:
             missing.append("AZURE_BILLING_CLIENT_SECRET")
         if not self.AZURE_SUBSCRIPTION_ID:
             missing.append("AZURE_SUBSCRIPTION_ID")
-        # AI credentials: Azure OpenAI (Foundry) takes precedence; otherwise OpenAI.com
-        if self.AZURE_OPENAI_ENDPOINT:
-            if not self.AZURE_OPENAI_API_KEY:
-                missing.append("AZURE_OPENAI_API_KEY")
-        elif not self.OPENAI_API_KEY:
-            missing.append("OPENAI_API_KEY (or set AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY)")
         if missing:
             raise ValueError(f"Missing required billing variables: {', '.join(missing)}")
+
+        # AI credentials are optional — warn but don't block startup
+        if self.AZURE_OPENAI_ENDPOINT:
+            if not self.AZURE_OPENAI_API_KEY:
+                logger.warning(
+                    "AZURE_OPENAI_ENDPOINT is set but AZURE_OPENAI_API_KEY is missing. "
+                    "The AI Cost Analyst feature will be unavailable until configured."
+                )
+        elif not self.OPENAI_API_KEY:
+            logger.warning(
+                "No AI provider configured (OPENAI_API_KEY or AZURE_OPENAI_ENDPOINT + "
+                "AZURE_OPENAI_API_KEY). The AI Cost Analyst feature will be unavailable "
+                "until configured. Core billing sync and dashboards are unaffected."
+            )
 
 # Create and validate configurations globally
 settings = Settings()

@@ -80,7 +80,7 @@ resource "azurerm_container_app" "backend" {
       name   = "api"
       image  = "${data.azurerm_container_registry.acr.login_server}/rh-dashboard-backend:${var.backend_image_tag}"
       cpu    = "0.5"
-      memory = "1.0Gi"
+      memory = "1Gi"
 
       env {
         name  = "PORT"
