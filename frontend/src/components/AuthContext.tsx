@@ -1,7 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { useMsal, useIsAuthenticated } from '@azure/msal-react';
 import { loginRequest } from '../authConfig';
-import { setAuthToken, setMsalInstance } from '../services/api';
+import { setAuthToken, setMsalInstance, getAuthToken, refreshAccessToken, secondsUntilExpiry } from '../services/api';
 import { AlertTriangle } from 'lucide-react';
 
 export interface UserProfile {
@@ -34,6 +34,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const hasHandledRedirect = useRef(false);
   const isAcquiringToken = useRef(false);
   const isLoggingOut = useRef(false);
+
+  // Proactive token renewal timer. Scheduled after each successful token
+  // acquisition to renew ~5 minutes before the idToken expires, so the user
+  // never sees a 401 from an expired token on a tab that's been left open.
+  const renewalTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Validate environment variables on startup
   useEffect(() => {
@@ -180,6 +185,70 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
   }, [isDevAuthBypass, isMsalAuthenticated, accounts, instance, tokenReady]);
 
+  // Proactive token renewal: schedule a silent refresh ~5 minutes before the
+  // idToken expires so the user never hits a 401 from an expired token on a
+  // tab that's been left open. Uses the shared refreshAccessToken() from
+  // fetchWrapper so the refresh is deduplicated with any concurrent 401 retry.
+  //
+  // CLOCK_SKEW_SECONDS adds a buffer to compensate for client/server clock
+  // drift. If the client clock is behind the server, the token's exp claim
+  // (set by AAD) will appear further in the future than it actually is,
+  // so we renew earlier to avoid a window where the token is expired
+  // server-side but not yet client-side.
+  const CLOCK_SKEW_SECONDS = 60;
+  const RENEW_BEFORE_EXPIRY_SECONDS = 300; // 5 minutes
+  const MIN_RENEWAL_DELAY_SECONDS = 30;
+
+  const scheduleRenewal = useCallback(() => {
+    if (renewalTimer.current) {
+      clearTimeout(renewalTimer.current);
+      renewalTimer.current = null;
+    }
+    if (isDevAuthBypass || isLoggingOut.current) return;
+
+    const token = getAuthToken();
+    if (!token) return;
+
+    const secondsLeft = secondsUntilExpiry(token);
+    if (secondsLeft <= 0) return; // Already expired — let the 401 handler deal with it
+
+    // Renew (RENEW_BEFORE_EXPIRY_SECONDS + CLOCK_SKEW_SECONDS) before expiry,
+    // with a minimum delay so we don't fire immediately for short-lived tokens.
+    const renewInSeconds = Math.max(
+      MIN_RENEWAL_DELAY_SECONDS,
+      secondsLeft - RENEW_BEFORE_EXPIRY_SECONDS - CLOCK_SKEW_SECONDS,
+    );
+    renewalTimer.current = setTimeout(async () => {
+      const newToken = await refreshAccessToken();
+      if (newToken) {
+        // refreshAccessToken already updated activeToken in the fetchWrapper;
+        // reschedule for the new token's expiry.
+        scheduleRenewal();
+      } else {
+        // refreshAccessToken returned null: either silent refresh failed
+        // (and acquireTokenRedirect was triggered, which will reload the
+        // page) or there's no MSAL instance. Log for observability so
+        // transient failures aren't silently swallowed — the reactive 401
+        // handler will still catch the expired token, but this helps
+        // diagnose why proactive renewal didn't prevent it.
+        console.warn('Proactive token renewal returned null; relying on reactive 401 retry');
+      }
+    }, renewInSeconds * 1000);
+  }, [isDevAuthBypass]);
+
+  // Schedule renewal when token becomes ready; clear on logout/unmount.
+  useEffect(() => {
+    if (tokenReady && !isDevAuthBypass) {
+      scheduleRenewal();
+    }
+    return () => {
+      if (renewalTimer.current) {
+        clearTimeout(renewalTimer.current);
+        renewalTimer.current = null;
+      }
+    };
+  }, [tokenReady, isDevAuthBypass, scheduleRenewal]);
+
   const user: UserProfile | null = isMsalAuthenticated && accounts.length > 0
     ? {
         name: accounts[0].name || accounts[0].username,
@@ -222,6 +291,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     isLoggingOut.current = true;
     setAuthToken(null);
     setTokenReady(false);
+    // Cancel any pending proactive renewal timer.
+    if (renewalTimer.current) {
+      clearTimeout(renewalTimer.current);
+      renewalTimer.current = null;
+    }
     // Prevent the API layer from attempting a silent refresh while the
     // logout redirect is in progress.
     setMsalInstance(instance, null);
