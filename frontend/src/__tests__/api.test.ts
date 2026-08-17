@@ -17,6 +17,22 @@ const mockMsalInstance: any = {
 };
 const mockAccount: any = { username: 'test@streamlineas.com' };
 
+// Helper: create a minimal JWT with a far-future exp so isTokenExpired()
+// returns false. The refresh logic checks the returned idToken's expiry,
+// so mock idTokens must be parseable JWTs — plain strings like
+// 'refreshed-token' would be treated as expired and trigger a forceRefresh
+// retry that the mock doesn't expect.
+function makeValidJwt(expSecondsFromNow = 3600): string {
+  const b64url = (str: string) =>
+    btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const payload = b64url(JSON.stringify({
+    exp: Math.floor(Date.now() / 1000) + expSecondsFromNow,
+    aud: 'test-client',
+  }));
+  return `${header}.${payload}.fake-signature`;
+}
+
 function jsonResponse(body: unknown, init?: { status?: number; statusText?: string }): Response {
   const status = init?.status ?? 200;
   return new Response(JSON.stringify(body), {
@@ -56,7 +72,7 @@ describe('fetchWrapper / api 401-refresh-retry', () => {
     (global.fetch as any)
       .mockResolvedValueOnce(jsonResponse({ detail: 'Unauthorized' }, { status: 401 }))
       .mockResolvedValueOnce(jsonResponse({ ok: true }));
-    mockAcquireTokenSilent.mockResolvedValueOnce({ idToken: 'refreshed-token' });
+    mockAcquireTokenSilent.mockResolvedValueOnce({ idToken: makeValidJwt() });
 
     const fetchWithAuth = createApiFetch('/api');
     const result = await fetchWithAuth<{ ok: boolean }>('/widgets');
@@ -66,8 +82,8 @@ describe('fetchWrapper / api 401-refresh-retry', () => {
     expect(mockAcquireTokenSilent).toHaveBeenCalledTimes(1);
     // The retried request should carry the refreshed bearer token.
     const retryCall = (global.fetch as any).mock.calls[1][1] as RequestInit;
-    expect((retryCall.headers as Record<string, string>)['Authorization']).toBe(
-      'Bearer refreshed-token',
+    expect((retryCall.headers as Record<string, string>)['Authorization']).toMatch(
+      /^Bearer eyJ[\w-]+\./,
     );
   });
 
@@ -132,7 +148,7 @@ describe('fetchWrapper / api 401-refresh-retry', () => {
       .mockResolvedValueOnce(jsonResponse({ ok: true }));
     // acquireTokenSilent resolves after a microtask; both 401 handlers should
     // share the same promise.
-    mockAcquireTokenSilent.mockResolvedValueOnce({ idToken: 'refreshed-token' });
+    mockAcquireTokenSilent.mockResolvedValueOnce({ idToken: makeValidJwt() });
 
     const fetchWithAuth = createApiFetch('/api');
     const [result1, result2] = await Promise.all([
@@ -261,12 +277,65 @@ describe('refreshAccessToken direct usage', () => {
 
   test('returns the refreshed idToken and updates activeToken', async () => {
     setMsalInstance(mockMsalInstance, mockAccount);
-    mockAcquireTokenSilent.mockResolvedValueOnce({ idToken: 'new-id-token' });
+    const validToken = makeValidJwt();
+    mockAcquireTokenSilent.mockResolvedValueOnce({ idToken: validToken });
 
     const result = await refreshAccessToken();
-    expect(result).toBe('new-id-token');
+    expect(result).toBe(validToken);
     // Verify the shared token was updated.
     const { getAuthToken } = await import('../services/fetchWrapper');
-    expect(getAuthToken()).toBe('new-id-token');
+    expect(getAuthToken()).toBe(validToken);
+  });
+
+  test('passes forceRefresh=true when current token is expired', async () => {
+    setMsalInstance(mockMsalInstance, mockAccount);
+    // Set an expired token as the active token.
+    const expiredJwt = makeValidJwt(-60); // expired 60s ago
+    setAuthToken(expiredJwt);
+
+    const freshToken = makeValidJwt();
+    mockAcquireTokenSilent.mockResolvedValueOnce({ idToken: freshToken });
+
+    const result = await refreshAccessToken();
+    expect(result).toBe(freshToken);
+
+    // Verify acquireTokenSilent was called with forceRefresh: true
+    expect(mockAcquireTokenSilent).toHaveBeenCalledTimes(1);
+    const callArgs = mockAcquireTokenSilent.mock.calls[0][0];
+    expect(callArgs.forceRefresh).toBe(true);
+  });
+
+  test('passes forceRefresh=false when current token is still valid', async () => {
+    setMsalInstance(mockMsalInstance, mockAccount);
+    // Set a valid (non-expired) token as the active token.
+    setAuthToken(makeValidJwt(3600));
+
+    const freshToken = makeValidJwt();
+    mockAcquireTokenSilent.mockResolvedValueOnce({ idToken: freshToken });
+
+    const result = await refreshAccessToken();
+    expect(result).toBe(freshToken);
+
+    expect(mockAcquireTokenSilent).toHaveBeenCalledTimes(1);
+    const callArgs = mockAcquireTokenSilent.mock.calls[0][0];
+    expect(callArgs.forceRefresh).toBe(false);
+  });
+
+  test('retries with forceRefresh when cached response returns expired idToken', async () => {
+    setMsalInstance(mockMsalInstance, mockAccount);
+    // No active token set (activeToken = null), so forceRefresh starts false.
+    // First call returns an expired idToken (simulates MSAL cache hit with
+    // stale idToken). Second call (with forceRefresh) returns a fresh one.
+    const expiredIdToken = makeValidJwt(-60);
+    const freshIdToken = makeValidJwt();
+    mockAcquireTokenSilent
+      .mockResolvedValueOnce({ idToken: expiredIdToken })
+      .mockResolvedValueOnce({ idToken: freshIdToken });
+
+    const result = await refreshAccessToken();
+    expect(result).toBe(freshIdToken);
+    expect(mockAcquireTokenSilent).toHaveBeenCalledTimes(2);
+    // Second call should have forceRefresh: true
+    expect(mockAcquireTokenSilent.mock.calls[1][0].forceRefresh).toBe(true);
   });
 });
