@@ -1,5 +1,5 @@
 output "frontend_url" {
-  value       = "https://${azurerm_container_app.frontend.ingress[0].fqdn}"
+  value       = "https://${local.frontend_app_name}.${azurerm_container_app_environment.aca_env.default_domain}"
   description = "The public URL of the RecoveryHub React frontend portal."
 }
 

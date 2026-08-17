@@ -106,11 +106,6 @@ variable "azure_tenant_id" {
 }
 
 # --- CORS / Frontend Origin ---
-variable "frontend_url" {
-  type        = string
-  description = "Fully-qualified origin (scheme + host, no path) of the deployed frontend. Used by the backend to restrict CORS. Example: https://rh-dashboard-web.<env>.<region>.azurecontainerapps.io"
-  validation {
-    condition     = can(regex("^https?://[^/]+$", var.frontend_url))
-    error_message = "frontend_url must be a valid origin (scheme + host, no path or trailing slash): e.g. https://example.com"
-  }
-}
+# FRONTEND_URL is now computed by Terraform from the Container App
+# Environment's default_domain and the frontend app name, so no variable
+# or manual secret is required.

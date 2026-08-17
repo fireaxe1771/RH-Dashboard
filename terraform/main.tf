@@ -4,6 +4,10 @@ data "azurerm_container_registry" "acr" {
   resource_group_name = var.resource_group_name
 }
 
+locals {
+  frontend_app_name = "recoveryhub-dashboard-web"
+}
+
 # 1. Create Container App Environment
 resource "azurerm_container_app_environment" "aca_env" {
   name                       = var.environment_name
@@ -136,10 +140,11 @@ resource "azurerm_container_app" "backend" {
         value = var.azure_tenant_id
       }
       env {
-        # Restricts backend CORS to the deployed frontend origin. Must match
-        # the frontend Container App's external FQDN (scheme + host).
+        # Restricts backend CORS to the deployed frontend origin. Computed
+        # from the Container App Environment's default domain and the
+        # frontend app name so it stays in sync automatically.
         name  = "FRONTEND_URL"
-        value = var.frontend_url
+        value = "https://${local.frontend_app_name}.${azurerm_container_app_environment.aca_env.default_domain}"
       }
 
       # --- Azure Billing Integration ---
@@ -255,7 +260,7 @@ resource "azurerm_container_app" "backend" {
 
 # 3. Deploy Frontend Container App (React Served by Nginx)
 resource "azurerm_container_app" "frontend" {
-  name                         = "recoveryhub-dashboard-web"
+  name                         = local.frontend_app_name
   container_app_environment_id = azurerm_container_app_environment.aca_env.id
   resource_group_name          = var.resource_group_name
   revision_mode                = "Single"

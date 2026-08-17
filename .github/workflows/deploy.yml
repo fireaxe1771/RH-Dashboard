@@ -97,8 +97,6 @@ jobs:
       # VITE_AZURE_CLIENT_ID and the backend's AZURE_CLIENT_ID (JWT
       # audience) both derive from this secret.
       TF_VAR_azure_spa_client_id: ${{ secrets['AZURE_SPA_CLIENT_ID'] }}
-      # Frontend origin used by the backend to restrict CORS.
-      TF_VAR_frontend_url: ${{ secrets['FRONTEND_URL'] }}
       # Billing integration secrets
       TF_VAR_azure_billing_client_id: ${{ secrets['AZURE_BILLING_CLIENT_ID'] }}
       TF_VAR_azure_billing_client_secret: ${{ secrets['AZURE_BILLING_CLIENT_SECRET'] }}

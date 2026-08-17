@@ -42,11 +42,7 @@ push to `main`.**
   JWT audience (`AZURE_CLIENT_ID` via `TF_VAR_azure_spa_client_id`). Although
   this is a public value (baked into browser-visible JS), storing it as a
   secret ensures the frontend build and backend config can't drift apart.
-- **`FRONTEND_URL`** — The fully-qualified origin (scheme + host, no path, no
-  trailing slash) of the deployed frontend Container App, e.g.
-  `https://rh-dashboard-web.<env>.<region>.azurecontainerapps.io`. The backend
-  uses this to restrict CORS. Must match the frontend Container App's external
-  FQDN exactly. Validated at Terraform apply time and backend startup.
+- `FRONTEND_URL` is no longer a required secret — Terraform now computes it from the Container App Environment default_domain and frontend app name.
 
 ## Deferred: Azure Billing Configuration
 
