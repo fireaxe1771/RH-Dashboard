@@ -133,10 +133,26 @@ async def test_sync_budgets_computes_utilization(monkeypatch, mock_mongo_db):
 
 
 @pytest.mark.asyncio
-async def test_run_full_backfill_skips_when_populated(monkeypatch, mock_mongo_db):
-    await mock_mongo_db["azure_cost_details"].insert_one({"x": 1})
+async def test_run_full_backfill_skips_when_populated(mock_mongo_db):
+    # Populate every recent period so the fast summary backfill has nothing to do,
+    # and pre-seed the other collections so the optional second-phase syncs also
+    # stay dormant.
+    for p in sync_service._recent_periods(3):
+        await mock_mongo_db["azure_cost_summary"].insert_one({"period": p})
+    for col in (
+        "azure_advisor_recommendations",
+        "azure_budgets",
+        "azure_invoices",
+        "azure_reservation_details",
+        "azure_resource_inventory",
+        "azure_retail_prices",
+    ):
+        await mock_mongo_db[col].insert_one({"x": 1})
+
     result = await sync_service.run_full_backfill(mock_mongo_db, 3, "startup_backfill")
-    assert result == {"skipped": True}
+    assert result["cost_summary_fast"] == 0
+    assert result["periods_synced"] == []
+    assert result["cost_details"] == 0
 
 
 def test_clean_cost_row_returns_none_for_missing_date():
