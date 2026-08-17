@@ -87,7 +87,7 @@ variable "openai_chat_model" {
 
 variable "billing_sync_enabled" {
   type        = string
-  default     = "false"
+  default     = "true"
   description = "Enable or disable the billing sync scheduler. Set to 'true' once Azure billing credentials are configured."
 }
 

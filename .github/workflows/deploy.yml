@@ -97,11 +97,16 @@ jobs:
       # audience) both derive from this secret.
       TF_VAR_azure_spa_client_id: ${{ secrets['AZURE_SPA_CLIENT_ID'] }}
       TF_VAR_azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      # Billing and AI integration secrets are intentionally not referenced
-      # here: those GitHub secrets do not exist yet (billing is deferred per
-      # AGENTS.md), so the Terraform defaults (empty = not configured) apply.
-      # When billing/AI are configured, create the secrets and re-add the
-      # TF_VAR_azure_billing_* and TF_VAR_openai/azure_openai lines here.
+      # Billing integration secrets (rh-dashboard-billing service principal,
+      # Cost Management Reader on the Streamline Production subscription).
+      TF_VAR_azure_billing_client_id: ${{ secrets['AZURE_BILLING_CLIENT_ID'] }}
+      TF_VAR_azure_billing_client_secret: ${{ secrets['AZURE_BILLING_CLIENT_SECRET'] }}
+      TF_VAR_azure_billing_account_id: ${{ secrets['AZURE_BILLING_ACCOUNT_ID'] }}
+      TF_VAR_azure_billing_account_type: ${{ secrets['AZURE_BILLING_ACCOUNT_TYPE'] }}
+      # AI integration secrets are intentionally not referenced here: those
+      # GitHub secrets do not exist yet, so the Terraform defaults (empty =
+      # not configured) apply. Create them and re-add the TF_VAR_openai /
+      # TF_VAR_azure_openai lines here when the AI provider is configured.
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4.2.2
