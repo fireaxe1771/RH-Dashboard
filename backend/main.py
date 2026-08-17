@@ -94,10 +94,15 @@ async def _run_billing_backfill_if_needed() -> None:
     """Checks if billing data exists; runs full backfill if not. Background task."""
     try:
         db = db_manager.db
-        count = await db["azure_cost_details"].count_documents({})
-        if count == 0:
+        # The backfill itself checks for missing periods and only fills gaps,
+        # so we just need to check if there's any data at all to decide whether
+        # to log "starting backfill" vs "checking for gaps".
+        summary_count = await db["azure_cost_summary"].count_documents({})
+        if summary_count == 0:
             logger.info("No billing data found. Starting historical backfill...")
-            await run_full_backfill(db, settings.BILLING_HISTORY_MONTHS, "startup_backfill")
+        else:
+            logger.info(f"Billing data present ({summary_count} summary docs). Checking for gaps...")
+        await run_full_backfill(db, settings.BILLING_HISTORY_MONTHS, "startup_backfill")
     except Exception as e:
         logger.error(f"Billing backfill check failed: {e}")
 

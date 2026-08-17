@@ -43,12 +43,26 @@ export function getAuthToken(): string | null {
  * silently refresh expired tokens on 401 responses. Pass null to clear
  * the instance (e.g. on logout or in tests). Resets the redirect guard
  * and any pending refresh so a new session starts clean.
+ *
+ * The reset is only performed when the identity actually changes. The
+ * AuthContext sync effect re-runs whenever `accounts` updates reference,
+ * and msal-react can emit a new `accounts` array during an in-flight
+ * silent refresh (e.g. async cache load). Unconditionally clearing
+ * `refreshPromise` in that window would break dedup for concurrent 401
+ * handlers (letting a second acquireTokenSilent slip through), and
+ * clearing `isRedirecting` mid-navigation could permit a second
+ * acquireTokenRedirect. Skipping the reset on identity-stable re-syncs
+ * preserves the "clean slate on real session change" behavior without
+ * clobbering in-flight state.
  */
 export function setMsalInstance(instance: IPublicClientApplication | null, account: AccountInfo | null): void {
+  const identityChanged = instance !== msalInstance || account !== msalAccount;
   msalInstance = instance;
   msalAccount = account;
-  isRedirecting = false;
-  refreshPromise = null;
+  if (identityChanged) {
+    isRedirecting = false;
+    refreshPromise = null;
+  }
 }
 
 /**

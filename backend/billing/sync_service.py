@@ -293,7 +293,12 @@ async def _rebuild_cost_summary(db, billing_period: str) -> None:
 
 
 async def sync_cost_details(db, billing_period: str, triggered_by: str = "manual_api") -> int:
-    """Syncs unaggregated cost line items for one billing period, then rebuilds summaries."""
+    """Syncs unaggregated cost line items for one billing period, then rebuilds summaries.
+
+    If the Cost Details report API is rate-limited or times out, falls back to
+    the aggregated Query API to populate azure_cost_summary directly so the
+    dashboard has data without waiting for the full line-item backfill.
+    """
     lock = _get_sync_lock(f"cost_details_{billing_period}")
     if lock.locked():
         logger.warning(f"Sync cost_details_{billing_period} already in progress, skipping.")
@@ -304,20 +309,75 @@ async def sync_cost_details(db, billing_period: str, triggered_by: str = "manual
             scope = _scope()
             start, end = _period_dates(billing_period)
             count = 0
-            for metric in ("ActualCost", "AmortizedCost"):
-                rows = await cost_management.generate_cost_details_report(scope, start, end, metric)
-                for row in rows:
-                    cleaned = _clean_cost_row(row, billing_period)
-                    if cleaned is None:
-                        continue
-                    await _upsert_cost_row(db, cleaned)
-                    count += 1
-            await _rebuild_cost_summary(db, billing_period)
+            try:
+                for metric in ("ActualCost", "AmortizedCost"):
+                    rows = await cost_management.generate_cost_details_report(scope, start, end, metric)
+                    for row in rows:
+                        cleaned = _clean_cost_row(row, billing_period)
+                        if cleaned is None:
+                            continue
+                        await _upsert_cost_row(db, cleaned)
+                        count += 1
+                await _rebuild_cost_summary(db, billing_period)
+            except Exception as detail_exc:
+                logger.warning(
+                    f"Cost details report failed for {billing_period} ({detail_exc}). "
+                    f"Falling back to aggregated query API for summary."
+                )
+                await _sync_cost_summary_fast(db, billing_period)
             await _write_sync_log_complete(db, log_id, count)
             return count
         except Exception as exc:  # noqa: BLE001 — log and record failure, then re-raise
             await _write_sync_log_failed(db, log_id, str(exc))
             raise
+
+
+async def _sync_cost_summary_fast(db, billing_period: str) -> None:
+    """Populates azure_cost_summary directly from the aggregated Query API.
+
+    Used as a fallback when the Cost Details report API is rate-limited or
+    times out. The Query API is much faster and less throttled because it
+    returns pre-aggregated data instead of generating a full CSV report.
+    """
+    scope = _scope()
+    start, end = _period_dates(billing_period)
+    dimensions = {
+        "ServiceName": "ServiceName",
+        "ResourceGroupName": "ResourceGroupName",
+        "Location": "ResourceLocation",
+    }
+    for dimension, api_dim in dimensions.items():
+        try:
+            rows = await cost_management.query_costs(
+                scope, start, end, granularity="None",
+                group_by_dimensions=[api_dim],
+            )
+            for row in rows:
+                value = row.get(api_dim) or "Unknown"
+                total = _to_float(row.get("PreTaxCost"))
+                currency = "USD"
+                qty = _to_float(row.get("Quantity"))
+                key = {
+                    "period": billing_period,
+                    "subscription_id": settings.AZURE_SUBSCRIPTION_ID,
+                    "dimension": dimension,
+                    "dimension_value": value,
+                }
+                summary = {
+                    **key,
+                    "total_cost": round(total, 4),
+                    "currency": currency,
+                    "usage_quantity": round(qty, 4),
+                    "unit_of_measure": "",
+                    "record_count": 1,
+                    "sync_timestamp": _now(),
+                }
+                await db["azure_cost_summary"].update_one(
+                    key, {"$set": summary}, upsert=True
+                )
+        except Exception as dim_exc:
+            logger.warning(f"Fast summary sync failed for {dimension}: {dim_exc}")
+    logger.info(f"Fast summary sync completed for {billing_period}")
 
 
 # --------------------------------------------------------------------------- #
@@ -815,21 +875,71 @@ async def run_daily_sync(db) -> dict:
 
 
 async def run_full_backfill(db, months: int, triggered_by: str = "startup_backfill") -> dict:
-    """One-time historical backfill across all sync types. No-op if data exists."""
-    existing = await db["azure_cost_details"].count_documents({})
-    if existing:
-        logger.info("Cost details already populated (%d docs). Skipping backfill.", existing)
-        return {"skipped": True}
+    """Historical backfill across all sync types. Fills in missing periods.
 
-    summary: dict = {"cost_details": 0}
-    for period in _recent_periods(months):
-        summary["cost_details"] += await sync_cost_details(db, period, triggered_by)
-        await asyncio.sleep(5)  # Respect rate limits between periods
+    Populates azure_cost_summary first using the fast aggregated Query API
+    (so the dashboard has data immediately), then attempts the full cost
+    details line-item backfill in the background (which may be slow due to
+    Azure Cost Management rate limiting).
 
-    summary["advisor"] = await sync_advisor_recommendations(db, triggered_by)
-    summary["budgets"] = await sync_budgets(db, triggered_by)
-    summary["invoices"] = await sync_invoices(db, triggered_by)
-    summary["reservations"] = await sync_reservations(db, triggered_by)
-    summary["resource_inventory"] = await sync_resource_inventory(db, triggered_by)
-    summary["retail_prices"] = await sync_retail_prices(db, triggered_by)
+    Only syncs periods that don't already have summary data, so this is
+    safe to call repeatedly (e.g. via manual trigger) to fill in gaps
+    left by rate-limited previous runs.
+    """
+    all_periods = _recent_periods(months)
+
+    # Find which periods already have summary data
+    existing_periods = set()
+    cursor = db["azure_cost_summary"].find({}, {"period": 1})
+    async for doc in cursor:
+        existing_periods.add(doc.get("period"))
+    missing_periods = [p for p in all_periods if p not in existing_periods]
+
+    if not missing_periods:
+        logger.info("Cost summary already populated for all %d periods. Skipping summary backfill.", len(all_periods))
+        # Still run other sync types in case they're missing
+    else:
+        logger.info(
+            "Backfill: %d/%d periods already have summary data. Syncing %d missing periods: %s",
+            len(existing_periods), len(all_periods), len(missing_periods), missing_periods,
+        )
+
+    # Phase 1: Fast summary backfill for missing periods only.
+    summary: dict = {"cost_summary_fast": 0, "periods_synced": [], "periods_failed": []}
+    for period in missing_periods:
+        try:
+            await _sync_cost_summary_fast(db, period)
+            summary["cost_summary_fast"] += 1
+            summary["periods_synced"].append(period)
+        except Exception as exc:
+            logger.warning(f"Fast summary sync failed for {period}: {exc}")
+            summary["periods_failed"].append(period)
+        await asyncio.sleep(60)  # Cost Management API rate limit cooldown
+
+    # Phase 2: Other sync types (fast APIs, not rate-limited like cost details)
+    # Only run these if they have no data yet
+    if await db["azure_advisor_recommendations"].count_documents({}) == 0:
+        summary["advisor"] = await sync_advisor_recommendations(db, triggered_by)
+    if await db["azure_budgets"].count_documents({}) == 0:
+        summary["budgets"] = await sync_budgets(db, triggered_by)
+    if await db["azure_invoices"].count_documents({}) == 0:
+        summary["invoices"] = await sync_invoices(db, triggered_by)
+    if await db["azure_reservation_details"].count_documents({}) == 0:
+        summary["reservations"] = await sync_reservations(db, triggered_by)
+    if await db["azure_resource_inventory"].count_documents({}) == 0:
+        summary["resource_inventory"] = await sync_resource_inventory(db, triggered_by)
+    if await db["azure_retail_prices"].count_documents({}) == 0:
+        summary["retail_prices"] = await sync_retail_prices(db, triggered_by)
+
+    # Phase 3: Full cost details line-item backfill (slow, rate-limited).
+    # This runs in the background and populates azure_cost_details for
+    # drill-down and AI analysis. The dashboard already has summary data
+    # from Phase 1, so this is non-blocking.
+    summary["cost_details"] = 0
+    for period in missing_periods:
+        try:
+            summary["cost_details"] += await sync_cost_details(db, period, triggered_by)
+        except Exception as exc:
+            logger.warning(f"Cost details backfill failed for {period}: {exc}")
+        await asyncio.sleep(60)  # Cost Management API rate limit cooldown
     return summary

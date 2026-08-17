@@ -16,7 +16,12 @@ logger = logging.getLogger(__name__)
 
 COST_MANAGEMENT_API_VERSION = "2025-03-01"
 MANAGEMENT_BASE = "https://management.azure.com"
-MAX_RETRIES = 5
+MAX_RETRIES = 10
+# Minimum wait between retries for Cost Management 429/503. Azure's
+# Retry-After header is often very small (2-16s) but the actual cooldown
+# for Cost Management rate limits is typically 60+ seconds. We enforce
+# a minimum to avoid exhausting all retries within 30 seconds.
+_MIN_RETRY_WAIT = 30
 
 # Cost details report polling
 _POLL_INTERVAL_SECONDS = 30
@@ -41,7 +46,8 @@ async def _api_call_with_retry(session: aiohttp.ClientSession, method: str, url:
                 }
             if response.status in (429, 503):
                 retry_after = int(response.headers.get("Retry-After", 2 ** attempt))
-                wait = min(retry_after, 60)
+                wait = max(retry_after, _MIN_RETRY_WAIT)
+                wait = min(wait, 120)  # cap at 2 minutes
                 logger.warning(
                     f"Rate limited (HTTP {response.status}). Waiting {wait}s before "
                     f"retry {attempt + 1}/{MAX_RETRIES}."
