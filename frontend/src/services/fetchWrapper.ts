@@ -119,11 +119,37 @@ export async function refreshAccessToken(): Promise<string | null> {
 
   refreshPromise = (async () => {
     try {
+      // If the current token is expired, force MSAL to contact AAD
+      // instead of returning a cached response. MSAL caches the entire
+      // auth response keyed by the requested scopes (User.Read = Graph).
+      // When the Graph access token is still valid but the idToken has
+      // expired, acquireTokenSilent returns the cached response —
+      // including the expired idToken — without a network round-trip.
+      // forceRefresh bypasses the cache so AAD issues a fresh idToken.
+      const currentToken = activeToken;
+      const forceRefresh = currentToken ? isTokenExpired(currentToken) : false;
+
       const response = await msalInstance!.acquireTokenSilent({
         ...loginRequest,
         account: msalAccount!,
+        forceRefresh,
       });
       if (response.idToken) {
+        // If we didn't force a refresh but the returned idToken is
+        // expired (cached response with stale idToken), retry once with
+        // forceRefresh to get a fresh one.
+        if (!forceRefresh && isTokenExpired(response.idToken, 30)) {
+          const forced = await msalInstance!.acquireTokenSilent({
+            ...loginRequest,
+            account: msalAccount!,
+            forceRefresh: true,
+          });
+          if (forced.idToken) {
+            activeToken = forced.idToken;
+            return forced.idToken;
+          }
+          return null;
+        }
         activeToken = response.idToken;
         return response.idToken;
       }

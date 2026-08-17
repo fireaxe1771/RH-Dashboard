@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { useMsal, useIsAuthenticated } from '@azure/msal-react';
 import { loginRequest } from '../authConfig';
-import { setAuthToken, setMsalInstance, getAuthToken, refreshAccessToken, secondsUntilExpiry } from '../services/api';
+import { setAuthToken, setMsalInstance, getAuthToken, refreshAccessToken, isTokenExpired, secondsUntilExpiry } from '../services/api';
 import { AlertTriangle } from 'lucide-react';
 
 export interface UserProfile {
@@ -123,6 +123,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               setTokenReady(false);
               return;
             }
+
+            // MSAL can return a cached response with an expired idToken
+            // when the Graph access token (scoped to User.Read) is still
+            // valid. Force a refresh to get a fresh idToken from AAD.
+            if (isTokenExpired(response.idToken, 30)) {
+              const refreshed = await instance.acquireTokenSilent({
+                ...loginRequest,
+                account: accounts[0],
+                forceRefresh: true,
+              });
+              if (cancelled) return;
+              if (!refreshed.idToken || isTokenExpired(refreshed.idToken, 30)) {
+                console.error("Could not acquire a valid (non-expired) idToken even after forceRefresh");
+                setAuthToken(null);
+                setTokenReady(false);
+                return;
+              }
+              setAuthToken(refreshed.idToken);
+              setTokenReady(true);
+              return;
+            }
+
             setAuthToken(response.idToken);
             setTokenReady(true);
           } catch (error) {
@@ -165,11 +187,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ...loginRequest,
         account: accounts[0],
       })
-      .then((response) => {
+      .then(async (response) => {
         if (!response.idToken) {
           console.error("acquireTokenSilent response missing idToken");
           setAuthToken(null);
           setTokenReady(false);
+          return;
+        }
+        // MSAL can return a cached response with an expired idToken when
+        // the Graph access token is still valid. Force a refresh.
+        if (isTokenExpired(response.idToken, 30)) {
+          const refreshed = await instance.acquireTokenSilent({
+            ...loginRequest,
+            account: accounts[0],
+            forceRefresh: true,
+          });
+          if (!refreshed.idToken || isTokenExpired(refreshed.idToken, 30)) {
+            console.error("Could not acquire a valid idToken after forceRefresh");
+            setAuthToken(null);
+            setTokenReady(false);
+            return;
+          }
+          setAuthToken(refreshed.idToken);
+          setTokenReady(true);
           return;
         }
         setAuthToken(response.idToken);
