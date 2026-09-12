@@ -95,6 +95,15 @@ _PASSTHROUGH_FIELDS: tuple[str, ...] = (
     "billing_category",
     "line_items_save_to_rh_status",
     "retry_count",
+    # Schema v3: step-1 level identification + routing/cancellation fields.
+    # v1/v2 projections lack these keys — .get() returns None, matching the
+    # direct-read path when the source doc doesn't have them.
+    "billing_level",
+    "level_identification_confidence",
+    "level_identification_low_confidence",
+    "dept_send_auto_invoice_status",
+    "is_cancelled",
+    "cancellation_reason",
 )
 
 
@@ -227,6 +236,10 @@ _TRACE_PASSTHROUGH_FIELDS: tuple[str, ...] = (
     # Phase 10 new fields (v2 projections only; v1 returns None)
     "conversation_id",
     "thread_id_is_billable",
+    # Schema v3: step-1 level identification fields
+    "billing_level",
+    "level_identification_confidence",
+    "level_identification_low_confidence",
 )
 
 # The projection stores line items under ``ai_line_items``; the trace

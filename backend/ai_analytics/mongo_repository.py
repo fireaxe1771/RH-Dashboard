@@ -55,6 +55,13 @@ SUMMARY_PROJECTION = {
     "processing_time_seconds": 1,
     "retry_count": 1,
     "completed_at": 1,
+    # Step-1 level identification fields (added to production ~2026-09)
+    "billing_level": 1,
+    "level_identification_confidence": 1,
+    "level_identification_low_confidence": 1,
+    # Cancellation fields populated on newer ai_line_items docs
+    "is_cancelled": 1,
+    "cancellation_reason": 1,
 }
 
 # Full projection — includes everything for the forensic trace page
@@ -97,7 +104,10 @@ async def get_ai_line_items_for_claim_ids(
 
     try:
         cursor = ai_db[AI_LINE_ITEMS_COLLECTION].find(query, SUMMARY_PROJECTION)
-        docs = await cursor.to_list(length=1000)
+        # length=None returns all matches — a fixed cap here silently
+        # truncated AI-side data for cohorts over 1,000 claims, which made
+        # the funnel's "step 1 evaluated" stage undercount.
+        docs = await cursor.to_list(length=None)
     except Exception as e:
         logger.error(f"Failed to fetch ai_line_items for {len(claim_ids)} claims: {e}")
         raise

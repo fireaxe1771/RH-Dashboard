@@ -71,6 +71,24 @@ _WATCHED_OPERATIONS = {"insert", "update", "replace"}
 # listener doesn't sleep for minutes during a prolonged outage.
 _MAX_RESTART_DELAY_SECONDS = 30.0
 
+
+def _is_non_resumable_error(exc: Exception) -> bool:
+    """Return True when the saved resume token can never work again.
+
+    MongoDB reports this as ``ChangeStreamHistoryLost`` (code 286) or an
+    error carrying the ``NonResumableChangeStreamError`` label: the oplog
+    position the token points at has rolled off, so retrying with the same
+    token fails forever. The only recovery is to discard the token and open
+    a fresh stream — reconciliation covers the missed window.
+    """
+    if getattr(exc, "code", None) == 286:
+        return True
+    details = getattr(exc, "details", None) or {}
+    if details.get("codeName") == "ChangeStreamHistoryLost":
+        return True
+    text = str(exc)
+    return "ChangeStreamHistoryLost" in text or "NonResumableChangeStreamError" in text
+
 # Max seconds to spend persisting the final "stopped" state on the
 # cancellation path. The lifespan shutdown contract (Section 1.1.4) gives the
 # worker 5s total, and a cancelled task's write may itself hang, so this write
@@ -397,6 +415,24 @@ async def run_change_stream_listener(
                         "consecutive_error_count": consecutive_restarts,
                     },
                 )
+
+                if _is_non_resumable_error(exc) and resume_token is not None:
+                    # The oplog position the token points at has rolled off;
+                    # retrying with it fails forever. Drop it so the next
+                    # iteration opens a fresh stream at the current oplog
+                    # position. Reconciliation backfills the missed window.
+                    logger.warning(
+                        "Change stream listener: resume token is stale "
+                        "(ChangeStreamHistoryLost); discarding it and "
+                        "reopening a fresh stream."
+                    )
+                    resume_token = None
+                    await update_worker_state(
+                        db,
+                        worker_config.WORKER_NAME,
+                        {"resume_token": None},
+                    )
+
                 await asyncio.sleep(delay)
 
         # Graceful shutdown via stop_event.

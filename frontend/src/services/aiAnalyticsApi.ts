@@ -43,10 +43,16 @@ export interface AiOutcomeSummary {
   data_complete: boolean;
 }
 
+export interface AiPipelineStageBreakdown {
+  label: string;
+  count: number;
+}
+
 export interface AiPipelineStageStat {
   stage: string;
   count: number;
   description: string;
+  breakdown?: AiPipelineStageBreakdown[] | null;
 }
 
 export interface AiOutcomeTrendPoint {

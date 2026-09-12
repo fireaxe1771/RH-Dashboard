@@ -58,10 +58,12 @@ from .health import (
 from .metrics import worker_metrics
 from .runtime import (
     is_backfill_running,
+    is_worker_leader,
     is_worker_running,
     start_backfill,
     start_worker,
     stop_worker,
+    worker_holder_id,
 )
 from .sync_integrity import sync_integrity_state
 from .sync_status import sync_health_snapshot
@@ -191,6 +193,12 @@ async def worker_status() -> Dict[str, Any]:
         "metrics": worker_metrics.snapshot(),
         "sync_integrity": sync_integrity_state.snapshot(),
         "backfill_running": is_backfill_running(),
+        # Leadership is per-process: under uvicorn --workers N only the
+        # process holding the MongoDB lease runs the worker loops. A status
+        # read that lands on a non-leader reports is_leader=False with
+        # worker state at rest — that is expected, not an outage.
+        "is_leader": is_worker_leader(),
+        "holder_id": worker_holder_id(),
     }
 
 

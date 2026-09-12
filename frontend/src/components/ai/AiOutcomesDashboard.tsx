@@ -123,6 +123,42 @@ const FunnelView: React.FC<{ stages: AiPipelineStageStat[] }> = ({ stages }) => 
                   {stage.description}
                 </span>
               )}
+              {stage.breakdown && stage.breakdown.length > 0 && (
+                <div
+                  style={{
+                    marginTop: '4px',
+                    paddingLeft: '12px',
+                    borderLeft: '2px solid var(--bg-tertiary)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '3px',
+                  }}
+                >
+                  {stage.breakdown.map((b) => (
+                    <div
+                      key={b.label}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                        {b.label}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          color: 'var(--text-secondary, var(--text-muted))',
+                        }}
+                      >
+                        {b.count.toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}

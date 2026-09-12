@@ -117,10 +117,16 @@ class AiDepartmentOutcomeStat(BaseModel):
     human_intervention_count: int = 0
 
 
+class AiPipelineStageBreakdown(BaseModel):
+    label: str
+    count: int
+
+
 class AiPipelineStageStat(BaseModel):
     stage: str
     count: int
     description: str = ""
+    breakdown: Optional[List[AiPipelineStageBreakdown]] = None
 
 
 class AiBillabilityStat(BaseModel):

@@ -510,3 +510,103 @@ every 30s.
 `backend/scripts/measure_v2_projection_size.py`. Median v2 projection is
 ~2.9 KB — within the v1 estimate. Annual growth ~68 MB/year, 10-year ~684 MB.
 The 16 MB document limit is not a concern.
+
+## AI Outcomes Funnel — Verified Data Flow (2026-09-12)
+
+The funnel (`GET /outcomes/funnel`, `AiOutcomesDashboard.FunnelView`) was
+realigned to the actual claim flow and now has 7 stages:
+
+1. **Reached Ready to Invoice Insurance** — rows in `AIInvoiceProcessRHTemp`
+   joined to Claims. A row is created when the claim hits ready-to-invoice;
+   this is the intake cohort and the step-1 trigger point.
+2. **Step 1: level & category evaluated** — an `ai_line_items` doc exists.
+   `breakdown` lists each identified `billing_level` value, then
+   "Category identified (no level)" (`billing_category` set, no level), then
+   "Not identified" (neither). Low-confidence identifications stay in their
+   level row (`level_identification_low_confidence`).
+3. **Marked for AI billing** — `claim_processing_status` is anything except
+   `BILLING_LEVEL_NOT_ENABLED` (the step-1 "not eligible" branch).
+   `breakdown` splits by `dept_send_auto_invoice_status` (mirrors
+   `Departments.IsSendInvoiceAI`): 0 = review grid, 2 = straight-through.
+4. **AI processing completed** — `COMPLETED`.
+5. **Line items saved to RH** — `line_items_save_to_rh_status = true`.
+6. **Released** — process log "Invoice to Insurance - Released" or status 7.
+7. **Cancelled / Rejected** — `AIClaimInvoiceCancellationDetails` row,
+   cancelled log, or `ai_line_items.is_cancelled` (newer docs carry
+   `cancellation_reason` too — used as the rejection reason fallback).
+   `breakdown` lists the normalized rejection-category counts (labeled via
+   `reason_normalization.CATEGORY_LABELS`), mirroring the Rejection Reasons
+   tile.
+
+### New ai_line_items fields (schema v3)
+
+`billing_level`, `level_identification_confidence`,
+`level_identification_low_confidence`, `level_identification_reasoning`
+appeared ~2026-09 (the step-1 level-identification output; ~200 docs at
+review time, only for departments whose fee schedules define levels).
+`is_cancelled`, `cancellation_reason`, `cancelled_on`,
+`is_invoice_sent_manually`, `sent_invoice_manually_on`,
+`lineitems_edited*` also exist on newer docs. Wired through
+`SUMMARY_PROJECTION`, `build_normalized_record`, the worker projection
+(schema v3), and `_PASSTHROUGH_FIELDS`/`_TRACE_PASSTHROUGH_FIELDS`.
+
+**v1/v2 projections lack these fields** — until a backfill rewrites them,
+projection mode reports everything "Not identified" / "Send mode unknown"
+in the funnel breakdowns. Run `ai_analytics_worker.backfill.run_backfill`
+after deploying schema v3.
+
+### Bugs fixed (2026-09-12)
+
+- **STRING_SPLIT ntext failure**: `get_process_logs_for_claims` and
+  `get_cancellation_details_for_claims` pass claim IDs as one CSV param.
+  Over ~4000 chars, pyodbc sends it as `ntext`, which `STRING_SPLIT`
+  rejects — both queries failed on every realistic cohort, so Released/
+  Cancelled were always 0 and `recoveryhub_sql` reported "partial".
+  Fixed with `STRING_SPLIT(CAST(%(claim_ids_csv)s AS nvarchar(max)), ',')`.
+  Never pass a large CSV param uncast into `STRING_SPLIT`.
+- **`to_list(length=1000)` cap**: `get_ai_line_items_for_claim_ids`
+  silently truncated AI-side reads at 1,000 docs. Now `length=None`.
+
+### Gotchas
+
+- ~13% of `AIInvoiceProcessRHTemp` claims have no `ai_line_items` doc —
+  step 1 never ran for them (department not AI-enabled at the time, still
+  queued, or skipped). "Step 1 evaluated" < intake is real, not a bug.
+- `is_invoice_sent_manually` is true on ~19k docs — most invoices are sent
+  outside the grid release path, so Released reflects grid releases only.
+- `AI_inv_process_status = 0` exists (~113 rows) and classifies "unknown".
+- Rejection categories distinguish `unknown` (a reason WAS recorded but the
+  reason_id/text didn't map) from `no_reason_recorded` (claim was cancelled
+  but no reason exists on the SQL detail row or the AI doc). As of
+  2026-09-12, ~188 cancelled claims have a "Cancelled" process log but no
+  `AIClaimInvoiceCancellationDetails` row — reviewers cancelled without
+  picking a reason. All 679 detail rows map to reason_ids 1-17.
+
+## Multi-Process Deployment & Leader Election (2026-09-12)
+
+The backend runs `uvicorn main:app --workers 4` (see `backend/Dockerfile`) —
+four separate OS processes, each running the FastAPI lifespan. Without
+coordination every process booted its own copy of the worker (4x duplicate
+change streams, reconciliation, and sync-integrity loops) and the worker
+control endpoints were per-process — `GET /status` could report "not
+running" while a backfill churned in a sibling process.
+
+**Leader election** (`ai_analytics_worker/leader_election.py`) fixes this
+with a lease doc `{"_id": "worker_leader"}` in `ai_analytics_worker_state`.
+`runtime._run_leader_campaign` acquires via atomic `find_one_and_update`,
+runs `run_worker` only while the lease is held, renews every
+`lease/3` seconds, and releases on shutdown. Non-leaders campaign every
+`WORKER_LEADER_CAMPAIGN_SECONDS`; failover after a leader dies takes at most
+lease + campaign seconds. `GET /worker/status` reports `is_leader` and
+`holder_id` so a non-leader read is diagnosable.
+
+Config: `WORKER_LEADER_LEASE_SECONDS` (60), `WORKER_LEADER_CAMPAIGN_SECONDS`
+(15), `WORKER_BACKFILL_CONCURRENCY` (8; `.env` runs 25) — backfill refreshes
+claims concurrently under a semaphore; it is I/O-bound on Atlas round-trips,
+not CPU.
+
+**Stale change-stream resume tokens**: when a saved token points at an
+oplog position that has rolled off, MongoDB returns
+`ChangeStreamHistoryLost` (code 286) and the token can never work again.
+`run_change_stream_listener` detects this, discards the persisted token,
+and reopens a fresh stream; reconciliation covers the missed window.

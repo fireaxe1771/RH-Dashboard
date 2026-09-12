@@ -70,6 +70,27 @@ class WorkerConfig:
         return settings.WORKER_BACKFILL_BATCH_SIZE
 
     @property
+    def backfill_concurrency(self) -> int:
+        """Max claims refreshed concurrently during backfill."""
+        return settings.WORKER_BACKFILL_CONCURRENCY
+
+    @property
+    def leader_lease_seconds(self) -> int:
+        """Leader lease TTL in seconds (multi-process election)."""
+        return settings.WORKER_LEADER_LEASE_SECONDS
+
+    @property
+    def leader_campaign_seconds(self) -> int:
+        """How often a non-leader retries leader acquisition."""
+        return settings.WORKER_LEADER_CAMPAIGN_SECONDS
+
+    @property
+    def leader_renew_interval_seconds(self) -> float:
+        """Lease renewal cadence — a third of the TTL so a couple of
+        transient renewal failures can't lapse the lease."""
+        return self.leader_lease_seconds / 3.0
+
+    @property
     def max_retries(self) -> int:
         """Max total attempts (including initial) before dead-letter (Phase 5).
 

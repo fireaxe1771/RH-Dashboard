@@ -52,6 +52,7 @@ CATEGORY_LABELS: Dict[str, str] = {
     "test_removal": "Test Removal",
     "nested_line_item_canceled": "Nested Line Item Cited When Canceled",
     "command_error": "Command Cited Incorrectly",
+    "no_reason_recorded": "No Reason Recorded",
     "other": "Other",
     "unknown": "Unknown",
 }
@@ -106,6 +107,16 @@ def _fuzzy_match(raw_reason: Optional[str]) -> Optional[str]:
         return "line_item_accuracy"
     if "lacking nested" in text or "incorrect resource" in text:
         return "line_item_accuracy"
+    # Newer AI-side cancellation_reason strings (no reason_id)
+    if "billables" in text and "wrong" in text:
+        return "line_item_accuracy"
+    if "additional resources" in text:
+        return "line_item_accuracy"
+    # "Recourses added Inappropriately" (sic — typo in production text)
+    if "added inappropriately" in text or "recourses" in text:
+        return "line_item_accuracy"
+    if "per resource department" in text or "time is set to 0" in text:
+        return "department_data_issue"
     if "wrong level" in text:
         return "level_classification"
     if "additional time" in text or "miscite" in text:

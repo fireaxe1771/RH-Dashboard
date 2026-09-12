@@ -129,6 +129,10 @@ class TestProjectionToAiRecord:
             "claim_processing_status", "agent_exec_status",
             "invoice_total", "processing_time_seconds",
             "thread_id", "retry_thread_id",
+            "billing_level", "level_identification_confidence",
+            "level_identification_low_confidence",
+            "dept_send_auto_invoice_status",
+            "is_cancelled", "cancellation_reason",
         }
         assert set(result.keys()) == expected_keys
         assert all(v is None for v in result.values())
@@ -159,6 +163,12 @@ class TestProjectionToAiRecord:
             "retry_count": 1,
             "thread_id": None,
             "retry_thread_id": None,
+            "billing_level": None,
+            "level_identification_confidence": None,
+            "level_identification_low_confidence": None,
+            "dept_send_auto_invoice_status": None,
+            "is_cancelled": None,
+            "cancellation_reason": None,
         }
 
 

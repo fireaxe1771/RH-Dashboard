@@ -27,6 +27,7 @@ from .models import (
     AiRejectionReasonBreakdown,
     AiDepartmentOutcomeStat,
     AiPipelineStageStat,
+    AiPipelineStageBreakdown,
     AiBillabilityStat,
     AiInvoiceListItem,
     AiInvoiceCohortResponse,
@@ -50,7 +51,7 @@ from .normalization import (
     AI_COMPLETED_STATUSES,
     AI_NOT_ENABLED_STATUSES,
 )
-from .reason_normalization import normalize_reason
+from .reason_normalization import normalize_reason, CATEGORY_LABELS
 from .cache import cached
 from config import settings
 from database import db_manager
@@ -300,43 +301,138 @@ async def get_outcome_summary(
 # Funnel
 # ---------------------------------------------------------------------------
 
+# dept_send_auto_invoice_status → human-readable routing label. The field
+# mirrors Departments.IsSendInvoiceAI: 0 = line items go to the AI review
+# grid (queue) for a human to release/cancel; non-zero (2 in production) =
+# straight-through auto-send.
+_SEND_MODE_LABELS = {
+    0: "Review grid (queue)",
+    2: "Straight-through (auto-send)",
+}
+
+
 @cached(ttl=60, func_name="get_outcome_funnel")
 async def get_outcome_funnel(
     ai_db,
     filters: AiAnalyticsFilters,
 ) -> List[AiPipelineStageStat]:
-    """Build the pipeline funnel."""
+    """Build the pipeline funnel.
+
+    Stages follow the real claim flow:
+    1. Claim reaches "Ready to Invoice Insurance" → row in
+       AIInvoiceProcessRHTemp (the intake cohort).
+    2. Step 1 — the AI identifies the billing level/category → an
+       ai_line_items document exists. Broken down by identified level,
+       with unidentified records grouped together.
+    3. The identified level/category is marked for AI billing →
+       claim_processing_status is anything except
+       BILLING_LEVEL_NOT_ENABLED. Broken down by send mode (review grid
+       vs straight-through).
+    4. AI processing completed (COMPLETED).
+    5. Line items written back to RecoveryHub.
+    6-7. Business outcome: released / cancelled from the grid.
+    """
     _validate_date_span(filters.start_date, filters.end_date)
 
     records, source_status, data_complete = await _load_normalized_cohort(ai_db, filters)
     records = _apply_filters(records, filters)
 
     total = len(records)
-    mongo_found = sum(1 for r in records if r["ai_record_state"] == "present")
-    billability_determined = sum(
-        1 for r in records
-        if r.get("billing_category") is not None
+
+    # Step 1: records where the AI actually evaluated the claim (an
+    # ai_line_items doc exists — the workflow ran and wrote a result).
+    evaluated = [r for r in records if r["ai_record_state"] == "present"]
+
+    # Step-1 breakdown: identified billing_level values, then "Category
+    # identified (no level)" for records where step 1 produced a
+    # billing_category but no level, then "Not identified" for records
+    # where step 1 produced neither. Low-confidence identifications stay
+    # in their level row.
+    level_counts: Counter = Counter()
+    category_only = 0
+    not_identified = 0
+    for r in evaluated:
+        level = r.get("billing_level")
+        if level:
+            level_counts[str(level).strip()] += 1
+        elif r.get("billing_category"):
+            category_only += 1
+        else:
+            not_identified += 1
+    step1_breakdown = [
+        AiPipelineStageBreakdown(label=label, count=n)
+        for label, n in level_counts.most_common()
+    ]
+    if category_only:
+        step1_breakdown.append(
+            AiPipelineStageBreakdown(
+                label="Category identified (no level)", count=category_only
+            )
+        )
+    step1_breakdown.append(
+        AiPipelineStageBreakdown(label="Not identified", count=not_identified)
     )
-    ai_completed = sum(1 for r in records if r.get("ai_processing_status") in AI_COMPLETED_STATUSES)
-    writeback_success = sum(1 for r in records if r.get("writeback_status") == "success")
+
+    # Marked for AI: step-1 ran and the identified level/category is
+    # enabled for AI billing (anything but BILLING_LEVEL_NOT_ENABLED).
+    marked = [
+        r for r in evaluated
+        if r.get("ai_processing_status") not in AI_NOT_ENABLED_STATUSES
+    ]
+    send_mode_counts: Counter = Counter()
+    for r in marked:
+        mode = r.get("dept_send_auto_invoice_status")
+        label = _SEND_MODE_LABELS.get(mode, "Send mode unknown")
+        send_mode_counts[label] += 1
+    marked_breakdown = [
+        AiPipelineStageBreakdown(label=label, count=n)
+        for label, n in send_mode_counts.most_common()
+    ]
+
+    ai_completed = sum(
+        1 for r in marked if r.get("ai_processing_status") in AI_COMPLETED_STATUSES
+    )
+    writeback_success = sum(
+        1 for r in records if r.get("writeback_status") == "success"
+    )
     released = sum(1 for r in records if r["business_outcome"] == "released")
-    cancelled = sum(1 for r in records if r["business_outcome"] == "cancelled_rejected")
+    cancelled_records = [
+        r for r in records if r["business_outcome"] == "cancelled_rejected"
+    ]
+    cancelled = len(cancelled_records)
+
+    # Rejection breakdown: normalized reason category per cancelled record,
+    # labeled with the human-readable CATEGORY_LABELS used by the UI.
+    rejection_counts: Counter = Counter()
+    for r in cancelled_records:
+        rejection_counts[
+            r.get("normalized_rejection_category") or "unknown"
+        ] += 1
+    rejection_breakdown = [
+        AiPipelineStageBreakdown(
+            label=CATEGORY_LABELS.get(cat, cat.replace("_", " ").title()),
+            count=n,
+        )
+        for cat, n in rejection_counts.most_common()
+    ]
 
     stages = [
         AiPipelineStageStat(
-            stage="Entered RH AI workflow",
+            stage="Reached Ready to Invoice Insurance",
             count=total,
             description="Claims in AIInvoiceProcessRHTemp",
         ),
         AiPipelineStageStat(
-            stage="Mongo AI record found",
-            count=mongo_found,
-            description="ai_line_items document exists",
+            stage="Step 1: level & category evaluated",
+            count=len(evaluated),
+            description="ai_line_items record exists — step 1 ran",
+            breakdown=step1_breakdown,
         ),
         AiPipelineStageStat(
-            stage="Billability determined",
-            count=billability_determined,
-            description="billing_category is not null",
+            stage="Marked for AI billing",
+            count=len(marked),
+            description="Level/category enabled for AI (not BILLING_LEVEL_NOT_ENABLED)",
+            breakdown=marked_breakdown,
         ),
         AiPipelineStageStat(
             stage="AI processing completed",
@@ -349,14 +445,15 @@ async def get_outcome_funnel(
             description="line_items_save_to_rh_status = true",
         ),
         AiPipelineStageStat(
-            stage="Business released",
+            stage="Released",
             count=released,
             description="Invoice to Insurance - Released",
         ),
         AiPipelineStageStat(
-            stage="Business cancelled/rejected",
+            stage="Cancelled / Rejected",
             count=cancelled,
             description="Invoice to Insurance - Cancelled",
+            breakdown=rejection_breakdown,
         ),
     ]
 
@@ -460,7 +557,7 @@ async def get_rejection_reasons(
         # Build raw reason breakdown
         raw_reason_counts: Counter = Counter()
         for r in group:
-            raw_reason = r.get("raw_rejection_reason") or "Unknown"
+            raw_reason = r.get("raw_rejection_reason") or "No reason recorded"
             raw_reason_counts[raw_reason] += 1
 
         breakdown = [

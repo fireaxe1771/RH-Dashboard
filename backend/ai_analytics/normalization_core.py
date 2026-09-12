@@ -482,12 +482,15 @@ def build_normalized_record(
                 business_user_id = log.get("user_id")
 
     has_cancellation = cancellation is not None
+    # Newer ai_line_items docs carry their own cancellation flag — treat it
+    # as cancellation evidence alongside the SQL details table.
+    ai_cancelled = bool(ai_record.get("is_cancelled")) if ai_record else False
 
     outcome = classify_business_outcome(
         ai_inv_process_status=ai_inv_process_status,
         has_released_log=has_released,
         has_cancelled_log=has_cancelled,
-        has_cancellation_record=has_cancellation,
+        has_cancellation_record=has_cancellation or ai_cancelled,
     )
 
     # AI record state
@@ -518,6 +521,21 @@ def build_normalized_record(
         raw_reason_descr = cancellation.get("reason_descr") or cancellation.get("reason_description")
         normalized = normalize_reason(reason_id, raw_reason, raw_reason_descr)
         normalized_category = normalized["normalized_category"]
+    elif ai_cancelled and ai_record.get("cancellation_reason"):
+        # Cancellation recorded only on the AI-side document
+        raw_reason = ai_record["cancellation_reason"]
+        normalized = normalize_reason(None, raw_reason, None)
+        normalized_category = normalized["normalized_category"]
+
+    if (
+        outcome == "cancelled_rejected"
+        and normalized_category in (None, "unknown")
+        and not raw_reason
+    ):
+        # The claim was cancelled but no reason was recorded on either the
+        # SQL cancellation detail row or the AI-side document — distinct
+        # from "unknown", which means a reason WAS recorded but didn't map.
+        normalized_category = "no_reason_recorded"
 
     return {
         "claim_id": claim_id,
@@ -537,6 +555,20 @@ def build_normalized_record(
         "agent_execution_status": agent_exec_status,
         "is_billable": ai_record.get("is_billable") if ai_record else None,
         "billing_category": ai_record.get("billing_category") if ai_record else None,
+        # Step-1 level identification output (present on docs from ~2026-09)
+        "billing_level": ai_record.get("billing_level") if ai_record else None,
+        "level_identification_confidence": (
+            ai_record.get("level_identification_confidence") if ai_record else None
+        ),
+        "level_identification_low_confidence": (
+            ai_record.get("level_identification_low_confidence") if ai_record else None
+        ),
+        # AI routing mode set by the department config (0 = review grid,
+        # 2 = straight-through auto-send)
+        "dept_send_auto_invoice_status": (
+            ai_record.get("dept_send_auto_invoice_status") if ai_record else None
+        ),
+        "ai_cancelled": ai_cancelled,
         "confidence": confidence,
         "writeback_status": writeback,
         "retry_count": retry,

@@ -141,13 +141,92 @@ class TestOutcomesFunnelRoute:
         response = test_client.get("/api/ai-analytics/outcomes/funnel", headers=AUTH)
         assert response.status_code == 200
         stages = response.json()
-        assert stages[0]["count"] == 1  # Entered RH AI workflow
-        assert stages[1]["count"] == 1  # Mongo AI record found
-        assert stages[2]["count"] == 1  # Billability determined
+        assert stages[0]["count"] == 1  # Reached Ready to Invoice Insurance
+        assert stages[1]["count"] == 1  # Step 1: level & category evaluated
+        assert stages[2]["count"] == 1  # Marked for AI billing
         assert stages[3]["count"] == 1  # AI processing completed
         assert stages[4]["count"] == 1  # Line items saved to RH
-        assert stages[5]["count"] == 1  # Business released
-        assert stages[6]["count"] == 0  # Business cancelled/rejected
+        assert stages[5]["count"] == 1  # Released
+        assert stages[6]["count"] == 0  # Cancelled / Rejected
+
+    @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
+    @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims")
+    @patch("ai_analytics.outcome_service.sql_repo.get_process_logs_for_claims")
+    def test_funnel_step1_breakdown(
+        self, mock_logs, mock_canc, mock_mongo, mock_cohort, test_client,
+    ):
+        """Step-1 stage breaks down by identified billing_level, groups the
+        rest as 'Not identified', and 'Marked for AI billing' splits by send
+        mode. is_cancelled on the AI doc counts as cancelled."""
+        mock_cohort.return_value = [
+            {"claim_id": 100, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+            {"claim_id": 200, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+            {"claim_id": 300, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+            {"claim_id": 400, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+        ]
+        mock_mongo.return_value = {
+            100: {"claim_processing_status": "COMPLETED",
+                  "billing_level": "Motor Vehicle Incident Level 1",
+                  "dept_send_auto_invoice_status": 0},
+            200: {"claim_processing_status": "COMPLETED",
+                  "billing_level": "Motor Vehicle Incident Level 1",
+                  "dept_send_auto_invoice_status": 2},
+            300: {"claim_processing_status": "BILLING_LEVEL_NOT_ENABLED",
+                  "billing_category": "Motor Vehicle Accident"},
+            # 400 has no ai_line_items doc — step 1 never ran
+        }
+        mock_canc.return_value = {}
+        mock_logs.return_value = {}
+
+        response = test_client.get("/api/ai-analytics/outcomes/funnel", headers=AUTH)
+        assert response.status_code == 200
+        stages = response.json()
+
+        assert stages[0]["count"] == 4   # full cohort
+        assert stages[1]["count"] == 3   # step 1 evaluated (400 has no record)
+        breakdown = {b["label"]: b["count"] for b in stages[1]["breakdown"]}
+        assert breakdown["Motor Vehicle Incident Level 1"] == 2
+        # The BLNE record identified a category but no level
+        assert breakdown["Category identified (no level)"] == 1
+        assert breakdown["Not identified"] == 0
+
+        assert stages[2]["count"] == 2   # 300 is BILLING_LEVEL_NOT_ENABLED
+        marked = {b["label"]: b["count"] for b in stages[2]["breakdown"]}
+        assert marked["Review grid (queue)"] == 1
+        assert marked["Straight-through (auto-send)"] == 1
+
+        assert stages[3]["count"] == 2   # both COMPLETED
+
+    @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
+    @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims")
+    @patch("ai_analytics.outcome_service.sql_repo.get_process_logs_for_claims")
+    def test_funnel_ai_side_cancellation(
+        self, mock_logs, mock_canc, mock_mongo, mock_cohort, test_client,
+    ):
+        """is_cancelled on the ai_line_items doc counts as cancelled even
+        without a SQL cancellation record or cancelled log."""
+        mock_cohort.return_value = [
+            {"claim_id": 100, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+        ]
+        mock_mongo.return_value = {
+            100: {"claim_processing_status": "COMPLETED",
+                  "is_cancelled": True,
+                  "cancellation_reason": "Wrong Level Selected"},
+        }
+        mock_canc.return_value = {}
+        mock_logs.return_value = {}
+
+        response = test_client.get("/api/ai-analytics/outcomes/funnel", headers=AUTH)
+        assert response.status_code == 200
+        stages = response.json()
+        assert stages[6]["count"] == 1  # Cancelled / Rejected
 
 
 # ---------------------------------------------------------------------------
