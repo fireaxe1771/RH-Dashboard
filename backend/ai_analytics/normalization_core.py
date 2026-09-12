@@ -551,6 +551,7 @@ def build_normalized_record(
         "raw_rejection_reason": raw_reason,
         "raw_rejection_description": raw_reason_descr,
         "normalized_rejection_category": normalized_category,
+        "ai_inv_process_status": ai_inv_process_status,
         "ai_processing_status": claim_processing_status,
         "agent_execution_status": agent_exec_status,
         "is_billable": ai_record.get("is_billable") if ai_record else None,
@@ -563,8 +564,10 @@ def build_normalized_record(
         "level_identification_low_confidence": (
             ai_record.get("level_identification_low_confidence") if ai_record else None
         ),
-        # AI routing mode set by the department config (0 = review grid,
-        # 2 = straight-through auto-send)
+        # Snapshot of the department's IsSendInvoiceAI flag at processing
+        # time (2 = AI invoicing enabled → line items go to the review
+        # grid; 0 = evaluated only, never writes line items back). It is
+        # NOT a routing decision — there is no straight-through path.
         "dept_send_auto_invoice_status": (
             ai_record.get("dept_send_auto_invoice_status") if ai_record else None
         ),

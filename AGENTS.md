@@ -511,32 +511,58 @@ every 30s.
 ~2.9 KB — within the v1 estimate. Annual growth ~68 MB/year, 10-year ~684 MB.
 The 16 MB document limit is not a concern.
 
-## AI Outcomes Funnel — Verified Data Flow (2026-09-12)
+## AI Outcomes Funnel — Verified Data Flow (2026-09-12, corrected)
 
-The funnel (`GET /outcomes/funnel`, `AiOutcomesDashboard.FunnelView`) was
-realigned to the actual claim flow and now has 7 stages:
+The funnel (`GET /outcomes/funnel`, `AiOutcomesDashboard.FunnelView`) has 8
+stages; each stage is a strict subset of the previous one so counts
+reconcile top to bottom:
 
 1. **Reached Ready to Invoice Insurance** — rows in `AIInvoiceProcessRHTemp`
-   joined to Claims. A row is created when the claim hits ready-to-invoice;
-   this is the intake cohort and the step-1 trigger point.
+   joined to Claims. Breakdown: "Picked up by AI workflow" vs
+   "Queued — step 1 not yet run" (no `ai_line_items` doc; in production
+   these are `AI_inv_process_status = 0` rows — the queue hasn't been
+   picked up or is stuck).
 2. **Step 1: level & category evaluated** — an `ai_line_items` doc exists.
    `breakdown` lists each identified `billing_level` value, then
    "Category identified (no level)" (`billing_category` set, no level), then
    "Not identified" (neither). Low-confidence identifications stay in their
    level row (`level_identification_low_confidence`).
-3. **Marked for AI billing** — `claim_processing_status` is anything except
-   `BILLING_LEVEL_NOT_ENABLED` (the step-1 "not eligible" branch).
-   `breakdown` splits by `dept_send_auto_invoice_status` (mirrors
-   `Departments.IsSendInvoiceAI`): 0 = review grid, 2 = straight-through.
-4. **AI processing completed** — `COMPLETED`.
-5. **Line items saved to RH** — `line_items_save_to_rh_status = true`.
+3. **Marked for AI billing** — `dept_send_auto_invoice_status = 2` on the
+   AI doc (snapshot of `Departments.IsSendInvoiceAI`). Claims evaluated
+   without the flag never produce line items — writeback is 100% send=2.
+   `breakdown`: "Level/category identified" / "Not identified" /
+   "Step 1 failed" within the marked cohort.
+4. **AI processing completed** — `COMPLETED` within the marked cohort.
+5. **Line items saved to RH** — `line_items_save_to_rh_status = true`;
+   this is what lands the claim on the review grid.
 6. **Released** — process log "Invoice to Insurance - Released" or status 7.
-7. **Cancelled / Rejected** — `AIClaimInvoiceCancellationDetails` row,
-   cancelled log, or `ai_line_items.is_cancelled` (newer docs carry
-   `cancellation_reason` too — used as the rejection reason fallback).
-   `breakdown` lists the normalized rejection-category counts (labeled via
-   `reason_normalization.CATEGORY_LABELS`), mirroring the Rejection Reasons
-   tile.
+7. **Cancelled / Rejected** — cancellation detail row, cancelled log, or
+   `ai_line_items.is_cancelled`. `breakdown` lists normalized
+   rejection-category counts (via `reason_normalization.CATEGORY_LABELS`).
+8. **In review grid (pending)** — writeback succeeded but no terminal
+   outcome yet. Makes saved ≈ released + cancelled + pending add up.
+
+### Which "is AI" flag is actually live (verified 2026-09-12)
+
+There are several AI-related flags across SQL + Mongo; only one gates
+invoicing:
+
+- **`Departments.IsSendInvoiceAI`** (tinyint, values 0/2) — THE flag.
+  `2` = AI invoicing enabled → line items produced → review grid.
+  Snapshotted onto `ai_line_items` as `dept_send_auto_invoice_status`.
+  **It is NOT a routing mode** — there is no straight-through/auto-send
+  path; every writeback goes through human grid review (send=2 claims
+  show Released logs from reviewers).
+- **`Departments.ai_fee_calc_status_id`** (1/3/NULL) — the MVI fee-calc
+  feature flag, snapshotted as `dept_ai_fee_mvi_status` ("Active"/
+  "Not Active": 1→Active, 3/NULL→Not Active). A different capability —
+  does NOT gate invoicing; send=2 claims write back regardless of it.
+- **`dept_ai_identify_billable_status`** — null on all 21,047 docs,
+  all-time. Dead field; never written.
+- **`AIInvoiceProcessRHTemp.AI_inv_process_status`** — queue lifecycle
+  state (0 queued, 2 processed, 4 terminal, 7 post-release, 9 active
+  review), not an AI yes/no flag.
+- **`Claims.is_truck_claim_AI`** — unrelated truck-claim feature.
 
 ### New ai_line_items fields (schema v3)
 

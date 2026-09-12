@@ -301,14 +301,14 @@ async def get_outcome_summary(
 # Funnel
 # ---------------------------------------------------------------------------
 
-# dept_send_auto_invoice_status → human-readable routing label. The field
-# mirrors Departments.IsSendInvoiceAI: 0 = line items go to the AI review
-# grid (queue) for a human to release/cancel; non-zero (2 in production) =
-# straight-through auto-send.
-_SEND_MODE_LABELS = {
-    0: "Review grid (queue)",
-    2: "Straight-through (auto-send)",
-}
+# Departments.IsSendInvoiceAI = 2 marks a department for AI invoicing —
+# its claims produce line items and land on the review grid for a human to
+# release or cancel. The value is snapshotted onto each ai_line_items doc
+# as dept_send_auto_invoice_status. Value 0 = the department is NOT marked
+# for AI invoicing: step 1 still runs, but the pipeline never writes line
+# items back (verified: 0 writebacks across all send=0 docs). There is no
+# straight-through/auto-send path — every writeback goes through the grid.
+AI_INVOICING_ENABLED = 2
 
 
 @cached(ttl=60, func_name="get_outcome_funnel")
@@ -318,19 +318,24 @@ async def get_outcome_funnel(
 ) -> List[AiPipelineStageStat]:
     """Build the pipeline funnel.
 
-    Stages follow the real claim flow:
+    Every stage is a strict subset of the one before it, so the counts
+    reconcile top to bottom:
+
     1. Claim reaches "Ready to Invoice Insurance" → row in
-       AIInvoiceProcessRHTemp (the intake cohort).
+       AIInvoiceProcessRHTemp (the intake cohort). The intake→step-1 gap
+       is claims still queued (AI_inv_process_status = 0, no ai_line_items
+       doc yet — step 1 never ran for them).
     2. Step 1 — the AI identifies the billing level/category → an
        ai_line_items document exists. Broken down by identified level,
        with unidentified records grouped together.
-    3. The identified level/category is marked for AI billing →
-       claim_processing_status is anything except
-       BILLING_LEVEL_NOT_ENABLED. Broken down by send mode (review grid
-       vs straight-through).
-    4. AI processing completed (COMPLETED).
-    5. Line items written back to RecoveryHub.
-    6-7. Business outcome: released / cancelled from the grid.
+    3. Marked for AI billing — the department's IsSendInvoiceAI flag is 2
+       (dept_send_auto_invoice_status on the AI doc). Departments without
+       the flag are evaluated but never produce line items.
+    4. AI processing completed (COMPLETED) within the marked cohort.
+    5. Line items written back to RecoveryHub — the claim lands on the
+       review grid.
+    6-8. Grid outcome: released / cancelled / still pending review, so
+       "saved" = released + cancelled + pending.
     """
     _validate_date_span(filters.start_date, filters.end_date)
 
@@ -342,6 +347,11 @@ async def get_outcome_funnel(
     # Step 1: records where the AI actually evaluated the claim (an
     # ai_line_items doc exists — the workflow ran and wrote a result).
     evaluated = [r for r in records if r["ai_record_state"] == "present"]
+    queued = total - len(evaluated)
+    intake_breakdown = [
+        AiPipelineStageBreakdown(label="Picked up by AI workflow", count=len(evaluated)),
+        AiPipelineStageBreakdown(label="Queued — step 1 not yet run", count=queued),
+    ]
 
     # Step-1 breakdown: identified billing_level values, then "Category
     # identified (no level)" for records where step 1 produced a
@@ -373,33 +383,62 @@ async def get_outcome_funnel(
         AiPipelineStageBreakdown(label="Not identified", count=not_identified)
     )
 
-    # Marked for AI: step-1 ran and the identified level/category is
-    # enabled for AI billing (anything but BILLING_LEVEL_NOT_ENABLED).
+    # Marked for AI billing: the department's IsSendInvoiceAI flag is 2 —
+    # snapshotted onto the AI doc as dept_send_auto_invoice_status. Claims
+    # evaluated without the flag never produce line items.
     marked = [
         r for r in evaluated
-        if r.get("ai_processing_status") not in AI_NOT_ENABLED_STATUSES
+        if r.get("dept_send_auto_invoice_status") == AI_INVOICING_ENABLED
     ]
-    send_mode_counts: Counter = Counter()
+    not_enabled = len(evaluated) - len(marked)
+
+    # Within the marked cohort: did step 1 actually produce a result?
+    marked_identified = 0
+    marked_failed = 0
+    marked_unidentified = 0
     for r in marked:
-        mode = r.get("dept_send_auto_invoice_status")
-        label = _SEND_MODE_LABELS.get(mode, "Send mode unknown")
-        send_mode_counts[label] += 1
+        exec_outcome = classify_ai_execution_outcome(
+            r.get("ai_processing_status"), r.get("agent_execution_status")
+        )
+        if exec_outcome == "failed":
+            marked_failed += 1
+        elif r.get("billing_level") or r.get("billing_category"):
+            marked_identified += 1
+        else:
+            marked_unidentified += 1
     marked_breakdown = [
-        AiPipelineStageBreakdown(label=label, count=n)
-        for label, n in send_mode_counts.most_common()
+        AiPipelineStageBreakdown(
+            label="Level/category identified", count=marked_identified
+        ),
+        AiPipelineStageBreakdown(
+            label="Not identified", count=marked_unidentified
+        ),
+        AiPipelineStageBreakdown(
+            label="Step 1 failed", count=marked_failed
+        ),
     ]
 
     ai_completed = sum(
         1 for r in marked if r.get("ai_processing_status") in AI_COMPLETED_STATUSES
     )
-    writeback_success = sum(
-        1 for r in records if r.get("writeback_status") == "success"
-    )
-    released = sum(1 for r in records if r["business_outcome"] == "released")
-    cancelled_records = [
-        r for r in records if r["business_outcome"] == "cancelled_rejected"
+
+    # Writeback → review grid. Outcomes are drawn from the marked cohort
+    # (a claim can be cancelled without a successful writeback — e.g. an
+    # AI-side is_cancelled flag — and should still be visible). "In review
+    # grid" is the writeback cohort minus whatever has already resolved.
+    writeback_records = [
+        r for r in marked if r.get("writeback_status") == "success"
     ]
-    cancelled = len(cancelled_records)
+    released_records = [
+        r for r in marked if r["business_outcome"] == "released"
+    ]
+    cancelled_records = [
+        r for r in marked if r["business_outcome"] == "cancelled_rejected"
+    ]
+    pending_in_grid = sum(
+        1 for r in writeback_records
+        if r["business_outcome"] not in ("released", "cancelled_rejected")
+    )
 
     # Rejection breakdown: normalized reason category per cancelled record,
     # labeled with the human-readable CATEGORY_LABELS used by the UI.
@@ -421,6 +460,7 @@ async def get_outcome_funnel(
             stage="Reached Ready to Invoice Insurance",
             count=total,
             description="Claims in AIInvoiceProcessRHTemp",
+            breakdown=intake_breakdown,
         ),
         AiPipelineStageStat(
             stage="Step 1: level & category evaluated",
@@ -431,29 +471,37 @@ async def get_outcome_funnel(
         AiPipelineStageStat(
             stage="Marked for AI billing",
             count=len(marked),
-            description="Level/category enabled for AI (not BILLING_LEVEL_NOT_ENABLED)",
+            description=(
+                "Department IsSendInvoiceAI enabled "
+                f"({not_enabled} evaluated-only: AI invoicing off for dept)"
+            ),
             breakdown=marked_breakdown,
         ),
         AiPipelineStageStat(
             stage="AI processing completed",
             count=ai_completed,
-            description="claim_processing_status = COMPLETED",
+            description="claim_processing_status = COMPLETED (AI-invoicing depts)",
         ),
         AiPipelineStageStat(
             stage="Line items saved to RH",
-            count=writeback_success,
-            description="line_items_save_to_rh_status = true",
+            count=len(writeback_records),
+            description="line_items_save_to_rh_status = true — enters review grid",
         ),
         AiPipelineStageStat(
             stage="Released",
-            count=released,
+            count=len(released_records),
             description="Invoice to Insurance - Released",
         ),
         AiPipelineStageStat(
             stage="Cancelled / Rejected",
-            count=cancelled,
+            count=len(cancelled_records),
             description="Invoice to Insurance - Cancelled",
             breakdown=rejection_breakdown,
+        ),
+        AiPipelineStageStat(
+            stage="In review grid (pending)",
+            count=pending_in_grid,
+            description="Line items saved, awaiting release or cancel",
         ),
     ]
 
