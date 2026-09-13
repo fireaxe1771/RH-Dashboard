@@ -33,8 +33,16 @@ from .backfill import run_backfill
 from .config import worker_config
 from .health import worker_health, STATUS_RUNNING, STATUS_STOPPED
 from .leader_election import (
+    BACKFILL_LOCK_ID,
+    LEADER_LOCK_ID,
+    is_lease_held,
+    is_worker_enabled,
+    release_lease,
     release_leadership,
+    renew_lease,
     renew_leadership,
+    set_worker_enabled,
+    try_acquire_lease,
     try_acquire_leadership,
 )
 
@@ -131,8 +139,10 @@ async def _run_worker_while_leader(
             if stop_event.is_set() or worker_task.done():
                 break
             try:
-                still_leader = await renew_leadership(
-                    db, holder_id, worker_config.leader_lease_seconds
+                still_leader = await is_worker_enabled(db) and (
+                    await renew_leadership(
+                        db, holder_id, worker_config.leader_lease_seconds
+                    )
                 )
             except Exception as exc:
                 # A renewal error (network blip, failover) must not leave
@@ -226,8 +236,10 @@ async def _run_leader_campaign(
 
     while not stop_event.is_set():
         try:
-            acquired = await try_acquire_leadership(
-                db, holder_id, worker_config.leader_lease_seconds
+            acquired = await is_worker_enabled(db) and (
+                await try_acquire_leadership(
+                    db, holder_id, worker_config.leader_lease_seconds
+                )
             )
         except Exception as exc:
             logger.warning(
@@ -311,6 +323,17 @@ async def _end_leader_term(
         await stop_backfill()
 
 
+async def is_backfill_running_anywhere(db) -> bool:
+    """True if a backfill is running in this or any other process."""
+    if is_backfill_running():
+        return True
+    try:
+        return await is_lease_held(db, BACKFILL_LOCK_ID)
+    except Exception as exc:
+        logger.warning("Backfill lease check failed: %r", exc)
+        return False
+
+
 def is_backfill_running() -> bool:
     """Return True if a backfill task exists and has not finished."""
     return _backfill_task is not None and not _backfill_task.done()
@@ -351,6 +374,10 @@ async def start_worker(
     if on_leader_acquired is not None:
         _leader_hook = on_leader_acquired
 
+    # Re-enable the deployment-wide switch so peers' campaigns (which keep
+    # running after a /worker/stop on another process) may acquire again.
+    await set_worker_enabled(db_manager.db, True)
+
     _worker_stop_event = asyncio.Event()
     _worker_task = asyncio.create_task(
         _run_leader_campaign(
@@ -365,13 +392,60 @@ async def start_worker(
     return "started"
 
 
-async def stop_worker() -> str:
+async def stop_worker(*, deployment_wide: bool = False) -> str:
     """Stop the running AI Analytics Worker gracefully.
+
+    With ``deployment_wide=True`` (the ``/worker/stop`` endpoint) the shared
+    switch in Mongo is turned off first so no peer process can acquire the
+    lease this process releases, and the call waits (bounded by
+    ``CANCELLATION_TIMEOUT_SECONDS``) for the leader lease to be released
+    by whichever process holds it. The lifespan shutdown leaves the switch
+    untouched so a rolling restart does not disable the worker.
 
     Returns a status string:
     - ``"stopped"`` — the worker was running and has been stopped.
     - ``"not_running"`` — the worker was not running; no action taken.
     """
+    if deployment_wide:
+        from database import db_manager
+        if db_manager.db is not None:
+            db = db_manager.db
+            try:
+                lease_was_held = await is_lease_held(db, LEADER_LOCK_ID)
+            except Exception:
+                lease_was_held = False
+            await set_worker_enabled(db, False)
+            status = await _stop_local_worker()
+            await _wait_for_lease_release(
+                db, LEADER_LOCK_ID, worker_config.CANCELLATION_TIMEOUT_SECONDS
+            )
+            return "stopped" if lease_was_held else status
+
+    return await _stop_local_worker()
+
+
+async def _wait_for_lease_release(db, lock_id: str, timeout: float) -> bool:
+    """Poll until ``lock_id`` is no longer held or ``timeout`` elapses."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if not await is_lease_held(db, lock_id):
+                return True
+        except Exception as exc:
+            logger.warning("Lease check failed for %s: %r", lock_id, exc)
+            return False
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "Lease %s still held after %.1fs; the holder will observe "
+                "the disabled switch at its next renewal.",
+                lock_id,
+                timeout,
+            )
+            return False
+        await asyncio.sleep(0.1)
+
+
+async def _stop_local_worker() -> str:
     global _worker_task, _worker_stop_event
 
     if not is_worker_running():
@@ -404,9 +478,15 @@ async def start_backfill() -> str:
     the worker lease, the backfill is stopped when that leadership term
     ends (see ``_end_leader_term``).
 
+    Exactly one backfill runs per deployment: the task holds the shared
+    ``BACKFILL_LOCK_ID`` lease in Mongo (renewed while it runs, released
+    on exit), so requests landing on different Uvicorn processes cannot
+    start concurrent full scans.
+
     Returns a status string:
     - ``"started"`` — the backfill has been kicked off.
-    - ``"already_running"`` — a backfill is already in progress.
+    - ``"already_running"`` — a backfill is already in progress (in this
+      or any other process).
     """
     global _backfill_task, _backfill_stop_event
 
@@ -418,15 +498,53 @@ async def start_backfill() -> str:
         raise RuntimeError(
             "Database connections not established. Cannot start backfill."
         )
+    db = db_manager.db
+
+    holder_id = (
+        f"{socket.gethostname()}:{os.getpid()}:backfill:{uuid.uuid4().hex[:8]}"
+    )
+    if not await try_acquire_lease(
+        db, BACKFILL_LOCK_ID, holder_id, worker_config.leader_lease_seconds
+    ):
+        return "already_running"
 
     stop_event = asyncio.Event()
     _backfill_stop_event = stop_event
 
+    async def _renew_backfill_lease() -> None:
+        while not stop_event.is_set():
+            await _interruptible_sleep(
+                stop_event, worker_config.leader_renew_interval_seconds
+            )
+            if stop_event.is_set():
+                return
+            try:
+                held = await renew_lease(
+                    db, BACKFILL_LOCK_ID, holder_id,
+                    worker_config.leader_lease_seconds,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Backfill lease renewal errored (%r); stopping backfill.",
+                    exc,
+                )
+                held = False
+            if not held:
+                logger.warning(
+                    "Backfill lease lost (holder=%s); stopping backfill.",
+                    holder_id,
+                )
+                stop_event.set()
+                return
+
     async def _run_backfill_wrapper() -> None:
+        renewer = asyncio.create_task(
+            _renew_backfill_lease(), name="ai_analytics_backfill_lease"
+        )
         try:
             result = await run_backfill(
                 ai_db=db_manager.ai_db,
-                db=db_manager.db,
+                db=db,
                 stop_event=stop_event,
             )
             logger.info(
@@ -440,6 +558,14 @@ async def start_backfill() -> str:
             )
         except Exception as exc:
             logger.error("Backfill task failed: %s", exc)
+        finally:
+            stop_event.set()
+            renewer.cancel()
+            await asyncio.gather(renewer, return_exceptions=True)
+            try:
+                await release_lease(db, BACKFILL_LOCK_ID, holder_id)
+            except Exception as exc:
+                logger.warning("Failed to release backfill lease: %r", exc)
 
     _backfill_task = asyncio.create_task(
         _run_backfill_wrapper(),

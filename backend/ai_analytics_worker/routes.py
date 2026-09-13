@@ -58,6 +58,7 @@ from .health import (
 from .metrics import worker_metrics
 from .runtime import (
     is_backfill_running,
+    is_backfill_running_anywhere,
     is_worker_leader,
     is_worker_running,
     start_backfill,
@@ -350,16 +351,17 @@ async def worker_start() -> Dict[str, Any]:
 async def worker_stop() -> Dict[str, Any]:
     """Stop the running AI Analytics Worker gracefully.
 
-    Sets the worker's stop event and waits up to
-    ``CANCELLATION_TIMEOUT_SECONDS`` (5s) for it to drain before
-    cancelling the task.
+    Turns off the deployment-wide switch in Mongo (so no peer process
+    acquires the released lease), stops this process's campaign, and
+    waits up to ``CANCELLATION_TIMEOUT_SECONDS`` (5s) for the leader lease
+    to be released by whichever process holds it.
 
     Auth-protected via ``get_current_user``.
 
     Returns:
         ``{"action": "stopped" | "not_running", "running": false}``
     """
-    status = await stop_worker()
+    status = await stop_worker(deployment_wide=True)
     return {"action": status, "running": is_worker_running()}
 
 
@@ -377,8 +379,14 @@ async def worker_backfill() -> Dict[str, Any]:
 
     Auth-protected via ``get_current_user``.
 
+    Exactly one backfill runs per deployment (shared Mongo lease), so
+    ``already_running`` may refer to a scan in another process.
+
     Returns:
         ``{"action": "started" | "already_running", "backfill_running": bool}``
     """
     status = await start_backfill()
-    return {"action": status, "backfill_running": is_backfill_running()}
+    return {
+        "action": status,
+        "backfill_running": await is_backfill_running_anywhere(db_manager.db),
+    }

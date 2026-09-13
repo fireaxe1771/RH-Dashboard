@@ -80,3 +80,41 @@ async def test_no_snapshot_and_no_source_is_unavailable(mock_mongo_db):
     )
     assert result is None
     assert status == snap.STATUS_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_stale_snapshot_marks_cohort_incomplete(mock_mongo_db, monkeypatch):
+    """Serving eligibility from an expired snapshot must flag the cohort as
+    incomplete so the dashboards show their data warning."""
+    from unittest.mock import patch
+    from ai_analytics.outcome_service import _load_normalized_cohort
+    from ai_analytics.models import AiAnalyticsFilters
+    from config import settings
+    from database import db_manager
+
+    monkeypatch.setattr(settings, "AI_ANALYTICS_USE_PROJECTION", True)
+    monkeypatch.setattr(db_manager, "db", mock_mongo_db)
+    await _seed(mock_mongo_db, age_seconds=worker_config.AI_ELIGIBILITY_SNAPSHOT_TTL_SECONDS + 5)
+
+    with patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort") as cohort, patch(
+        "ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims",
+        return_value={},
+    ), patch(
+        "ai_analytics.outcome_service.sql_repo.get_process_logs_for_claims",
+        return_value={},
+    ), patch(
+        "ai_analytics.outcome_service.get_ai_participation_map",
+        new=AsyncMock(return_value=None),
+    ):
+        cohort.return_value = [
+            {"claim_id": 100, "AI_inv_process_status": 4, "dept_id": 1,
+             "department_name": "FD1", "department_state": "TX",
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+        ]
+        records, source_status, data_complete = await _load_normalized_cohort(
+            mock_mongo_db, AiAnalyticsFilters()
+        )
+
+    assert source_status["recoveryhub_ai_fee_config"] == snap.STATUS_STALE
+    assert data_complete is False
+    assert records[0]["ai_eligibility"] == "eligible"

@@ -632,6 +632,21 @@ runs `run_worker` only while the lease is held, renews every
 lease + campaign seconds. `GET /worker/status` reports `is_leader` and
 `holder_id` so a non-leader read is diagnosable.
 
+Two more docs in the same collection use the generic lease helpers
+(`try_acquire_lease` / `renew_lease` / `release_lease`):
+
+- `{"_id": "backfill_leader"}` — held by whichever process is running a
+  backfill (manual `/worker/backfill` or the leader's startup hook), so
+  two Uvicorn processes can never run full scans concurrently.
+  `start_backfill()` returns `already_running` if the lease is held
+  elsewhere; `is_backfill_running_anywhere(db)` is the cross-process
+  check. A leader's hook/backfill is also cancelled when its term ends.
+- `{"_id": "worker_control", "enabled": bool}` — deployment-wide switch.
+  `POST /worker/stop` sets it false, stops the local campaign, and waits
+  for the lease to be released; peers' campaigns never acquire (or renew)
+  while it is false. `start_worker()` (lifespan or `/worker/start`) sets
+  it true again. Lifespan shutdown does not touch it.
+
 Config: `WORKER_LEADER_LEASE_SECONDS` (60), `WORKER_LEADER_CAMPAIGN_SECONDS`
 (15), `WORKER_BACKFILL_CONCURRENCY` (8; `.env` runs 25) — backfill refreshes
 claims concurrently under a semaphore; it is I/O-bound on Atlas round-trips,

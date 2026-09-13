@@ -58,7 +58,10 @@ from .normalization_core import (
     ELIGIBILITY_UNKNOWN,
 )
 from .reason_normalization import normalize_reason, CATEGORY_LABELS
-from .eligibility_snapshot import resolve_participation
+from .eligibility_snapshot import (
+    STATUS_STALE as ELIGIBILITY_STATUS_STALE,
+    resolve_participation,
+)
 from .cache import cached
 from ai_adoption_service import get_ai_participation_map
 from config import settings
@@ -210,10 +213,6 @@ async def _load_normalized_cohort(
     # dashboard-owned snapshot so this step, like step 2, does not depend
     # on the operational AI Mongo being reachable.
     t_elig = time.perf_counter()
-    dept_ids = sorted({
-        int(r["department_id"]) for r in normalized
-        if r.get("department_id") is not None
-    })
     participation, fee_config_status = await resolve_participation(
         ai_db,
         db_manager.db,
@@ -226,6 +225,10 @@ async def _load_normalized_cohort(
             "AI analytics: department AI configuration unavailable; "
             "eligibility will be reported as unknown."
         )
+        data_complete = False
+    elif fee_config_status == ELIGIBILITY_STATUS_STALE:
+        # Eligibility came from an expired snapshot; surface it as
+        # incomplete so the dashboards show their data warning.
         data_complete = False
 
     for record in normalized:
@@ -244,7 +247,7 @@ async def _load_normalized_cohort(
     logger.info(
         f"AI analytics: Eligibility classification took "
         f"{time.perf_counter() - t_elig:.3f}s "
-        f"({len(dept_ids)} departments)"
+        f"({len(participation or {})} configured departments)"
     )
     logger.info(f"AI analytics: Total _load_normalized_cohort took {time.perf_counter() - t0:.3f}s")
 

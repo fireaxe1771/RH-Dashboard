@@ -15,10 +15,15 @@ import pytest
 from ai_analytics_worker import runtime
 from ai_analytics_worker.config import worker_config
 from ai_analytics_worker.leader_election import (
+    BACKFILL_LOCK_ID,
     LEADER_LOCK_ID,
+    is_lease_held,
+    is_worker_enabled,
     release_leadership,
+    release_lease,
     renew_leadership,
     try_acquire_leadership,
+    try_acquire_lease,
 )
 
 LEASE = 60
@@ -415,3 +420,94 @@ class TestCampaignLoop:
         await asyncio.wait_for(ran.wait(), timeout=5)
         assert calls == 2
         await runtime.stop_worker()
+
+    @pytest.mark.asyncio
+    async def test_backfill_lease_blocks_concurrent_backfill(
+        self, mock_mongo_db, runtime_state, monkeypatch
+    ):
+        """A backfill lease held by another process makes start_backfill()
+        report already_running instead of launching a second full scan."""
+        import database
+        monkeypatch.setattr(database.db_manager, "db", mock_mongo_db)
+        monkeypatch.setattr(database.db_manager, "ai_db", mock_mongo_db)
+
+        assert await try_acquire_lease(
+            mock_mongo_db, BACKFILL_LOCK_ID, "other-process", 60
+        )
+        started = asyncio.Event()
+
+        async def fake_run_backfill(ai_db, db, stop_event=None, **_):
+            started.set()
+            await stop_event.wait()
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(runtime, "run_backfill", fake_run_backfill)
+
+        assert await runtime.start_backfill() == "already_running"
+        assert not runtime.is_backfill_running()
+        assert await runtime.is_backfill_running_anywhere(mock_mongo_db)
+
+        await release_lease(mock_mongo_db, BACKFILL_LOCK_ID, "other-process")
+        assert await runtime.start_backfill() == "started"
+        await asyncio.wait_for(started.wait(), timeout=5)
+        assert await is_lease_held(mock_mongo_db, BACKFILL_LOCK_ID)
+        assert await runtime.start_backfill() == "already_running"
+
+        assert await runtime.stop_backfill() == "stopped"
+        assert not await is_lease_held(mock_mongo_db, BACKFILL_LOCK_ID)
+
+    @pytest.mark.asyncio
+    async def test_deployment_wide_stop_blocks_peer_campaign(
+        self, mock_mongo_db, runtime_state, monkeypatch
+    ):
+        """stop_worker(deployment_wide=True) disables the shared switch so a
+        peer's still-running campaign does not take over the lease; a
+        subsequent start_worker() re-enables it."""
+        async def fake_run_worker(stop_event, ai_db=None, db=None):
+            await stop_event.wait()
+
+        monkeypatch.setattr(runtime, "run_worker", fake_run_worker)
+        monkeypatch.setattr(
+            type(worker_config),
+            "leader_campaign_seconds",
+            property(lambda self: 0.05),
+        )
+        monkeypatch.setattr(
+            type(worker_config),
+            "leader_renew_interval_seconds",
+            property(lambda self: 0.05),
+        )
+        import database
+        monkeypatch.setattr(database.db_manager, "db", mock_mongo_db)
+        monkeypatch.setattr(database.db_manager, "ai_db", mock_mongo_db)
+
+        # This process is the leader.
+        assert await runtime.start_worker() == "started"
+        for _ in range(100):
+            if runtime.is_worker_leader():
+                break
+            await asyncio.sleep(0.05)
+        assert runtime.is_worker_leader()
+
+        # A peer campaign runs in "another process" (separate stop event).
+        peer_stop = asyncio.Event()
+        peer = asyncio.create_task(
+            runtime._run_leader_campaign(peer_stop, mock_mongo_db, mock_mongo_db)
+        )
+        try:
+            assert await runtime.stop_worker(deployment_wide=True) == "stopped"
+            assert not await is_worker_enabled(mock_mongo_db)
+            await asyncio.sleep(0.5)
+            assert not await is_lease_held(mock_mongo_db, LEADER_LOCK_ID)
+
+            assert await runtime.start_worker() == "started"
+            assert await is_worker_enabled(mock_mongo_db)
+            for _ in range(100):
+                if await is_lease_held(mock_mongo_db, LEADER_LOCK_ID):
+                    break
+                await asyncio.sleep(0.05)
+            assert await is_lease_held(mock_mongo_db, LEADER_LOCK_ID)
+        finally:
+            peer_stop.set()
+            await asyncio.wait_for(peer, timeout=5)
+            await runtime.stop_worker()
