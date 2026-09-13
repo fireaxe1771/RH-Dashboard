@@ -321,7 +321,9 @@ async def get_agent_stats(
             return []
     else:
         # Direct-read path: aggregate on the conversations collection.
-        match_stage: Dict[str, Any] = {"claim_id": {"$in": claim_ids}}
+        match_stage: Dict[str, Any] = mongo_repo.build_conversation_claim_query(
+            claim_ids
+        )
         if filters.start_date or filters.end_date:
             date_filter: Dict[str, Any] = {}
             if filters.start_date:

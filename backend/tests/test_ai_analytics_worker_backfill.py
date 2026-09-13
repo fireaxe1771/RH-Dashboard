@@ -441,3 +441,82 @@ class TestBackfillBatching:
         assert result.total_claim_ids == 5
         assert result.claims_processed == 5
         assert result.projections_inserted == 5
+
+    @pytest.mark.asyncio
+    async def test_max_claims_per_cycle_caps_in_flight_claims(self, mock_mongo_db):
+        """A batch larger than ``max_claims_per_cycle`` is scheduled in
+        chunks: never more than the cap is in flight at once, even with
+        a wide concurrency budget."""
+        ai_db = mock_mongo_db
+        for cid in range(100, 110):
+            await ai_db["ai_line_items"].insert_one(make_source_doc(claim_id=cid))
+
+        in_flight = 0
+        peak = 0
+
+        async def mock_get_line_items(db, claim_id):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return make_full_doc(claim_id=claim_id)
+
+        async def mock_get_conversations(db, claim_id):
+            return []
+
+        with patch(
+            "ai_analytics_worker.claim_refresh.get_ai_line_items_for_claim_with_retry",
+            new=mock_get_line_items,
+        ), patch(
+            "ai_analytics_worker.claim_refresh.get_agent_conversations_for_claim_with_retry",
+            new=mock_get_conversations,
+        ):
+            result = await run_backfill(
+                ai_db, mock_mongo_db,
+                batch_size=10, max_claims_per_cycle=3, concurrency=10,
+            )
+
+        assert result.claims_processed == 10
+        assert peak <= 3
+
+
+class TestStartupBackfillCheck:
+    """``main._run_worker_backfill_if_needed`` — the leader-only startup hook."""
+
+    @pytest.fixture
+    def startup_env(self, mock_mongo_db):
+        import main as app_main
+
+        with patch.object(app_main.db_manager, "db", mock_mongo_db), patch.object(
+            app_main.worker_runtime, "start_backfill", new_callable=AsyncMock
+        ) as start:
+            yield app_main, mock_mongo_db, start
+
+    @pytest.mark.asyncio
+    async def test_empty_projection_starts_backfill(self, startup_env):
+        app_main, _, start = startup_env
+        await app_main._run_worker_backfill_if_needed()
+        start.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_current_schema_skips_backfill(self, startup_env):
+        app_main, db, start = startup_env
+        await db[worker_config.PROJECTIONS_COLLECTION].insert_one({
+            "_id": 1,
+            "projection_schema_version": worker_config.projection_schema_version,
+        })
+        await app_main._run_worker_backfill_if_needed()
+        start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stale_schema_starts_backfill(self, startup_env):
+        app_main, db, start = startup_env
+        await db[worker_config.PROJECTIONS_COLLECTION].insert_many([
+            {"_id": 1,
+             "projection_schema_version": worker_config.projection_schema_version},
+            {"_id": 2,
+             "projection_schema_version": worker_config.projection_schema_version - 1},
+        ])
+        await app_main._run_worker_backfill_if_needed()
+        start.assert_awaited_once()

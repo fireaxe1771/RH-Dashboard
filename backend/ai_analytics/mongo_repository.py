@@ -11,7 +11,7 @@ Reads from the RecoveryHub_AI MongoDB database (configured via
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -170,25 +170,48 @@ CONVERSATION_PROJECTION = {
 }
 
 
+_CONVERSATION_CLAIM_ID_FIELDS = (
+    "claim_id",
+    "incident_json.claim_id",
+    "input_data.claim_id",
+)
+
+
+def build_conversation_claim_query(claim_ids: List[Any]) -> Dict[str, Any]:
+    """Filter matching ``ai_agent_conversations`` docs for any of ``claim_ids``.
+
+    The query pattern confirmed in RecoveryHub_AI: ``$or`` across the
+    top-level ``claim_id`` and the nested ``incident_json.claim_id`` /
+    ``input_data.claim_id`` fields, with both int and string
+    representations of every id. Shared by the per-claim lookup and the
+    direct-read agent-stats aggregation so the two can never disagree on
+    which conversations belong to a claim.
+    """
+    variants: List[Any] = []
+    seen: Set[Tuple[type, Any]] = set()
+    for cid in claim_ids:
+        for v in _normalize_claim_id(cid):
+            key = (type(v), v)
+            if key not in seen:
+                seen.add(key)
+                variants.append(v)
+    return {
+        "$or": [
+            {field: {"$in": variants}}
+            for field in _CONVERSATION_CLAIM_ID_FIELDS
+        ]
+    }
+
+
 async def get_agent_conversations_for_claim(
     ai_db,
     claim_id: int,
 ) -> List[Dict[str, Any]]:
     """Fetch all agent conversations for a claim, sorted chronologically.
 
-    Uses the query pattern confirmed in RecoveryHub_AI:
-    ``$or`` on ``incident_json.claim_id`` and ``input_data.claim_id``
-    with both int and string representations.
+    See ``build_conversation_claim_query`` for the field/type matching.
     """
-    int_ids = _normalize_claim_id(claim_id)
-
-    query = {
-        "$or": [
-            {"incident_json.claim_id": cid} for cid in int_ids
-        ] + [
-            {"input_data.claim_id": cid} for cid in int_ids
-        ]
-    }
+    query = build_conversation_claim_query([claim_id])
 
     try:
         cursor = (

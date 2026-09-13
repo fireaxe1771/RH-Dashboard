@@ -114,6 +114,11 @@ async def worker_ready_probe(response: Response) -> Dict[str, Any]:
       worker has never started (e.g. startup backfill not yet complete, or
       the lifespan startup failed before spawning the worker task).
 
+    A process whose leadership campaign is alive but which does not hold
+    the lease (a *candidate* under multi-process uvicorn) is ready with
+    ``reason == "leader_candidate"``; ``is_leader`` distinguishes it from
+    the active worker.
+
     Unauthenticated: container probes must not require auth tokens. Because
     this endpoint is reachable anonymously over the public ingress, the
     payload deliberately excludes ``last_error`` — see the comment on the
@@ -132,6 +137,22 @@ async def worker_ready_probe(response: Response) -> Dict[str, Any]:
         return {
             "ready": True,
             "status": status,
+            "is_leader": is_worker_leader(),
+            "last_started_at": worker_health.last_started_at,
+            "last_checkpoint_at": worker_health.last_checkpoint_at,
+        }
+
+    # Under uvicorn --workers N only the lease holder runs the worker loops;
+    # every other process is a live candidate whose campaign task is
+    # waiting for the lease. Readiness describes this web process, so a
+    # healthy candidate is ready — otherwise probes routed to non-leaders
+    # would report 503 for a deployment that is working as designed.
+    if is_worker_running() and not is_worker_leader() and status != STATUS_ERROR:
+        return {
+            "ready": True,
+            "status": status,
+            "is_leader": False,
+            "reason": "leader_candidate",
             "last_started_at": worker_health.last_started_at,
             "last_checkpoint_at": worker_health.last_checkpoint_at,
         }

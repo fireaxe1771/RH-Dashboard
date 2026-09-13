@@ -115,7 +115,7 @@ class TestOutcomesFunnelRoute:
         response = test_client.get("/api/ai-analytics/outcomes/funnel", headers=AUTH)
         assert response.status_code == 200
         stages = response.json()
-        assert len(stages) == 8
+        assert len(stages) == 6
         assert all(s["count"] == 0 for s in stages)
 
     @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
@@ -148,8 +148,11 @@ class TestOutcomesFunnelRoute:
         assert stages[3]["count"] == 1  # AI processing completed
         assert stages[4]["count"] == 1  # Line items saved to RH
         assert stages[5]["count"] == 1  # Released
-        assert stages[6]["count"] == 0  # Cancelled / Rejected
-        assert stages[7]["count"] == 0  # In review grid (pending)
+        assert len(stages) == 6
+        saved = {b["label"]: b["count"] for b in stages[4]["breakdown"]}
+        assert saved["Released"] == 1
+        assert saved["Cancelled / Rejected"] == 0
+        assert saved["In review grid (pending)"] == 0
 
     @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
     @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
@@ -232,11 +235,18 @@ class TestOutcomesFunnelRoute:
         response = test_client.get("/api/ai-analytics/outcomes/funnel", headers=AUTH)
         assert response.status_code == 200
         stages = response.json()
-        assert stages[6]["count"] == 1  # Cancelled / Rejected
+        saved = {b["label"]: b["count"] for b in stages[4]["breakdown"]}
+        assert saved["Cancelled / Rejected"] == 1
+        assert stages[5]["count"] == 0  # Released
         # Saved = released + cancelled + pending
         assert stages[4]["count"] == (
-            stages[5]["count"] + stages[6]["count"] + stages[7]["count"]
+            saved["Released"]
+            + saved["Cancelled / Rejected"]
+            + saved["In review grid (pending)"]
         )
+        # Every stage is a subset of the previous one.
+        counts = [s["count"] for s in stages]
+        assert counts == sorted(counts, reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -543,7 +553,7 @@ class TestAiEligibilityGating:
         response = test_client.get("/api/ai-analytics/outcomes/funnel", headers=AUTH)
         assert response.status_code == 200
         stages = response.json()
-        assert len(stages) == 8
+        assert len(stages) == 6
 
         assert stages[0]["count"] == 2
         intake = {b["label"]: b["count"] for b in stages[0]["breakdown"]}
@@ -561,14 +571,17 @@ class TestAiEligibilityGating:
         assert stages[3]["count"] == 1
         assert stages[4]["count"] == 1
         assert stages[5]["count"] == 1
-        assert stages[6]["count"] == 0
-        assert stages[7]["count"] == 0
+        saved = {b["label"]: b["count"] for b in stages[4]["breakdown"]}
+        assert saved["Cancelled / Rejected"] == 0
+        assert saved["In review grid (pending)"] == 0
 
         # Stages nest monotonically and saved = released + cancelled + pending
         counts = [s["count"] for s in stages]
-        assert counts[0] >= counts[1] >= counts[2] >= counts[3] >= counts[4]
+        assert counts == sorted(counts, reverse=True)
         assert stages[4]["count"] == (
-            stages[5]["count"] + stages[6]["count"] + stages[7]["count"]
+            saved["Released"]
+            + saved["Cancelled / Rejected"]
+            + saved["In review grid (pending)"]
         )
 
     @patch("ai_analytics.outcome_service.get_ai_participation_map", new_callable=AsyncMock)

@@ -346,3 +346,34 @@ class TestDiagnosticsEligibility:
         assert result.did_not_qualify == 2
         assert result.completed == 1
         assert result.avg_duration == 10.0  # claim 200's 99s excluded
+
+
+@pytest.mark.asyncio
+async def test_agent_stats_direct_path_matches_nested_claim_ids(mock_mongo_db):
+    """Direct-read aggregation must find conversations that key the claim
+    under ``incident_json.claim_id`` / ``input_data.claim_id`` or as a
+    string — the same locations the per-claim lookup matches."""
+    from ai_analytics.diagnostics_service import get_agent_stats
+    from ai_analytics.models import AiAnalyticsFilters
+    from ai_analytics import mongo_repository as mongo_repo
+
+    common = {
+        "status": "completed", "processing_stage": "s1",
+        "request_type": "r1", "created_at": "2026-07-01T09:00:00",
+    }
+    conversations = mock_mongo_db[mongo_repo.AGENT_CONVERSATIONS_COLLECTION]
+    await conversations.insert_many([
+        {"claim_id": "100", "agent": "top-string", **common},
+        {"incident_json": {"claim_id": 100}, "agent": "incident", **common},
+        {"input_data": {"claim_id": "100"}, "agent": "input", **common},
+        {"input_data": {"claim_id": 200}, "agent": "other-claim", **common},
+    ])
+
+    with patch(
+        "ai_analytics.diagnostics_service._load_normalized_cohort",
+        new_callable=AsyncMock,
+        return_value=_qualified_cohort(),
+    ):
+        stats = await get_agent_stats(mock_mongo_db, AiAnalyticsFilters())
+
+    assert sorted(s.agent for s in stats) == ["incident", "input", "top-string"]

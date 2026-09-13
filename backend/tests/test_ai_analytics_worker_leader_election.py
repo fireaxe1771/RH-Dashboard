@@ -219,3 +219,99 @@ class TestCampaignLoop:
 
         stop.set()
         await asyncio.wait_for(task, timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_leader_hook_runs_only_for_leader(
+        self, mock_mongo_db, runtime_state, monkeypatch
+    ):
+        """``on_leader_acquired`` fires in the process that wins the lease
+        and never in a candidate that does not — the startup backfill check
+        must not run once per uvicorn worker."""
+        async def fake_run_worker(stop_event, ai_db=None, db=None):
+            await stop_event.wait()
+
+        monkeypatch.setattr(runtime, "run_worker", fake_run_worker)
+
+        hook_calls = 0
+        hook_ran = asyncio.Event()
+
+        async def hook():
+            nonlocal hook_calls
+            hook_calls += 1
+            hook_ran.set()
+
+        stop = asyncio.Event()
+        leader = asyncio.create_task(
+            runtime._run_leader_campaign(
+                stop, mock_mongo_db, mock_mongo_db, on_leader_acquired=hook
+            )
+        )
+        await asyncio.wait_for(hook_ran.wait(), timeout=5)
+        assert hook_calls == 1
+
+        # A second campaign in the same event loop stands in for another
+        # process: the lease is taken, so its hook must not fire.
+        candidate_calls = 0
+
+        async def candidate_hook():
+            nonlocal candidate_calls
+            candidate_calls += 1
+
+        candidate_stop = asyncio.Event()
+        candidate = asyncio.create_task(
+            runtime._run_leader_campaign(
+                candidate_stop, mock_mongo_db, mock_mongo_db,
+                on_leader_acquired=candidate_hook,
+            )
+        )
+        await asyncio.sleep(0.3)
+        assert candidate_calls == 0
+
+        candidate_stop.set()
+        stop.set()
+        await asyncio.wait_for(asyncio.gather(leader, candidate), timeout=5)
+        assert hook_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_worker_term_backs_off_before_recampaign(
+        self, mock_mongo_db, runtime_state, monkeypatch
+    ):
+        """A run_worker that dies on its own must not be restarted in a
+        tight loop: successive terms are spaced by a growing backoff."""
+        starts: list = []
+
+        async def crashing_run_worker(stop_event, ai_db=None, db=None):
+            starts.append(asyncio.get_running_loop().time())
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(runtime, "run_worker", crashing_run_worker)
+        monkeypatch.setattr(
+            type(worker_config),
+            "leader_campaign_seconds",
+            property(lambda self: 0.1),
+        )
+        monkeypatch.setattr(
+            type(worker_config),
+            "leader_renew_interval_seconds",
+            property(lambda self: 0.05),
+        )
+
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            runtime._run_leader_campaign(stop, mock_mongo_db, mock_mongo_db)
+        )
+        for _ in range(200):
+            if len(starts) >= 3:
+                break
+            await asyncio.sleep(0.02)
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+
+        assert len(starts) >= 3
+        gap1 = starts[1] - starts[0]
+        gap2 = starts[2] - starts[1]
+        # First retry waits at least one campaign interval; the next waits
+        # roughly twice as long (exponential), so there is no hot loop.
+        assert gap1 >= 0.09
+        assert gap2 >= 0.18
+        assert not runtime.is_worker_leader()

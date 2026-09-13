@@ -24,8 +24,9 @@ import asyncio
 import logging
 import os
 import socket
+import time
 import uuid
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from .main import run_worker, stop_worker_task
 from .backfill import run_backfill
@@ -49,6 +50,12 @@ _worker_stop_event: Optional[asyncio.Event] = None
 _backfill_task: Optional[asyncio.Task] = None
 _is_worker_leader: bool = False
 _worker_holder_id: Optional[str] = None
+
+# Upper bound on the exponential backoff applied between leadership terms
+# after ``run_worker`` dies on its own (as opposed to a stop or lease loss).
+_FAILED_TERM_BACKOFF_MAX_SECONDS = 300.0
+
+LeaderHook = Callable[[], Awaitable[None]]
 
 
 def is_worker_running() -> bool:
@@ -85,7 +92,7 @@ async def _run_worker_while_leader(
     ai_db,
     db,
     holder_id: str,
-) -> None:
+) -> bool:
     """Run ``run_worker`` for as long as this process holds the lease.
 
     A renewal loop extends the lease every ``leader_renew_interval_seconds``.
@@ -93,8 +100,12 @@ async def _run_worker_while_leader(
     stopped via an inner stop event so this process never runs worker loops
     without holding the lease. ``run_worker`` finishing on its own (a
     sub-task fatal error) also ends the leadership term; the campaign loop
-    then re-acquires and restarts it.
+    then re-acquires and restarts it after a backoff.
+
+    Returns True if the term ended because the worker failed on its own,
+    False if it ended by stop request or lease loss.
     """
+    failed = False
     inner_stop = asyncio.Event()
     worker_task = asyncio.create_task(
         run_worker(inner_stop, ai_db=ai_db, db=db),
@@ -145,32 +156,55 @@ async def _run_worker_while_leader(
             and not inner_stop.is_set()
             and not stop_event.is_set()
         ):
-            exc = worker_task.exception()
+            exc = (
+                None if worker_task.cancelled() else worker_task.exception()
+            )
             if exc is not None:
+                failed = True
                 logger.error(
                     "Worker task failed while holding leadership: %r — "
                     "will release the lease and re-campaign.",
                     exc,
+                )
+            else:
+                failed = True
+                logger.error(
+                    "Worker task exited unexpectedly while holding "
+                    "leadership — will release the lease and re-campaign."
                 )
     finally:
         forwarder.cancel()
         inner_stop.set()
         if not worker_task.done():
             await asyncio.gather(worker_task, return_exceptions=True)
+    return failed
 
 
 async def _run_leader_campaign(
     stop_event: asyncio.Event,
     ai_db,
     db,
+    on_leader_acquired: Optional[LeaderHook] = None,
 ) -> None:
     """Campaign loop: hold the worker lease, run worker loops while held.
 
     Exactly one process across the deployment owns the lease at a time.
     Non-leaders sleep ``leader_campaign_seconds`` and retry; if the leader
     dies, its lease expires and the next campaign tick takes over.
+
+    ``on_leader_acquired`` runs as a background task each time this process
+    wins the lease — it is the hook for deployment-wide one-shot work (the
+    startup backfill check) that must not run in every process.
+
+    A term that ends because ``run_worker`` failed on its own is followed by
+    a bounded exponential backoff before re-campaigning, so a persistent
+    fault cannot spin a tight acquire/crash/release loop. The backoff resets
+    once a term ends cleanly or survives at least one lease TTL.
     """
     global _is_worker_leader, _worker_holder_id
+
+    backoff_seconds = 0.0
+    hook_task: Optional[asyncio.Task] = None
 
     holder_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
     _worker_holder_id = holder_id
@@ -209,8 +243,16 @@ async def _run_leader_campaign(
             "Acquired AI Analytics Worker leadership (holder=%s).",
             holder_id,
         )
+        if on_leader_acquired is not None:
+            hook_task = asyncio.create_task(
+                on_leader_acquired(), name="ai_analytics_worker_leader_hook"
+            )
+        term_started = time.monotonic()
+        failed = False
         try:
-            await _run_worker_while_leader(stop_event, ai_db, db, holder_id)
+            failed = await _run_worker_while_leader(
+                stop_event, ai_db, db, holder_id
+            )
         finally:
             _is_worker_leader = False
             try:
@@ -220,6 +262,30 @@ async def _run_leader_campaign(
                     "Failed to release leadership lease: %r", exc
                 )
 
+        term_seconds = time.monotonic() - term_started
+        if not failed or term_seconds >= worker_config.leader_lease_seconds:
+            backoff_seconds = 0.0
+        if failed and not stop_event.is_set():
+            backoff_seconds = min(
+                _FAILED_TERM_BACKOFF_MAX_SECONDS,
+                max(
+                    float(worker_config.leader_campaign_seconds),
+                    backoff_seconds * 2,
+                ),
+            )
+            logger.warning(
+                "Worker term failed after %.1fs; backing off %.1fs before "
+                "re-campaigning (holder=%s).",
+                term_seconds,
+                backoff_seconds,
+                holder_id,
+            )
+            await _interruptible_sleep(stop_event, backoff_seconds)
+
+    if hook_task is not None and not hook_task.done():
+        hook_task.cancel()
+        await asyncio.gather(hook_task, return_exceptions=True)
+
     logger.info("Worker leadership campaign stopped (holder=%s).", holder_id)
 
 
@@ -228,12 +294,16 @@ def is_backfill_running() -> bool:
     return _backfill_task is not None and not _backfill_task.done()
 
 
-async def start_worker() -> str:
+async def start_worker(
+    on_leader_acquired: Optional[LeaderHook] = None,
+) -> str:
     """Start the AI Analytics Worker as a background asyncio task.
 
     The task is a leadership *campaign*: it acquires the MongoDB leader
     lease and only then runs the worker loops, so under ``uvicorn
     --workers N`` exactly one process is an active worker at a time.
+    ``on_leader_acquired`` is invoked (as a background task) whenever this
+    process wins the lease — see ``_run_leader_campaign``.
 
     Returns a status string describing the outcome:
     - ``"started"`` — the worker was not running and has been started.
@@ -260,6 +330,7 @@ async def start_worker() -> str:
             _worker_stop_event,
             ai_db=db_manager.ai_db,
             db=db_manager.db,
+            on_leader_acquired=on_leader_acquired,
         ),
         name="ai_analytics_worker",
     )

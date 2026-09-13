@@ -63,13 +63,15 @@ async def lifespan(app: FastAPI):
         # events in near-real-time. The runtime controller centralises the
         # task management so the /worker/start endpoint can also start it.
         if worker_config.enabled:
-            await worker_runtime.start_worker()
+            # The empty-projection backfill check runs only in the process
+            # that wins the leader lease — the change-stream listener only
+            # catches new events, so a fresh deployment needs a one-time
+            # historical scan, but under uvicorn --workers N every process
+            # would otherwise observe the empty collection and start one.
+            await worker_runtime.start_worker(
+                on_leader_acquired=_run_worker_backfill_if_needed,
+            )
             logger.info("AI Analytics Worker task started.")
-            # Run an initial backfill in the background if the projection
-            # cache is empty — the change-stream listener only catches new
-            # events, so a fresh deployment needs a one-time historical scan
-            # to populate ai_invoice_analytics from existing ai_line_items.
-            asyncio.create_task(_run_worker_backfill_if_needed())
     except Exception as e:
         logger.critical(f"Database Initialization Failed during startup: {e}")
         # Fail loudly to prevent running app in unconfigured state
@@ -108,26 +110,52 @@ async def _run_billing_backfill_if_needed() -> None:
 
 
 async def _run_worker_backfill_if_needed() -> None:
-    """Checks if the AI analytics projection is empty; runs backfill if so.
+    """Runs a backfill if the AI analytics projection is empty or stale.
 
     The change-stream listener only processes new events, so a fresh
     deployment (or a projection collection that was cleared) needs a
     one-time historical scan to populate ``ai_invoice_analytics`` from
-    existing ``ai_line_items`` records. This runs as a background task
-    so it does not block startup.
+    existing ``ai_line_items`` records. Likewise, a projection schema bump
+    only reaches claims that emit new events, so any projection written
+    under an older ``projection_schema_version`` triggers a full rebuild.
+    Invoked by the worker runtime each time this process acquires the
+    leader lease, so the scan is started by exactly one process per
+    deployment.
     """
     try:
         db = db_manager.db
-        count = await db[worker_config.PROJECTIONS_COLLECTION].count_documents({})
+        projections = db[worker_config.PROJECTIONS_COLLECTION]
+        count = await projections.count_documents({})
         if count == 0:
             logger.info(
                 "AI analytics projection is empty. Starting historical backfill..."
             )
             await worker_runtime.start_backfill()
+            return
+
+        schema_version = worker_config.projection_schema_version
+        stale = await projections.find_one(
+            {
+                "$or": [
+                    {"projection_schema_version": {"$lt": schema_version}},
+                    {"projection_schema_version": {"$exists": False}},
+                ]
+            },
+            {"_id": 1},
+        )
+        if stale is not None:
+            logger.info(
+                "AI analytics projection has records older than schema v%d. "
+                "Starting backfill to rebuild them...",
+                schema_version,
+            )
+            await worker_runtime.start_backfill()
         else:
             logger.info(
-                "AI analytics projection already populated (%d docs). Skipping backfill.",
+                "AI analytics projection already populated (%d docs, schema v%d). "
+                "Skipping backfill.",
                 count,
+                schema_version,
             )
     except Exception as e:
         logger.error(f"Worker backfill check failed: {e}")

@@ -411,9 +411,17 @@ async def get_outcome_funnel(
        with unidentified records grouped together.
     4. AI processing completed (COMPLETED).
     5. Line items written back to RecoveryHub — the claim lands on the
-       review grid.
-    6-8. Grid outcome: released / cancelled / still pending review, so
-       "saved" = released + cancelled + pending.
+       review grid. Its breakdown partitions the saved cohort by grid
+       outcome: released / cancelled-rejected / still pending review, so
+       the three sum to the stage count. Released and cancelled are
+       siblings, not successive stages, so they live in the breakdown
+       rather than as stages of their own — a funnel stage must never
+       exceed the one before it.
+    6. Released — the terminal success outcome.
+
+    The saved-stage breakdown also lists cancelled records by normalized
+    rejection category ("Cancelled — <reason>"), so the funnel keeps the
+    rejection detail that used to hang off a separate cancelled stage.
     """
     _validate_date_span(filters.start_date, filters.end_date)
 
@@ -502,20 +510,31 @@ async def get_outcome_funnel(
         len(writeback_records) - len(released_records) - len(cancelled_records)
     )
 
-    # Rejection breakdown: normalized reason category per cancelled record,
-    # labeled with the human-readable CATEGORY_LABELS used by the UI.
+    # Grid-outcome breakdown of the saved cohort. Cancelled records are
+    # further split by normalized rejection category, labeled with the
+    # human-readable CATEGORY_LABELS used by the UI.
     rejection_counts: Counter = Counter()
     for r in cancelled_records:
         rejection_counts[
             r.get("normalized_rejection_category") or "unknown"
         ] += 1
-    rejection_breakdown = [
+    saved_breakdown = [
+        AiPipelineStageBreakdown(label="Released", count=len(released_records)),
         AiPipelineStageBreakdown(
-            label=CATEGORY_LABELS.get(cat, cat.replace("_", " ").title()),
+            label="Cancelled / Rejected", count=len(cancelled_records)
+        ),
+        AiPipelineStageBreakdown(
+            label="In review grid (pending)", count=pending_in_grid
+        ),
+    ]
+    saved_breakdown.extend(
+        AiPipelineStageBreakdown(
+            label="Cancelled — "
+            + CATEGORY_LABELS.get(cat, cat.replace("_", " ").title()),
             count=n,
         )
         for cat, n in rejection_counts.most_common()
-    ]
+    )
 
     stages = [
         AiPipelineStageStat(
@@ -544,22 +563,12 @@ async def get_outcome_funnel(
             stage="Line items saved to RH",
             count=len(writeback_records),
             description="line_items_save_to_rh_status = true — enters review grid",
+            breakdown=saved_breakdown,
         ),
         AiPipelineStageStat(
             stage="Released",
             count=len(released_records),
             description="Invoice to Insurance - Released",
-        ),
-        AiPipelineStageStat(
-            stage="Cancelled / Rejected",
-            count=len(cancelled_records),
-            description="Invoice to Insurance - Cancelled",
-            breakdown=rejection_breakdown,
-        ),
-        AiPipelineStageStat(
-            stage="In review grid (pending)",
-            count=pending_in_grid,
-            description="Line items saved, awaiting release or cancel",
         ),
     ]
 

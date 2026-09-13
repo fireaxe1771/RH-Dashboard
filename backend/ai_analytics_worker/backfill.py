@@ -305,14 +305,20 @@ async def _backfill_loop(
         # boundary regardless of per-task completion order.
         last_id = batch[-1]["_id"]
 
-        # Refresh all claims in the batch concurrently (semaphore-bounded).
-        # Per-claim errors are dead-lettered inside refresh_claim, and
-        # Counter increments on ``result`` are atomic between awaits.
-        await asyncio.gather(*(_process_doc(doc) for doc in batch))
-
-        # Yield control to the event loop between batches so the FastAPI
-        # process doesn't become unresponsive during a large backfill.
-        await asyncio.sleep(0)
+        # Schedule the batch in chunks of at most ``max_claims_per_cycle``
+        # claims, each refreshed concurrently (semaphore-bounded). Per-claim
+        # errors are dead-lettered inside refresh_claim, and counter
+        # increments on ``result`` are atomic between awaits. Yielding to
+        # the event loop between chunks keeps the FastAPI process
+        # responsive during a large backfill and gives cancellation a
+        # prompt boundary.
+        chunk_size = max(1, max_claims_per_cycle)
+        for start in range(0, len(batch), chunk_size):
+            if stop_event is not None and stop_event.is_set():
+                break
+            chunk = batch[start:start + chunk_size]
+            await asyncio.gather(*(_process_doc(doc) for doc in chunk))
+            await asyncio.sleep(0)
 
 
 async def _process_single_claim(

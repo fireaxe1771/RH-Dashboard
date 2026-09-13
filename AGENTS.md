@@ -513,34 +513,36 @@ The 16 MB document limit is not a concern.
 
 ## AI Outcomes Funnel — Verified Data Flow (2026-09-12, corrected)
 
-The funnel (`GET /outcomes/funnel`, `AiOutcomesDashboard.FunnelView`) has 8
-stages; each stage is a strict subset of the previous one so counts
-reconcile top to bottom:
+The funnel (`GET /outcomes/funnel`, `AiOutcomesDashboard.FunnelView`) has 6
+stages; each stage is a subset of the previous one so counts never grow
+top to bottom (`test_funnel_cancelled_outcome` asserts monotonicity):
 
 1. **Reached Ready to Invoice Insurance** — rows in `AIInvoiceProcessRHTemp`
-   joined to Claims. Breakdown: "Picked up by AI workflow" vs
-   "Queued — step 1 not yet run" (no `ai_line_items` doc; in production
-   these are `AI_inv_process_status = 0` rows — the queue hasn't been
-   picked up or is stuck).
-2. **Step 1: level & category evaluated** — an `ai_line_items` doc exists.
+   joined to Claims. Breakdown: "Eligible for AI processing" /
+   "Did not qualify — no qualifying AI tile" / "Eligibility unknown —
+   configuration unavailable" (see *AI Tile Eligibility* below).
+2. **Eligible for AI processing** — the qualified cohort (eligible +
+   unknown). This replaced the former "Marked for AI billing"
+   (`dept_send_auto_invoice_status = 2`) stage: the legacy flag no longer
+   gates anything.
+3. **Step 1: level & category evaluated** — an `ai_line_items` doc exists.
    `breakdown` lists each identified `billing_level` value, then
    "Category identified (no level)" (`billing_category` set, no level), then
    "Not identified" (neither). Low-confidence identifications stay in their
    level row (`level_identification_low_confidence`).
-3. **Marked for AI billing** — `dept_send_auto_invoice_status = 2` on the
-   AI doc (snapshot of `Departments.IsSendInvoiceAI`). Claims evaluated
-   without the flag never produce line items — writeback is 100% send=2.
-   `breakdown`: "Level/category identified" / "Not identified" /
-   "Step 1 failed" within the marked cohort.
-4. **AI processing completed** — `COMPLETED` within the marked cohort.
+4. **AI processing completed** — `COMPLETED` within the evaluated cohort.
 5. **Line items saved to RH** — `line_items_save_to_rh_status = true`;
-   this is what lands the claim on the review grid.
+   this is what lands the claim on the review grid. `breakdown` partitions
+   the saved cohort by grid outcome — "Released" / "Cancelled / Rejected"
+   (cancellation detail row, cancelled log, or `ai_line_items.is_cancelled`)
+   / "In review grid (pending)" — so the three sum to the stage count, plus
+   "Cancelled — <reason>" rows per normalized rejection category (via
+   `reason_normalization.CATEGORY_LABELS`).
 6. **Released** — process log "Invoice to Insurance - Released" or status 7.
-7. **Cancelled / Rejected** — cancellation detail row, cancelled log, or
-   `ai_line_items.is_cancelled`. `breakdown` lists normalized
-   rejection-category counts (via `reason_normalization.CATEGORY_LABELS`).
-8. **In review grid (pending)** — writeback succeeded but no terminal
-   outcome yet. Makes saved ≈ released + cancelled + pending add up.
+
+Released and cancelled are sibling terminal outcomes, not successive
+stages, so cancelled/pending are never emitted as stages of their own — a
+stage after Released with a higher count would break the subset contract.
 
 ### Which "is AI" flag is actually live (verified 2026-09-12)
 
