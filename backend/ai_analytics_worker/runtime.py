@@ -362,21 +362,23 @@ async def start_worker(
     """
     global _worker_task, _worker_stop_event, _leader_hook
 
-    if is_worker_running():
-        return "already_running"
-
     from database import db_manager
     if db_manager.db is None or db_manager.ai_db is None:
         raise RuntimeError(
             "Database connections not established. Cannot start worker."
         )
 
+    # Re-enable the deployment-wide switch first: after a /worker/stop on
+    # another process, this process's campaign may still be alive but
+    # parked on the disabled switch, so the local early return below must
+    # not skip this step.
+    await set_worker_enabled(db_manager.db, True)
+
+    if is_worker_running():
+        return "already_running"
+
     if on_leader_acquired is not None:
         _leader_hook = on_leader_acquired
-
-    # Re-enable the deployment-wide switch so peers' campaigns (which keep
-    # running after a /worker/stop on another process) may acquire again.
-    await set_worker_enabled(db_manager.db, True)
 
     _worker_stop_event = asyncio.Event()
     _worker_task = asyncio.create_task(

@@ -22,6 +22,7 @@ from ai_analytics_worker.leader_election import (
     release_leadership,
     release_lease,
     renew_leadership,
+    set_worker_enabled,
     try_acquire_leadership,
     try_acquire_lease,
 )
@@ -510,4 +511,26 @@ class TestCampaignLoop:
         finally:
             peer_stop.set()
             await asyncio.wait_for(peer, timeout=5)
+            await runtime.stop_worker()
+
+    @pytest.mark.asyncio
+    async def test_start_worker_reenables_switch_even_when_locally_running(
+        self, mock_mongo_db, runtime_state, monkeypatch
+    ):
+        """A /worker/start that lands on a peer whose (disabled) campaign is
+        still alive must still flip the shared switch back on."""
+        async def fake_run_worker(stop_event, ai_db=None, db=None):
+            await stop_event.wait()
+
+        monkeypatch.setattr(runtime, "run_worker", fake_run_worker)
+        import database
+        monkeypatch.setattr(database.db_manager, "db", mock_mongo_db)
+        monkeypatch.setattr(database.db_manager, "ai_db", mock_mongo_db)
+
+        assert await runtime.start_worker() == "started"
+        try:
+            await set_worker_enabled(mock_mongo_db, False)
+            assert await runtime.start_worker() == "already_running"
+            assert await is_worker_enabled(mock_mongo_db)
+        finally:
             await runtime.stop_worker()

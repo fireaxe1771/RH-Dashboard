@@ -731,3 +731,21 @@ class TestAggregateAgentStatsFromProjections:
         assert await aggregate_agent_stats_from_projections(
             mock_mongo_db, claim_ids=[999],
         ) == []
+
+
+@pytest.mark.asyncio
+async def test_projection_without_ai_line_item_record_is_treated_as_missing(mock_mongo_db):
+    """A projection written for a claim that has conversations but no
+    ai_line_items document must not be surfaced as a present AI record."""
+    from ai_analytics.projection_read_repository import (
+        get_projection_records_for_claim_ids,
+    )
+    from ai_analytics_worker.config import worker_config as wc
+
+    await mock_mongo_db[wc.PROJECTIONS_COLLECTION].insert_many([
+        {"_id": 1, "has_ai_line_item_record": True, "ai_processing_status": "COMPLETED"},
+        {"_id": 2, "has_ai_line_item_record": False},
+        {"_id": 3, "ai_processing_status": "COMPLETED"},
+    ])
+    by_claim = await get_projection_records_for_claim_ids(mock_mongo_db, [1, 2, 3])
+    assert set(by_claim) == {1, 3}

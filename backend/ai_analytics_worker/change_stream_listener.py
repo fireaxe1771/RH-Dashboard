@@ -47,6 +47,8 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, Dict, Optional
 
+from pymongo.errors import PyMongoError
+
 from ai_analytics.mongo_repository import (
     AI_LINE_ITEMS_COLLECTION,
     AGENT_CONVERSATIONS_COLLECTION,
@@ -83,8 +85,14 @@ def _is_non_resumable_error(exc: Exception) -> bool:
     """
     if getattr(exc, "code", None) == 286:
         return True
+    if isinstance(exc, PyMongoError) and exc.has_error_label(
+        "NonResumableChangeStreamError"
+    ):
+        return True
     details = getattr(exc, "details", None) or {}
     if details.get("codeName") == "ChangeStreamHistoryLost":
+        return True
+    if "NonResumableChangeStreamError" in (details.get("errorLabels") or []):
         return True
     text = str(exc)
     return "ChangeStreamHistoryLost" in text or "NonResumableChangeStreamError" in text

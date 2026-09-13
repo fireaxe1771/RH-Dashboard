@@ -156,8 +156,11 @@ async def get_projection_records_for_claim_ids(
     """Fetch projection documents for a batch of claim IDs.
 
     Returns a dict keyed by ``claim_id`` → adapted ai_record dict (ready
-    to pass to ``build_normalized_record``). Claims with no projection
-    are absent from the result — ``build_normalized_record`` handles
+    to pass to ``build_normalized_record``). Claims with no projection,
+    or whose projection records that no ``ai_line_items`` document exists
+    (``has_ai_line_item_record=false``), are absent from the result so
+    they normalize as ``ai_record_state="missing"`` exactly like the
+    direct-read path — ``build_normalized_record`` handles
     ``ai_record=None`` gracefully, so callers iterate the SQL cohort and
     look up each claim_id in this dict, same as the direct-read path.
 
@@ -190,6 +193,8 @@ async def get_projection_records_for_claim_ids(
         # The projection's _id is the integer claim_id (Section 9.1).
         claim_id = doc.get("_id")
         if claim_id is None:
+            continue
+        if not doc.get("has_ai_line_item_record", True):
             continue
         try:
             cid = int(claim_id)
