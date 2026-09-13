@@ -22,6 +22,10 @@ from ai_analytics.normalization import (
     confidence_bucket,
     detect_human_intervention,
     classify_billability,
+    classify_ai_eligibility,
+    ELIGIBILITY_ELIGIBLE,
+    ELIGIBILITY_NOT_CONFIGURED,
+    ELIGIBILITY_UNKNOWN,
     build_normalized_record,
     index_ai_records_by_claim_id,
     RELEASED_LOG_TEXT,
@@ -538,3 +542,38 @@ class TestIndexAiRecords:
 
     def test_empty_list(self):
         assert index_ai_records_by_claim_id([]) == {}
+
+
+# ---------------------------------------------------------------------------
+# AI eligibility classification
+# ---------------------------------------------------------------------------
+
+class TestClassifyAiEligibility:
+    def test_dept_with_tile_is_eligible(self):
+        assert classify_ai_eligibility(True) == ELIGIBILITY_ELIGIBLE
+
+    def test_dept_without_tile_is_not_configured(self):
+        assert classify_ai_eligibility(False) == ELIGIBILITY_NOT_CONFIGURED
+
+    def test_unreadable_config_is_unknown(self):
+        assert classify_ai_eligibility(None) == ELIGIBILITY_UNKNOWN
+
+    def test_successful_writeback_rescues_current_not_configured(self):
+        assert classify_ai_eligibility(
+            False, writeback_status="success"
+        ) == ELIGIBILITY_ELIGIBLE
+
+    def test_released_outcome_rescues_current_not_configured(self):
+        assert classify_ai_eligibility(
+            False, business_outcome="released"
+        ) == ELIGIBILITY_ELIGIBLE
+
+    def test_cancelled_outcome_rescues_current_not_configured(self):
+        assert classify_ai_eligibility(
+            False, business_outcome="cancelled_rejected"
+        ) == ELIGIBILITY_ELIGIBLE
+
+    def test_pending_outcome_does_not_rescue(self):
+        assert classify_ai_eligibility(
+            False, business_outcome="pending"
+        ) == ELIGIBILITY_NOT_CONFIGURED

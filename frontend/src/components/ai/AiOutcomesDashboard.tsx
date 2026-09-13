@@ -468,10 +468,17 @@ export const AiOutcomesDashboard: React.FC = () => {
       {/* KPI Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
         <KpiCard
-          label="Total AI Invoices"
+          label="AI-Eligible Claims"
           value={summary.total_ai_invoices.toLocaleString()}
           icon={<Activity size={20} />}
           subtitle={`${summary.terminal_count.toLocaleString()} terminal`}
+        />
+        <KpiCard
+          label="Did Not Qualify"
+          value={summary.did_not_qualify.toLocaleString()}
+          icon={<AlertTriangle size={20} />}
+          color="#94a3b8"
+          subtitle="No qualifying AI fee tile"
         />
         <KpiCard
           label="Business Release Rate"

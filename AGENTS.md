@@ -636,3 +636,30 @@ oplog position that has rolled off, MongoDB returns
 `ChangeStreamHistoryLost` (code 286) and the token can never work again.
 `run_change_stream_listener` detects this, discards the persisted token,
 and reopens a fresh stream; reconciliation covers the missed window.
+
+## AI Tile Eligibility (authoritative rule)
+
+A claim qualifies for AI invoicing iff its department's
+`department_fees_resources` doc has at least one `fees_resources_final` tile
+with `use_in_ai_process` truthy and `fee_send_option` in
+`{"auto", "queued", "limited_auto"}` (`AI_SEND_OPTIONS`). The legacy
+`Departments.IsSendInvoiceAI` flag / `dept_send_auto_invoice_status`
+snapshot no longer gates any funnel stage or metric.
+
+- **Source of truth**: `ai_analytics/normalization_core.py` —
+  `classify_fees` (tile-level detail) and `classify_ai_eligibility`
+  (per-claim: eligible / not_configured / unknown).
+  `ai_adoption_service._classify_fees` is an alias, not a reimplementation.
+- **Unknown fallback**: if the fee-config Mongo can't be read, every claim
+  is `unknown` (never `not_configured`), `data_complete=false`, and
+  `source_status["recoveryhub_ai_fee_config"]="unavailable"`. Unknown
+  claims stay in the qualified cohort so the dashboards degrade rather
+  than collapse.
+- **Historical rescue**: a normalized writeback `success` or a
+  `released`/`cancelled_rejected` outcome proves the claim was eligible
+  when it ran and overrides the current (possibly disabled) tile config.
+- **Metric scoping**: `qualified_records` / `qualified_ai_runs` in
+  `outcome_service.py` are the shared population helpers. Outcome
+  metrics use qualified records (eligible + unknown); diagnostics use
+  qualified AI runs (`ai_record_state == "present"`);
+  `did_not_qualify` counts only the definitive `not_configured` intake.

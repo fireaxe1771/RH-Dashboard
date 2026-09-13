@@ -450,6 +450,89 @@ def classify_billability(
 
 
 # ---------------------------------------------------------------------------
+# AI eligibility (department configuration)
+# ---------------------------------------------------------------------------
+
+# fee_send_option values that qualify a fee tile for AI processing. The
+# tile-level configuration (use_in_ai_process + fee_send_option) is the
+# authoritative eligibility signal — the legacy Departments.IsSendInvoiceAI
+# flag does not gate AI invoicing.
+AI_SEND_OPTIONS = {"auto", "queued", "limited_auto"}
+
+ELIGIBILITY_ELIGIBLE = "eligible"
+ELIGIBILITY_NOT_CONFIGURED = "not_configured"
+ELIGIBILITY_UNKNOWN = "unknown"
+
+
+def classify_fees(fees: Any) -> Dict[str, Any]:
+    """Determine AI status from a list of finalized fee/resource records."""
+    if not isinstance(fees, list):
+        fees = []
+    qualifying = [
+        f
+        for f in fees
+        if isinstance(f, dict)
+        and f.get("use_in_ai_process")
+        and f.get("fee_send_option") in AI_SEND_OPTIONS
+    ]
+    options = {f.get("fee_send_option") for f in qualifying}
+
+    if not qualifying:
+        return {
+            "uses_ai": False,
+            "ai_mode": "not_using_ai",
+            "qualifying_fee_count": 0,
+            "has_auto": False,
+            "has_queued": False,
+            "has_limited_auto": False,
+        }
+
+    if len(options) > 1:
+        mode = "mixed"
+    elif "auto" in options:
+        mode = "auto"
+    elif "queued" in options:
+        mode = "queued"
+    else:
+        mode = "limited_auto"
+
+    return {
+        "uses_ai": True,
+        "ai_mode": mode,
+        "qualifying_fee_count": len(qualifying),
+        "has_auto": "auto" in options,
+        "has_queued": "queued" in options,
+        "has_limited_auto": "limited_auto" in options,
+    }
+
+
+def classify_ai_eligibility(
+    dept_uses_ai: Optional[bool],
+    writeback_status: Optional[str] = None,
+    business_outcome: Optional[str] = None,
+) -> str:
+    """Classify whether a claim's department was set up for AI billing.
+
+    Returns ``eligible``, ``not_configured``, or ``unknown``. ``None`` for
+    ``dept_uses_ai`` means the configuration source could not be read.
+    Actual AI billing activity — a successful writeback or a terminal grid
+    outcome — proves the claim was eligible when it ran and overrides the
+    current configuration.
+    """
+    if writeback_status == "success" or business_outcome in (
+        "released",
+        "cancelled_rejected",
+    ):
+        return ELIGIBILITY_ELIGIBLE
+
+    if dept_uses_ai is True:
+        return ELIGIBILITY_ELIGIBLE
+    if dept_uses_ai is False:
+        return ELIGIBILITY_NOT_CONFIGURED
+    return ELIGIBILITY_UNKNOWN
+
+
+# ---------------------------------------------------------------------------
 # Normalized record builder
 # ---------------------------------------------------------------------------
 

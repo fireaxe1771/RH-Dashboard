@@ -29,6 +29,10 @@ from .normalization_core import (  # noqa: F401  (explicit re-export for clarity
     AGENT_ERROR_STATUSES,
     AGENT_IN_PROGRESS_STATUSES,
     CONFIDENCE_BUCKETS,
+    AI_SEND_OPTIONS,
+    ELIGIBILITY_ELIGIBLE,
+    ELIGIBILITY_NOT_CONFIGURED,
+    ELIGIBILITY_UNKNOWN,
     # Functions
     classify_business_outcome,
     is_terminal_outcome,
@@ -45,6 +49,8 @@ from .normalization_core import (  # noqa: F401  (explicit re-export for clarity
     _line_items_differ,
     _review_msg_indicates_correction,
     classify_billability,
+    classify_fees,
+    classify_ai_eligibility,
     build_normalized_record,
     index_ai_records_by_claim_id,
 )

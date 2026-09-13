@@ -60,6 +60,7 @@ class AiAnalyticsFilters(BaseModel):
 
 class AiOutcomeSummary(BaseModel):
     total_ai_invoices: int
+    did_not_qualify: int = 0
     released: int
     cancelled_rejected: int
     pending: int
@@ -146,6 +147,7 @@ class AiBillabilityStat(BaseModel):
 
 class AiDiagnosticsSummary(BaseModel):
     ai_runs: int
+    did_not_qualify: int = 0
     completed: int
     errors: int
     retries: int

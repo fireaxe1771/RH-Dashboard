@@ -697,3 +697,37 @@ class TestAggregateAgentStatsFromProjections:
         # Only the July conversation should be counted
         assert len(results) == 1
         assert results[0]["agent"] == "agent_a"
+
+    @pytest.mark.asyncio
+    async def test_claim_ids_restrict_to_matching_projections(self, mock_mongo_db):
+        """``claim_ids`` filters on the projection ``_id`` (the claim ID)."""
+        from ai_analytics_worker.config import worker_config
+
+        collection = mock_mongo_db[worker_config.PROJECTIONS_COLLECTION]
+        await collection.insert_one({
+            "_id": 100,
+            "conversation_summaries": [
+                {"agent": "agent_a", "status": "completed",
+                 "processing_stage": "s1", "request_type": "r1",
+                 "created_at": "2026-07-01T09:00:00"},
+            ],
+        })
+        await collection.insert_one({
+            "_id": 200,
+            "conversation_summaries": [
+                {"agent": "agent_b", "status": "completed",
+                 "processing_stage": "s1", "request_type": "r1",
+                 "created_at": "2026-07-01T09:00:00"},
+            ],
+        })
+
+        results = await aggregate_agent_stats_from_projections(
+            mock_mongo_db, claim_ids=[100],
+        )
+
+        assert len(results) == 1
+        assert results[0]["agent"] == "agent_a"
+
+        assert await aggregate_agent_stats_from_projections(
+            mock_mongo_db, claim_ids=[999],
+        ) == []

@@ -155,6 +155,16 @@ class TestDiagnosticsRoutes:
 # ---------------------------------------------------------------------------
 
 
+def _qualified_cohort():
+    """One eligible claim with an ai_line_items record."""
+    return (
+        [{"claim_id": 100, "ai_record_state": "present",
+          "ai_eligibility": "eligible"}],
+        {},
+        True,
+    )
+
+
 @pytest.mark.asyncio
 async def test_agent_stats_uses_projection_when_flag_enabled(monkeypatch):
     """The service-level flag branch must call projection aggregation, not raw Mongo."""
@@ -178,10 +188,16 @@ async def test_agent_stats_uses_projection_when_flag_enabled(monkeypatch):
     ) as aggregate, patch(
         "ai_analytics.diagnostics_service.mongo_repo.AGENT_CONVERSATIONS_COLLECTION",
         "should-not-be-used",
+    ), patch(
+        "ai_analytics.diagnostics_service._load_normalized_cohort",
+        new_callable=AsyncMock,
+        return_value=_qualified_cohort(),
     ):
         stats = await get_agent_stats(object(), AiAnalyticsFilters())
 
     aggregate.assert_awaited_once()
+    # Qualified AI-run claim IDs are forwarded to the projection aggregation
+    assert aggregate.await_args.kwargs["claim_ids"] == [100]
     assert stats[0].agent == "agent-a"
     assert stats[0].count == 3
 
@@ -198,8 +214,66 @@ async def test_agent_stats_projection_failure_returns_empty(monkeypatch):
         "ai_analytics.diagnostics_service.projection_repo.aggregate_agent_stats_from_projections",
         new_callable=AsyncMock,
         side_effect=RuntimeError("projection unavailable"),
+    ), patch(
+        "ai_analytics.diagnostics_service._load_normalized_cohort",
+        new_callable=AsyncMock,
+        return_value=_qualified_cohort(),
     ):
         assert await get_agent_stats(object(), AiAnalyticsFilters()) == []
+
+
+@pytest.mark.asyncio
+async def test_agent_stats_empty_when_no_qualified_ai_runs():
+    """No qualified AI runs → no aggregation call at all."""
+    from ai_analytics.diagnostics_service import get_agent_stats
+    from ai_analytics.models import AiAnalyticsFilters
+
+    empty_cohort = (
+        [{"claim_id": 200, "ai_record_state": "present",
+          "ai_eligibility": "not_configured"}],
+        {},
+        True,
+    )
+    with patch(
+        "ai_analytics.diagnostics_service._load_normalized_cohort",
+        new_callable=AsyncMock,
+        return_value=empty_cohort,
+    ), patch(
+        "ai_analytics.diagnostics_service.projection_repo.aggregate_agent_stats_from_projections",
+        new_callable=AsyncMock,
+    ) as aggregate:
+        assert await get_agent_stats(object(), AiAnalyticsFilters()) == []
+    aggregate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agent_stats_direct_path_filters_by_claim_id(mock_mongo_db):
+    """Direct-read aggregation only counts conversations of qualified claims."""
+    from ai_analytics.diagnostics_service import get_agent_stats
+    from ai_analytics.models import AiAnalyticsFilters
+    from ai_analytics import mongo_repository as mongo_repo
+
+    conversations = mock_mongo_db[mongo_repo.AGENT_CONVERSATIONS_COLLECTION]
+    await conversations.insert_one({
+        "claim_id": 100, "agent": "agent-a", "status": "completed",
+        "processing_stage": "s1", "request_type": "r1",
+        "created_at": "2026-07-01T09:00:00",
+    })
+    await conversations.insert_one({
+        "claim_id": 200, "agent": "agent-b", "status": "completed",
+        "processing_stage": "s1", "request_type": "r1",
+        "created_at": "2026-07-01T09:00:00",
+    })
+
+    with patch(
+        "ai_analytics.diagnostics_service._load_normalized_cohort",
+        new_callable=AsyncMock,
+        return_value=_qualified_cohort(),
+    ):
+        stats = await get_agent_stats(mock_mongo_db, AiAnalyticsFilters())
+
+    assert len(stats) == 1
+    assert stats[0].agent == "agent-a"
 
     @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
     @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
@@ -220,3 +294,55 @@ async def test_agent_stats_projection_failure_returns_empty(monkeypatch):
         # With empty mock mongo, should return empty list
         data = response.json()
         assert isinstance(data, list)
+
+
+# ---------------------------------------------------------------------------
+# AI eligibility gating
+# ---------------------------------------------------------------------------
+
+class TestDiagnosticsEligibility:
+    @patch("ai_analytics.outcome_service.get_ai_participation_map", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
+    @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims")
+    @patch("ai_analytics.outcome_service.sql_repo.get_process_logs_for_claims")
+    def test_summary_excludes_nonqualifying_records(
+        self, mock_logs, mock_canc, mock_mongo, mock_cohort, mock_part,
+    ):
+        from ai_analytics.diagnostics_service import get_diagnostics_summary
+        from ai_analytics.models import AiAnalyticsFilters
+        import asyncio
+
+        mock_part.return_value = {
+            1: {"uses_ai": True, "ai_mode": "auto"},
+            2: {"uses_ai": False, "ai_mode": "not_using_ai"},
+        }
+        mock_cohort.return_value = [
+            {"claim_id": 100, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+            {"claim_id": 200, "AI_inv_process_status": 2, "dept_id": 2,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+            # dept 2 claim with no AI doc — also nonqualifying
+            {"claim_id": 300, "AI_inv_process_status": 2, "dept_id": 2,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+        ]
+        mock_mongo.return_value = {
+            100: {"claim_processing_status": "COMPLETED",
+                  "agent_exec_status": "success",
+                  "line_items_save_to_rh_status": False,
+                  "processing_time_seconds": 10.0},
+            200: {"claim_processing_status": "COMPLETED",
+                  "agent_exec_status": "success",
+                  "line_items_save_to_rh_status": False,
+                  "processing_time_seconds": 99.0},
+        }
+        mock_canc.return_value = {}
+        mock_logs.return_value = {}
+
+        result = asyncio.get_event_loop().run_until_complete(
+            get_diagnostics_summary(None, AiAnalyticsFilters())
+        )
+        assert result.ai_runs == 1          # only claim 100 qualifies
+        assert result.did_not_qualify == 2
+        assert result.completed == 1
+        assert result.avg_duration == 10.0  # claim 200's 99s excluded

@@ -54,6 +54,29 @@ def test_classify_mixed_mode():
     assert result["qualifying_fee_count"] == 2
 
 
+def test_classify_limited_auto_only():
+    fees = [{"use_in_ai_process": True, "fee_send_option": "limited_auto"}]
+    result = _classify_fees(fees)
+    assert result["uses_ai"] is True
+    assert result["ai_mode"] == "limited_auto"
+    assert result["has_limited_auto"] is True
+
+
+def test_classify_use_in_ai_process_false_not_using_ai():
+    fees = [{"use_in_ai_process": False, "fee_send_option": "auto"}]
+    assert _classify_fees(fees)["uses_ai"] is False
+
+
+def test_classify_malformed_input_not_using_ai():
+    for bad in (None, "auto", {"fee_send_option": "auto"}, 0):
+        assert _classify_fees(bad)["uses_ai"] is False
+    # Non-dict entries inside the list are skipped safely
+    fees = ["auto", None, {"use_in_ai_process": True, "fee_send_option": "auto"}]
+    result = _classify_fees(fees)
+    assert result["uses_ai"] is True
+    assert result["qualifying_fee_count"] == 1
+
+
 def test_department_activity_matches_claims_submitted_tile_query():
     cursor = MagicMock()
     cursor.fetchall.return_value = []

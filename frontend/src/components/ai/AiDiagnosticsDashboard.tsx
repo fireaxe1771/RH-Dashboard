@@ -383,6 +383,8 @@ export const AiDiagnosticsDashboard: React.FC = () => {
       {/* KPI Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
         <KpiCard label="AI Runs" value={summary.ai_runs.toLocaleString()} icon={<Activity size={20} />} />
+        <KpiCard label="Did Not Qualify" value={summary.did_not_qualify.toLocaleString()} icon={<AlertTriangle size={20} />} color="#94a3b8"
+          subtitle="No qualifying AI fee tile" />
         <KpiCard label="Completed" value={summary.completed.toLocaleString()} icon={<CheckCircle2 size={20} />} color="#22c55e" />
         <KpiCard label="Errors" value={summary.errors.toLocaleString()} icon={<XCircle size={20} />} color="#ef4444" />
         <KpiCard label="Retries" value={summary.retries.toLocaleString()} icon={<RotateCcw size={20} />} color="#eab308"

@@ -347,6 +347,7 @@ async def aggregate_agent_stats_from_projections(
     db: Any,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    claim_ids: Optional[List[int]] = None,
 ) -> List[Dict[str, Any]]:
     """Aggregate agent stats from projection conversation_summaries.
 
@@ -367,6 +368,8 @@ async def aggregate_agent_stats_from_projections(
             ``conversation_summaries.created_at`` (inclusive).
         end_date: optional ISO date filter (exclusive — the caller
             adds one day).
+        claim_ids: optional list of claim IDs to restrict the aggregation
+            to. The projection ``_id`` is the claim ID.
 
     Returns:
         List of dicts with keys ``agent``, ``status``,
@@ -401,6 +404,8 @@ async def aggregate_agent_stats_from_projections(
         # matching the date range (skips v1 projections entirely).
         {"$match": {"conversation_summaries": {"$ne": [], "$exists": True}}},
     ]
+    if claim_ids is not None:
+        pipeline.append({"$match": {"_id": {"$in": claim_ids}}})
     if match_stage:
         pipeline.append({"$match": match_stage})
 

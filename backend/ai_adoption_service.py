@@ -12,11 +12,15 @@ from pydantic import BaseModel
 
 from models import DashboardFilters
 from target_db import target_db
+from ai_analytics.normalization_core import AI_SEND_OPTIONS, classify_fees
 
 logger = logging.getLogger(__name__)
 
 AI_FEES_COLLECTION = "department_fees_resources"
-AI_SEND_OPTIONS = {"auto", "queued", "limited_auto"}
+
+# Backward-compatible alias — the fee classifier lives in
+# ai_analytics.normalization_core (single source of truth).
+_classify_fees = classify_fees
 
 # Rural Metro contract departments are excluded from this ranking.
 EXCLUDED_DEPARTMENT_IDS = {1136, 2198, 2627, 2628, 2629}
@@ -56,45 +60,6 @@ class AiAdoptionResponse(BaseModel):
     ai_status_basis: str
     summary: AiAdoptionSummary
     departments: List[AiAdoptionResult]
-
-
-def _classify_fees(fees: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Determine AI status from a list of finalized fee/resource records."""
-    qualifying = [
-        f
-        for f in fees
-        if f.get("use_in_ai_process")
-        and f.get("fee_send_option") in AI_SEND_OPTIONS
-    ]
-    options = {f.get("fee_send_option") for f in qualifying}
-
-    if not qualifying:
-        return {
-            "uses_ai": False,
-            "ai_mode": "not_using_ai",
-            "qualifying_fee_count": 0,
-            "has_auto": False,
-            "has_queued": False,
-            "has_limited_auto": False,
-        }
-
-    if len(options) > 1:
-        mode = "mixed"
-    elif "auto" in options:
-        mode = "auto"
-    elif "queued" in options:
-        mode = "queued"
-    else:
-        mode = "limited_auto"
-
-    return {
-        "uses_ai": True,
-        "ai_mode": mode,
-        "qualifying_fee_count": len(qualifying),
-        "has_auto": "auto" in options,
-        "has_queued": "queued" in options,
-        "has_limited_auto": "limited_auto" in options,
-    }
 
 
 async def get_ai_participation_map(

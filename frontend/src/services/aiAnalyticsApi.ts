@@ -26,6 +26,7 @@ export interface AiAnalyticsFilters {
 
 export interface AiOutcomeSummary {
   total_ai_invoices: number;
+  did_not_qualify: number;
   released: number;
   cancelled_rejected: number;
   pending: number;
@@ -141,6 +142,7 @@ export interface AiInvoiceCohortResponse {
 
 export interface AiDiagnosticsSummary {
   ai_runs: number;
+  did_not_qualify: number;
   completed: number;
   errors: number;
   retries: number;
