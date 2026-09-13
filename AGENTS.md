@@ -544,21 +544,25 @@ Released and cancelled are sibling terminal outcomes, not successive
 stages, so cancelled/pending are never emitted as stages of their own — a
 stage after Released with a higher count would break the subset contract.
 
-### Which "is AI" flag is actually live (verified 2026-09-12)
+### Legacy "is AI" flags (verified 2026-09-12; superseded)
 
-There are several AI-related flags across SQL + Mongo; only one gates
-invoicing:
+The dashboard's eligibility rule is the fee-tile configuration in
+`department_fees_resources` — see *AI Tile Eligibility (authoritative
+rule)* below. None of the flags in this list gate a funnel stage or
+metric any more; they are documented so nobody reintroduces them:
 
-- **`Departments.IsSendInvoiceAI`** (tinyint, values 0/2) — THE flag.
-  `2` = AI invoicing enabled → line items produced → review grid.
-  Snapshotted onto `ai_line_items` as `dept_send_auto_invoice_status`.
+- **`Departments.IsSendInvoiceAI`** (tinyint, values 0/2) — the legacy
+  invoicing flag, snapshotted onto `ai_line_items` as
+  `dept_send_auto_invoice_status`. Historically `2` correlated with line
+  items being produced, and it is still passed through for display, but
+  eligibility is derived from tile config, not from it.
   **It is NOT a routing mode** — there is no straight-through/auto-send
   path; every writeback goes through human grid review (send=2 claims
   show Released logs from reviewers).
 - **`Departments.ai_fee_calc_status_id`** (1/3/NULL) — the MVI fee-calc
   feature flag, snapshotted as `dept_ai_fee_mvi_status` ("Active"/
   "Not Active": 1→Active, 3/NULL→Not Active). A different capability —
-  does NOT gate invoicing; send=2 claims write back regardless of it.
+  does not gate invoicing either; send=2 claims write back regardless of it.
 - **`dept_ai_identify_billable_status`** — null on all 21,047 docs,
   all-time. Dead field; never written.
 - **`AIInvoiceProcessRHTemp.AI_inv_process_status`** — queue lifecycle
@@ -657,6 +661,15 @@ snapshot no longer gates any funnel stage or metric.
   `source_status["recoveryhub_ai_fee_config"]="unavailable"`. Unknown
   claims stay in the qualified cohort so the dashboards degrade rather
   than collapse.
+- **Snapshot (projection mode)**: `ai_analytics/eligibility_snapshot.py`
+  persists the last full department map in the dashboard-owned
+  `ai_department_eligibility` collection (TTL
+  `AI_ELIGIBILITY_SNAPSHOT_TTL_SECONDS`). With
+  `AI_ANALYTICS_USE_PROJECTION=true` a fresh snapshot is served without
+  touching RecoveryHub_AI Mongo; an expired one is refreshed from the
+  source, and if that fails the stale map is served with
+  `recoveryhub_ai_fee_config="stale"`. Direct mode always reads the
+  source and rewrites the snapshot.
 - **Historical rescue**: a normalized writeback `success` or a
   `released`/`cancelled_rejected` outcome proves the claim was eligible
   when it ran and overrides the current (possibly disabled) tile config.

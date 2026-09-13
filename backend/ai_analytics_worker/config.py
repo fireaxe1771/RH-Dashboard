@@ -148,6 +148,12 @@ class WorkerConfig:
     WORKER_STATE_COLLECTION = "ai_analytics_worker_state"
     DEAD_LETTERS_COLLECTION = "ai_analytics_worker_dead_letters"
     WORKER_RUNS_COLLECTION = "ai_analytics_worker_runs"
+    # Dashboard-owned snapshot of department AI eligibility (the fee-tile
+    # rule), so projection-mode analytics do not depend on the operational
+    # AI Mongo fee configuration being reachable per request.
+    AI_ELIGIBILITY_SNAPSHOT_COLLECTION = "ai_department_eligibility"
+    AI_ELIGIBILITY_SNAPSHOT_ID = "department_ai_participation"
+    AI_ELIGIBILITY_SNAPSHOT_TTL_SECONDS = 900
 
     # --- Worker identity ---------------------------------------------------
 

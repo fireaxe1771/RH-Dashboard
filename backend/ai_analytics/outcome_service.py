@@ -58,6 +58,7 @@ from .normalization_core import (
     ELIGIBILITY_UNKNOWN,
 )
 from .reason_normalization import normalize_reason, CATEGORY_LABELS
+from .eligibility_snapshot import resolve_participation
 from .cache import cached
 from ai_adoption_service import get_ai_participation_map
 from config import settings
@@ -205,26 +206,27 @@ async def _load_normalized_cohort(
     # 6. Attach AI eligibility — is the claim's department actually set up
     # for AI billing? Done here, once, so every downstream endpoint
     # (funnel, summary, diagnostics, trend, departments) shares one
-    # definition. One Mongo query for the distinct department IDs.
+    # definition. In projection mode the department map is served from the
+    # dashboard-owned snapshot so this step, like step 2, does not depend
+    # on the operational AI Mongo being reachable.
     t_elig = time.perf_counter()
     dept_ids = sorted({
         int(r["department_id"]) for r in normalized
         if r.get("department_id") is not None
     })
-    try:
-        participation = await get_ai_participation_map(ai_db, dept_ids)
-    except Exception as e:
-        logger.error(f"AI participation lookup failed: {e}")
-        participation = None
+    participation, fee_config_status = await resolve_participation(
+        ai_db,
+        db_manager.db,
+        fetch=get_ai_participation_map,
+        prefer_snapshot=bool(settings.AI_ANALYTICS_USE_PROJECTION),
+    )
+    source_status["recoveryhub_ai_fee_config"] = fee_config_status
     if participation is None:
         logger.warning(
             "AI analytics: department AI configuration unavailable; "
             "eligibility will be reported as unknown."
         )
         data_complete = False
-        source_status["recoveryhub_ai_fee_config"] = "unavailable"
-    else:
-        source_status["recoveryhub_ai_fee_config"] = "available"
 
     for record in normalized:
         dept_id = record.get("department_id")

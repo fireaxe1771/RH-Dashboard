@@ -115,11 +115,15 @@ class TestCampaignLoop:
         runtime._worker_stop_event = None
         runtime._is_worker_leader = False
         runtime._worker_holder_id = None
+        runtime._backfill_task = None
+        runtime._backfill_stop_event = None
         yield
         runtime._worker_task = None
         runtime._worker_stop_event = None
         runtime._is_worker_leader = False
         runtime._worker_holder_id = None
+        runtime._backfill_task = None
+        runtime._backfill_stop_event = None
 
     @pytest.mark.asyncio
     async def test_leader_runs_worker_and_releases_on_stop(
@@ -315,3 +319,99 @@ class TestCampaignLoop:
         assert gap1 >= 0.09
         assert gap2 >= 0.18
         assert not runtime.is_worker_leader()
+
+    @pytest.mark.asyncio
+    async def test_lease_loss_cancels_leader_hook_and_backfill(
+        self, mock_mongo_db, runtime_state, monkeypatch
+    ):
+        """Losing the lease tears down the leader hook and any backfill it
+        started before the lease is released, so a successor never scans
+        concurrently with the previous leader."""
+        async def fake_run_worker(stop_event, ai_db=None, db=None):
+            await stop_event.wait()
+
+        monkeypatch.setattr(runtime, "run_worker", fake_run_worker)
+        monkeypatch.setattr(
+            type(worker_config),
+            "leader_renew_interval_seconds",
+            property(lambda self: 0.05),
+        )
+
+        backfill_started = asyncio.Event()
+        backfill_stopped = asyncio.Event()
+
+        async def fake_run_backfill(ai_db, db, stop_event=None, **_):
+            backfill_started.set()
+            try:
+                await stop_event.wait()
+            finally:
+                backfill_stopped.set()
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(runtime, "run_backfill", fake_run_backfill)
+
+        import database
+        monkeypatch.setattr(database.db_manager, "db", mock_mongo_db)
+        monkeypatch.setattr(database.db_manager, "ai_db", mock_mongo_db)
+
+        async def hook():
+            await runtime.start_backfill()
+
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            runtime._run_leader_campaign(
+                stop, mock_mongo_db, mock_mongo_db, on_leader_acquired=hook
+            )
+        )
+        await asyncio.wait_for(backfill_started.wait(), timeout=5)
+        assert runtime.is_backfill_running()
+
+        await mock_mongo_db[worker_config.WORKER_STATE_COLLECTION].update_one(
+            {"_id": LEADER_LOCK_ID},
+            {"$set": {"holder_id": "usurper"}},
+        )
+
+        await asyncio.wait_for(backfill_stopped.wait(), timeout=5)
+        for _ in range(100):
+            if not runtime.is_backfill_running():
+                break
+            await asyncio.sleep(0.05)
+        assert not runtime.is_backfill_running()
+        assert not runtime.is_worker_leader()
+
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_start_worker_reuses_registered_leader_hook(
+        self, mock_mongo_db, runtime_state, monkeypatch
+    ):
+        """A restart via start_worker() with no hook campaigns with the
+        hook registered at boot."""
+        async def fake_run_worker(stop_event, ai_db=None, db=None):
+            await stop_event.wait()
+
+        monkeypatch.setattr(runtime, "run_worker", fake_run_worker)
+        monkeypatch.setattr(runtime, "_leader_hook", None)
+
+        import database
+        monkeypatch.setattr(database.db_manager, "db", mock_mongo_db)
+        monkeypatch.setattr(database.db_manager, "ai_db", mock_mongo_db)
+
+        calls = 0
+        ran = asyncio.Event()
+
+        async def hook():
+            nonlocal calls
+            calls += 1
+            ran.set()
+
+        assert await runtime.start_worker(on_leader_acquired=hook) == "started"
+        await asyncio.wait_for(ran.wait(), timeout=5)
+        assert await runtime.stop_worker() == "stopped"
+
+        ran.clear()
+        assert await runtime.start_worker() == "started"
+        await asyncio.wait_for(ran.wait(), timeout=5)
+        assert calls == 2
+        await runtime.stop_worker()

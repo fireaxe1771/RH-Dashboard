@@ -40,6 +40,8 @@ from .leader_election import (
 
 logger = logging.getLogger(__name__)
 
+LeaderHook = Callable[[], Awaitable[None]]
+
 # Module-level handles — set by ``start_worker`` / ``start_backfill`` and
 # cleared by ``stop_worker`` / the task completion callbacks.
 # ``_worker_task`` is the leadership *campaign* task: it acquires the
@@ -48,14 +50,17 @@ logger = logging.getLogger(__name__)
 _worker_task: Optional[asyncio.Task] = None
 _worker_stop_event: Optional[asyncio.Event] = None
 _backfill_task: Optional[asyncio.Task] = None
+_backfill_stop_event: Optional[asyncio.Event] = None
 _is_worker_leader: bool = False
+# The leader-acquired hook registered by the first ``start_worker`` call
+# (the lifespan). Runtime restarts via ``/worker/start`` reuse it so the
+# empty/stale-projection check is never skipped for a restarted campaign.
+_leader_hook: Optional[LeaderHook] = None
 _worker_holder_id: Optional[str] = None
 
 # Upper bound on the exponential backoff applied between leadership terms
 # after ``run_worker`` dies on its own (as opposed to a stop or lease loss).
 _FAILED_TERM_BACKOFF_MAX_SECONDS = 300.0
-
-LeaderHook = Callable[[], Awaitable[None]]
 
 
 def is_worker_running() -> bool:
@@ -194,7 +199,10 @@ async def _run_leader_campaign(
 
     ``on_leader_acquired`` runs as a background task each time this process
     wins the lease — it is the hook for deployment-wide one-shot work (the
-    startup backfill check) that must not run in every process.
+    startup backfill check) that must not run in every process. The hook
+    and any backfill running in this process are bound to the leadership
+    term: both are cancelled before the lease is released, so a successor
+    leader never runs a scan concurrently with the one it inherits from.
 
     A term that ends because ``run_worker`` failed on its own is followed by
     a bounded exponential backoff before re-campaigning, so a persistent
@@ -255,6 +263,8 @@ async def _run_leader_campaign(
             )
         finally:
             _is_worker_leader = False
+            await _end_leader_term(hook_task, holder_id)
+            hook_task = None
             try:
                 await release_leadership(db, holder_id)
             except Exception as exc:
@@ -282,11 +292,23 @@ async def _run_leader_campaign(
             )
             await _interruptible_sleep(stop_event, backoff_seconds)
 
+    logger.info("Worker leadership campaign stopped (holder=%s).", holder_id)
+
+
+async def _end_leader_term(
+    hook_task: Optional[asyncio.Task], holder_id: str
+) -> None:
+    """Tear down leader-only work before the lease is given up."""
     if hook_task is not None and not hook_task.done():
         hook_task.cancel()
         await asyncio.gather(hook_task, return_exceptions=True)
-
-    logger.info("Worker leadership campaign stopped (holder=%s).", holder_id)
+    if is_backfill_running():
+        logger.warning(
+            "Leadership term ended with a backfill in flight; stopping it "
+            "(holder=%s).",
+            holder_id,
+        )
+        await stop_backfill()
 
 
 def is_backfill_running() -> bool:
@@ -303,7 +325,9 @@ async def start_worker(
     lease and only then runs the worker loops, so under ``uvicorn
     --workers N`` exactly one process is an active worker at a time.
     ``on_leader_acquired`` is invoked (as a background task) whenever this
-    process wins the lease — see ``_run_leader_campaign``.
+    process wins the lease — see ``_run_leader_campaign``. It is remembered
+    for the life of the process, so a later ``start_worker()`` with no hook
+    (the ``/worker/start`` control endpoint) campaigns with the same one.
 
     Returns a status string describing the outcome:
     - ``"started"`` — the worker was not running and has been started.
@@ -313,7 +337,7 @@ async def start_worker(
         RuntimeError — if the dashboard-owned or AI Mongo database handles
         are not yet connected (``db_manager.connect()`` must have run).
     """
-    global _worker_task, _worker_stop_event
+    global _worker_task, _worker_stop_event, _leader_hook
 
     if is_worker_running():
         return "already_running"
@@ -324,13 +348,16 @@ async def start_worker(
             "Database connections not established. Cannot start worker."
         )
 
+    if on_leader_acquired is not None:
+        _leader_hook = on_leader_acquired
+
     _worker_stop_event = asyncio.Event()
     _worker_task = asyncio.create_task(
         _run_leader_campaign(
             _worker_stop_event,
             ai_db=db_manager.ai_db,
             db=db_manager.db,
-            on_leader_acquired=on_leader_acquired,
+            on_leader_acquired=_leader_hook,
         ),
         name="ai_analytics_worker",
     )
@@ -373,13 +400,15 @@ async def start_backfill() -> str:
     The backfill reads all ``ai_line_items`` from the RecoveryHub_AI Mongo
     and upserts projections into ``ai_invoice_analytics``. It runs
     independently of the change-stream worker — the worker does not need
-    to be running for a backfill to proceed.
+    to be running for a backfill to proceed — but if this process holds
+    the worker lease, the backfill is stopped when that leadership term
+    ends (see ``_end_leader_term``).
 
     Returns a status string:
     - ``"started"`` — the backfill has been kicked off.
     - ``"already_running"`` — a backfill is already in progress.
     """
-    global _backfill_task
+    global _backfill_task, _backfill_stop_event
 
     if is_backfill_running():
         return "already_running"
@@ -390,16 +419,20 @@ async def start_backfill() -> str:
             "Database connections not established. Cannot start backfill."
         )
 
+    stop_event = asyncio.Event()
+    _backfill_stop_event = stop_event
+
     async def _run_backfill_wrapper() -> None:
         try:
             result = await run_backfill(
                 ai_db=db_manager.ai_db,
                 db=db_manager.db,
-                stop_event=None,
+                stop_event=stop_event,
             )
             logger.info(
-                "Backfill completed (processed=%d, failed=%d, "
+                "Backfill %s (processed=%d, failed=%d, "
                 "inserted=%d, updated=%d).",
+                "cancelled" if result.cancelled else "completed",
                 result.claims_processed,
                 result.claims_failed,
                 result.projections_inserted,
@@ -416,6 +449,31 @@ async def start_backfill() -> str:
     return "started"
 
 
+async def stop_backfill() -> str:
+    """Stop an in-flight backfill and wait for it to wind down.
+
+    The backfill's cooperative stop event is set first so it exits at the
+    next chunk boundary; the task is then cancelled as a backstop.
+
+    Returns ``"stopped"`` or ``"not_running"``.
+    """
+    global _backfill_task, _backfill_stop_event
+
+    task = _backfill_task
+    if task is None or task.done():
+        _backfill_task = None
+        _backfill_stop_event = None
+        return "not_running"
+
+    if _backfill_stop_event is not None:
+        _backfill_stop_event.set()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    _backfill_task = None
+    _backfill_stop_event = None
+    return "stopped"
+
+
 async def shutdown() -> None:
     """Stop the worker and cancel any in-flight backfill.
 
@@ -423,11 +481,4 @@ async def shutdown() -> None:
     container stop drains the worker and cancels the backfill.
     """
     await stop_worker()
-    global _backfill_task
-    if _backfill_task is not None and not _backfill_task.done():
-        _backfill_task.cancel()
-        try:
-            await _backfill_task
-        except asyncio.CancelledError:
-            pass
-    _backfill_task = None
+    await stop_backfill()
