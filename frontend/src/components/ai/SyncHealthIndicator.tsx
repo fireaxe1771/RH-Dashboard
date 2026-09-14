@@ -67,12 +67,12 @@ const STATUS_CONFIG: Record<SyncStatus, StatusConfig> = {
     bgColor: '#fee2e2',
     description: 'Worker or integrity check has encountered an error.',
   },
-  stopped: {
+  unknown: {
     icon: <Pause size={16} />,
-    label: 'Sync Stopped',
+    label: 'Sync Status Unknown',
     color: '#6b7280',
     bgColor: '#f3f4f6',
-    description: 'Worker is not running. Cache is not being updated.',
+    description: 'No recent verification is available for the projection.',
   },
 };
 
@@ -145,7 +145,7 @@ export const SyncHealthIndicator: React.FC = () => {
 
   if (!health) return null;
 
-  const config = STATUS_CONFIG[health.status] || STATUS_CONFIG.stopped;
+  const config = STATUS_CONFIG[health.data_status || health.status] || STATUS_CONFIG.unknown;
 
   return (
     <div style={{ ...billingStyles.card, padding: '0', minWidth: '280px' }}>
@@ -218,6 +218,11 @@ export const SyncHealthIndicator: React.FC = () => {
           {/* Status description */}
           <div style={{ fontSize: '12px', color: '#6b7280' }}>
             {config.description}
+          </div>
+
+          {/* Worker availability is separate from projection data status. */}
+          <div style={{ fontSize: '12px', color: '#6b7280' }}>
+            Worker: {health.worker_availability}
           </div>
 
           {/* Sync integrity stats */}

@@ -112,6 +112,12 @@ variable "ai_analytics_worker_enabled" {
   description = "Enable the background AI Analytics Worker that maintains the ai_invoice_analytics projection."
 }
 
+variable "ai_analytics_use_projection" {
+  type        = string
+  default     = "true"
+  description = "Read AI analytics dashboard data from the ai_invoice_analytics projection maintained by the worker."
+}
+
 # --- CORS / Frontend Origin ---
 # FRONTEND_URL is now computed by Terraform from the Container App
 # Environment's default_domain and the frontend app name, so no variable

@@ -20,8 +20,11 @@ Status values (stable, do not rename — the frontend matches on these):
   ``catching-up`` then ``synced`` as the queue drains.
 - ``error`` — worker in error state OR integrity check failed fatally.
   Operator attention needed. Red.
-- ``stopped`` — worker disabled (``AI_ANALYTICS_WORKER_ENABLED=false``).
-  The cache is not being updated. Grey.
+- ``unknown`` — no local verification is available. The worker may be
+  disabled, starting, or running in another process. Grey.
+
+Worker lifecycle is exposed separately as ``worker_availability`` so a
+lifecycle state is never confused with the projection's data status.
 
 The status is derived from existing singletons (``worker_health``,
 ``sync_integrity_state``, ``worker_metrics``) — no new state is tracked
@@ -57,27 +60,27 @@ SYNC_STATUS_SYNCING = "syncing"
 SYNC_STATUS_CATCHING_UP = "catching-up"
 SYNC_STATUS_DIVERGENCE_DETECTED = "divergence-detected"
 SYNC_STATUS_ERROR = "error"
-SYNC_STATUS_STOPPED = "stopped"
+SYNC_STATUS_UNKNOWN = "unknown"
 
 
-def derive_sync_status() -> str:
+def derive_sync_status(*, deployment_worker_active: bool = False) -> str:
     """Derive the current sync status from worker health + integrity state.
 
-    Derivation order (first match wins):
-    1. Worker disabled → ``stopped``
-    2. Worker in error → ``error``
-    3. Integrity check failed → ``error``
-    4. Integrity check in progress → ``syncing``
-    5. Divergent claims found (divergent_count > 0) → ``catching-up``
-    6. Count mismatch but no divergent samples yet → ``divergence-detected``
-    7. Worker reconciling → ``syncing`` (reconciliation is normal activity)
-    8. Worker running → ``synced``
-    9. Worker starting → ``syncing``
-    10. Worker stopped (enabled but not started) → ``stopped``
-    """
-    if not worker_config.enabled:
-        return SYNC_STATUS_STOPPED
+    ``worker_health`` is process-local, while the worker runs under a
+    deployment-wide MongoDB leader lease. A request served by a non-leader
+    Uvicorn process therefore needs the shared active signal to avoid
+    reporting that the deployment is stopped just because this process has
+    never owned the lease.
 
+    Derivation order (first match wins):
+    1. Worker error or integrity failure → ``error``
+    2. Integrity check in progress → ``syncing``
+    3. Divergent claims found → ``catching-up``
+    4. Count mismatch without samples → ``divergence-detected``
+    5. Worker reconciling → ``syncing``
+    6. Worker running after a successful verification → ``synced``
+    7. No completed verification available → ``unknown``
+    """
     health_status = worker_health.status
 
     if health_status == STATUS_ERROR:
@@ -105,17 +108,21 @@ def derive_sync_status() -> str:
     if health_status == STATUS_RECONCILING:
         return SYNC_STATUS_SYNCING
 
-    if health_status == STATUS_RUNNING:
+    if health_status == STATUS_RUNNING and sync_integrity_state.last_check_at is not None:
         return SYNC_STATUS_SYNCED
 
     if health_status == STATUS_STARTING:
         return SYNC_STATUS_SYNCING
 
-    # STATUS_STOPPED (enabled but not started yet, or shut down).
-    return SYNC_STATUS_STOPPED
+    # A candidate process has no local verification state. The lease only
+    # proves that another process is active; it does not prove the projection
+    # is currently synchronized.
+    return SYNC_STATUS_UNKNOWN
 
 
-def sync_health_snapshot() -> Dict[str, Any]:
+def sync_health_snapshot(
+    *, deployment_worker_active: bool = False
+) -> Dict[str, Any]:
     """Build the sync health dict for the /sync-health endpoint.
 
     Returns a dict with:
@@ -134,11 +141,40 @@ def sync_health_snapshot() -> Dict[str, Any]:
 
     # Pick the most recent error between health and integrity.
     last_error = worker_health.last_error or sync_integrity_state.last_error
+    effective_worker_status = worker_health.status
+    if (
+        deployment_worker_active
+        and worker_config.enabled
+        and effective_worker_status == STATUS_STOPPED
+    ):
+        # This process is a healthy candidate; another process owns the lease.
+        effective_worker_status = STATUS_RUNNING
+
+    data_status = derive_sync_status(
+        deployment_worker_active=deployment_worker_active
+    )
+    if not worker_config.enabled:
+        worker_availability = "disabled"
+    elif effective_worker_status == STATUS_ERROR:
+        worker_availability = "error"
+    elif effective_worker_status == STATUS_STARTING:
+        worker_availability = "starting"
+    elif deployment_worker_active or effective_worker_status in {
+        STATUS_RUNNING,
+        STATUS_RECONCILING,
+    }:
+        worker_availability = "active"
+    else:
+        worker_availability = "unavailable"
 
     return {
-        "status": derive_sync_status(),
+        # ``status`` remains as a compatibility alias; new clients should
+        # consume data_status and worker_availability separately.
+        "status": data_status,
+        "data_status": data_status,
         "worker_enabled": worker_config.enabled,
-        "worker_status": worker_health.status,
+        "worker_status": effective_worker_status,
+        "worker_availability": worker_availability,
         "last_started_at": worker_health.last_started_at,
         "last_successful_event_at": worker_health.last_successful_event_at,
         "last_checkpoint_at": worker_health.last_checkpoint_at,

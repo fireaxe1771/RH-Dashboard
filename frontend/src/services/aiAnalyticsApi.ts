@@ -303,7 +303,7 @@ export type SyncStatus =
   | 'catching-up'
   | 'divergence-detected'
   | 'error'
-  | 'stopped';
+  | 'unknown';
 
 export interface AiSyncIntegrity {
   last_check_at: string | null;
@@ -328,8 +328,10 @@ export interface AiSyncMetrics {
 
 export interface AiSyncHealth {
   status: SyncStatus;
+  data_status: SyncStatus;
   worker_enabled: boolean;
   worker_status: string;
+  worker_availability: 'active' | 'starting' | 'unavailable' | 'disabled' | 'error';
   last_started_at: string | null;
   last_successful_event_at: string | null;
   last_checkpoint_at: string | null;

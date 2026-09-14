@@ -125,15 +125,17 @@ describe('SyncHealthIndicator', () => {
     });
   });
 
-  it('should render stopped status badge when worker disabled', async () => {
+  it('should separate unknown data status from disabled worker state', async () => {
     mockGetSyncHealth.mockResolvedValue({
       ...SYNCED_HEALTH,
-      status: 'stopped',
+      status: 'unknown',
+      data_status: 'unknown',
       worker_enabled: false,
+      worker_availability: 'disabled',
     });
     render(<SyncHealthIndicator />);
     await waitFor(() => {
-      expect(screen.getByText('Sync Stopped')).toBeInTheDocument();
+      expect(screen.getByText('Sync Status Unknown')).toBeInTheDocument();
     });
   });
 
