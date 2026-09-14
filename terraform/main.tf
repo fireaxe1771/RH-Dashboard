@@ -201,6 +201,12 @@ resource "azurerm_container_app" "backend" {
         value = var.openai_chat_model
       }
 
+      # --- AI Analytics Worker ---
+      env {
+        name  = "AI_ANALYTICS_WORKER_ENABLED"
+        value = var.ai_analytics_worker_enabled
+      }
+
       # --- Billing Sync Configuration ---
       env {
         name  = "BILLING_SYNC_ENABLED"

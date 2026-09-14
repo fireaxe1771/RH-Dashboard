@@ -105,6 +105,13 @@ variable "azure_tenant_id" {
   description = "Azure Entra ID Tenant ID."
 }
 
+# --- AI Analytics Worker ---
+variable "ai_analytics_worker_enabled" {
+  type        = string
+  default     = "true"
+  description = "Enable the background AI Analytics Worker that maintains the ai_invoice_analytics projection."
+}
+
 # --- CORS / Frontend Origin ---
 # FRONTEND_URL is now computed by Terraform from the Container App
 # Environment's default_domain and the frontend app name, so no variable
