@@ -123,6 +123,42 @@ const FunnelView: React.FC<{ stages: AiPipelineStageStat[] }> = ({ stages }) => 
                   {stage.description}
                 </span>
               )}
+              {stage.breakdown && stage.breakdown.length > 0 && (
+                <div
+                  style={{
+                    marginTop: '4px',
+                    paddingLeft: '12px',
+                    borderLeft: '2px solid var(--bg-tertiary)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '3px',
+                  }}
+                >
+                  {stage.breakdown.map((b) => (
+                    <div
+                      key={b.label}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                        {b.label}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          color: 'var(--text-secondary, var(--text-muted))',
+                        }}
+                      >
+                        {b.count.toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}
@@ -432,10 +468,17 @@ export const AiOutcomesDashboard: React.FC = () => {
       {/* KPI Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
         <KpiCard
-          label="Total AI Invoices"
+          label="AI-Eligible Claims"
           value={summary.total_ai_invoices.toLocaleString()}
           icon={<Activity size={20} />}
           subtitle={`${summary.terminal_count.toLocaleString()} terminal`}
+        />
+        <KpiCard
+          label="Did Not Qualify"
+          value={summary.did_not_qualify.toLocaleString()}
+          icon={<AlertTriangle size={20} />}
+          color="#94a3b8"
+          subtitle="No qualifying AI fee tile"
         />
         <KpiCard
           label="Business Release Rate"

@@ -27,6 +27,7 @@ from .models import (
     AiRejectionReasonBreakdown,
     AiDepartmentOutcomeStat,
     AiPipelineStageStat,
+    AiPipelineStageBreakdown,
     AiBillabilityStat,
     AiInvoiceListItem,
     AiInvoiceCohortResponse,
@@ -50,8 +51,19 @@ from .normalization import (
     AI_COMPLETED_STATUSES,
     AI_NOT_ENABLED_STATUSES,
 )
-from .reason_normalization import normalize_reason
+from .normalization_core import (
+    classify_ai_eligibility,
+    ELIGIBILITY_ELIGIBLE,
+    ELIGIBILITY_NOT_CONFIGURED,
+    ELIGIBILITY_UNKNOWN,
+)
+from .reason_normalization import normalize_reason, CATEGORY_LABELS
+from .eligibility_snapshot import (
+    STATUS_STALE as ELIGIBILITY_STATUS_STALE,
+    resolve_participation,
+)
 from .cache import cached
+from ai_adoption_service import get_ai_participation_map
 from config import settings
 from database import db_manager
 
@@ -193,9 +205,87 @@ async def _load_normalized_cohort(
         record = build_normalized_record(sql_row, ai_record, cancellation, logs)
         normalized.append(record)
     logger.info(f"AI analytics: Normalization took {time.perf_counter() - t_norm:.3f}s ({len(normalized)} records)")
+
+    # 6. Attach AI eligibility — is the claim's department actually set up
+    # for AI billing? Done here, once, so every downstream endpoint
+    # (funnel, summary, diagnostics, trend, departments) shares one
+    # definition. In projection mode the department map is served from the
+    # dashboard-owned snapshot so this step, like step 2, does not depend
+    # on the operational AI Mongo being reachable.
+    t_elig = time.perf_counter()
+    participation, fee_config_status = await resolve_participation(
+        ai_db,
+        db_manager.db,
+        fetch=get_ai_participation_map,
+        prefer_snapshot=bool(settings.AI_ANALYTICS_USE_PROJECTION),
+    )
+    source_status["recoveryhub_ai_fee_config"] = fee_config_status
+    if participation is None:
+        logger.warning(
+            "AI analytics: department AI configuration unavailable; "
+            "eligibility will be reported as unknown."
+        )
+        data_complete = False
+    elif fee_config_status == ELIGIBILITY_STATUS_STALE:
+        # Eligibility came from an expired snapshot; surface it as
+        # incomplete so the dashboards show their data warning.
+        data_complete = False
+
+    for record in normalized:
+        dept_id = record.get("department_id")
+        dept_uses_ai: Optional[bool] = None
+        if participation is not None:
+            info = participation.get(
+                int(dept_id) if dept_id is not None else None
+            )
+            dept_uses_ai = bool(info and info.get("uses_ai"))
+        record["ai_eligibility"] = classify_ai_eligibility(
+            dept_uses_ai=dept_uses_ai,
+            writeback_status=record.get("writeback_status"),
+            business_outcome=record.get("business_outcome"),
+        )
+    logger.info(
+        f"AI analytics: Eligibility classification took "
+        f"{time.perf_counter() - t_elig:.3f}s "
+        f"({len(participation or {})} configured departments)"
+    )
     logger.info(f"AI analytics: Total _load_normalized_cohort took {time.perf_counter() - t0:.3f}s")
 
     return normalized, source_status, data_complete
+
+
+def qualified_records(
+    records: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Records whose department was (or may have been) set up for AI billing.
+
+    Excludes only claims definitively known to be in a department with no
+    AI-enabled fee tile. Eligibility-unknown claims are kept so a failed
+    configuration read degrades the metrics rather than silently dropping
+    most of the cohort.
+    """
+    return [
+        r for r in records
+        if r.get("ai_eligibility") != ELIGIBILITY_NOT_CONFIGURED
+    ]
+
+
+def qualified_ai_runs(
+    records: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Qualified records where the AI workflow actually ran."""
+    return [
+        r for r in qualified_records(records)
+        if r.get("ai_record_state") == "present"
+    ]
+
+
+def count_not_configured(records: List[Dict[str, Any]]) -> int:
+    """Number of claims that did not qualify for AI billing at all."""
+    return sum(
+        1 for r in records
+        if r.get("ai_eligibility") == ELIGIBILITY_NOT_CONFIGURED
+    )
 
 
 def _apply_filters(
@@ -246,6 +336,9 @@ async def get_outcome_summary(
     records, source_status, data_complete = await _load_normalized_cohort(ai_db, filters)
     records = _apply_filters(records, filters)
 
+    did_not_qualify = count_not_configured(records)
+    records = qualified_records(records)
+
     total = len(records)
     released = sum(1 for r in records if r["business_outcome"] == "released")
     cancelled = sum(1 for r in records if r["business_outcome"] == "cancelled_rejected")
@@ -278,6 +371,7 @@ async def get_outcome_summary(
 
     return AiOutcomeSummary(
         total_ai_invoices=total,
+        did_not_qualify=did_not_qualify,
         released=released,
         cancelled_rejected=cancelled,
         pending=pending,
@@ -305,58 +399,181 @@ async def get_outcome_funnel(
     ai_db,
     filters: AiAnalyticsFilters,
 ) -> List[AiPipelineStageStat]:
-    """Build the pipeline funnel."""
+    """Build the pipeline funnel.
+
+    Every stage is a strict subset of the one before it, so the counts
+    reconcile top to bottom:
+
+    1. Claim reaches "Ready to Invoice Insurance" → row in
+       AIInvoiceProcessRHTemp (the intake cohort). The intake breakdown
+       partitions it by AI eligibility: departments with a qualifying AI
+       fee tile, departments definitively without one, and — only when
+       the fee-config source is unreachable — eligibility unknown.
+    2. Eligible for AI processing — intake minus claims in departments
+       with no qualifying tile.
+    3. Step 1 — the AI identifies the billing level/category → an
+       ai_line_items document exists. Broken down by identified level,
+       with unidentified records grouped together.
+    4. AI processing completed (COMPLETED).
+    5. Line items written back to RecoveryHub — the claim lands on the
+       review grid. Its breakdown partitions the saved cohort by grid
+       outcome: released / cancelled-rejected / still pending review, so
+       the three sum to the stage count. Released and cancelled are
+       siblings, not successive stages, so they live in the breakdown
+       rather than as stages of their own — a funnel stage must never
+       exceed the one before it.
+    6. Released — the terminal success outcome.
+
+    The saved-stage breakdown also lists cancelled records by normalized
+    rejection category ("Cancelled — <reason>"), so the funnel keeps the
+    rejection detail that used to hang off a separate cancelled stage.
+    """
     _validate_date_span(filters.start_date, filters.end_date)
 
     records, source_status, data_complete = await _load_normalized_cohort(ai_db, filters)
     records = _apply_filters(records, filters)
 
     total = len(records)
-    mongo_found = sum(1 for r in records if r["ai_record_state"] == "present")
-    billability_determined = sum(
-        1 for r in records
-        if r.get("billing_category") is not None
+    qualified = qualified_records(records)
+
+    eligible = sum(
+        1 for r in records if r.get("ai_eligibility") == ELIGIBILITY_ELIGIBLE
     )
-    ai_completed = sum(1 for r in records if r.get("ai_processing_status") in AI_COMPLETED_STATUSES)
-    writeback_success = sum(1 for r in records if r.get("writeback_status") == "success")
-    released = sum(1 for r in records if r["business_outcome"] == "released")
-    cancelled = sum(1 for r in records if r["business_outcome"] == "cancelled_rejected")
+    not_qualified = count_not_configured(records)
+    unknown = sum(
+        1 for r in records if r.get("ai_eligibility") == ELIGIBILITY_UNKNOWN
+    )
+    intake_breakdown = [
+        AiPipelineStageBreakdown(
+            label="Eligible for AI processing", count=eligible
+        ),
+        AiPipelineStageBreakdown(
+            label="Did not qualify — no qualifying AI tile",
+            count=not_qualified,
+        ),
+    ]
+    if unknown:
+        intake_breakdown.append(
+            AiPipelineStageBreakdown(
+                label="Eligibility unknown — configuration unavailable",
+                count=unknown,
+            )
+        )
+
+    # Step 1: qualified records where the AI actually evaluated the claim
+    # (an ai_line_items doc exists — the workflow ran and wrote a result).
+    evaluated = [r for r in qualified if r["ai_record_state"] == "present"]
+
+    # Step-1 breakdown: identified billing_level values, then "Category
+    # identified (no level)" for records where step 1 produced a
+    # billing_category but no level, then "Not identified" for records
+    # where step 1 produced neither. Low-confidence identifications stay
+    # in their level row.
+    level_counts: Counter = Counter()
+    category_only = 0
+    not_identified = 0
+    for r in evaluated:
+        level = r.get("billing_level")
+        if level:
+            level_counts[str(level).strip()] += 1
+        elif r.get("billing_category"):
+            category_only += 1
+        else:
+            not_identified += 1
+    step1_breakdown = [
+        AiPipelineStageBreakdown(label=label, count=n)
+        for label, n in level_counts.most_common()
+    ]
+    if category_only:
+        step1_breakdown.append(
+            AiPipelineStageBreakdown(
+                label="Category identified (no level)", count=category_only
+            )
+        )
+    step1_breakdown.append(
+        AiPipelineStageBreakdown(label="Not identified", count=not_identified)
+    )
+
+    completed = [
+        r for r in evaluated
+        if r.get("ai_processing_status") in AI_COMPLETED_STATUSES
+    ]
+
+    # Writeback → review grid. Outcomes are drawn from the writeback
+    # cohort so released + cancelled + pending == saved.
+    writeback_records = [
+        r for r in completed if r.get("writeback_status") == "success"
+    ]
+    released_records = [
+        r for r in writeback_records if r["business_outcome"] == "released"
+    ]
+    cancelled_records = [
+        r for r in writeback_records
+        if r["business_outcome"] == "cancelled_rejected"
+    ]
+    pending_in_grid = (
+        len(writeback_records) - len(released_records) - len(cancelled_records)
+    )
+
+    # Grid-outcome breakdown of the saved cohort. Cancelled records are
+    # further split by normalized rejection category, labeled with the
+    # human-readable CATEGORY_LABELS used by the UI.
+    rejection_counts: Counter = Counter()
+    for r in cancelled_records:
+        rejection_counts[
+            r.get("normalized_rejection_category") or "unknown"
+        ] += 1
+    saved_breakdown = [
+        AiPipelineStageBreakdown(label="Released", count=len(released_records)),
+        AiPipelineStageBreakdown(
+            label="Cancelled / Rejected", count=len(cancelled_records)
+        ),
+        AiPipelineStageBreakdown(
+            label="In review grid (pending)", count=pending_in_grid
+        ),
+    ]
+    saved_breakdown.extend(
+        AiPipelineStageBreakdown(
+            label="Cancelled — "
+            + CATEGORY_LABELS.get(cat, cat.replace("_", " ").title()),
+            count=n,
+        )
+        for cat, n in rejection_counts.most_common()
+    )
 
     stages = [
         AiPipelineStageStat(
-            stage="Entered RH AI workflow",
+            stage="Reached Ready to Invoice Insurance",
             count=total,
             description="Claims in AIInvoiceProcessRHTemp",
+            breakdown=intake_breakdown,
         ),
         AiPipelineStageStat(
-            stage="Mongo AI record found",
-            count=mongo_found,
-            description="ai_line_items document exists",
+            stage="Eligible for AI processing",
+            count=len(qualified),
+            description="Department has a qualifying AI fee tile",
         ),
         AiPipelineStageStat(
-            stage="Billability determined",
-            count=billability_determined,
-            description="billing_category is not null",
+            stage="Step 1: level & category evaluated",
+            count=len(evaluated),
+            description="ai_line_items record exists — step 1 ran",
+            breakdown=step1_breakdown,
         ),
         AiPipelineStageStat(
             stage="AI processing completed",
-            count=ai_completed,
+            count=len(completed),
             description="claim_processing_status = COMPLETED",
         ),
         AiPipelineStageStat(
             stage="Line items saved to RH",
-            count=writeback_success,
-            description="line_items_save_to_rh_status = true",
+            count=len(writeback_records),
+            description="line_items_save_to_rh_status = true — enters review grid",
+            breakdown=saved_breakdown,
         ),
         AiPipelineStageStat(
-            stage="Business released",
-            count=released,
+            stage="Released",
+            count=len(released_records),
             description="Invoice to Insurance - Released",
-        ),
-        AiPipelineStageStat(
-            stage="Business cancelled/rejected",
-            count=cancelled,
-            description="Invoice to Insurance - Cancelled",
         ),
     ]
 
@@ -376,7 +593,7 @@ async def get_outcome_trend(
     _validate_date_span(filters.start_date, filters.end_date)
 
     records, source_status, data_complete = await _load_normalized_cohort(ai_db, filters)
-    records = _apply_filters(records, filters)
+    records = qualified_records(_apply_filters(records, filters))
 
     # Group by time period
     period_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -443,7 +660,7 @@ async def get_rejection_reasons(
     _validate_date_span(filters.start_date, filters.end_date)
 
     records, source_status, data_complete = await _load_normalized_cohort(ai_db, filters)
-    records = _apply_filters(records, filters)
+    records = qualified_records(_apply_filters(records, filters))
 
     # Only look at cancelled/rejected records
     rejected = [r for r in records if r["business_outcome"] == "cancelled_rejected"]
@@ -460,7 +677,7 @@ async def get_rejection_reasons(
         # Build raw reason breakdown
         raw_reason_counts: Counter = Counter()
         for r in group:
-            raw_reason = r.get("raw_rejection_reason") or "Unknown"
+            raw_reason = r.get("raw_rejection_reason") or "No reason recorded"
             raw_reason_counts[raw_reason] += 1
 
         breakdown = [
@@ -493,7 +710,7 @@ async def get_department_outcomes(
     _validate_date_span(filters.start_date, filters.end_date)
 
     records, source_status, data_complete = await _load_normalized_cohort(ai_db, filters)
-    records = _apply_filters(records, filters)
+    records = qualified_records(_apply_filters(records, filters))
 
     # Group by department
     dept_groups: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
@@ -554,7 +771,7 @@ async def get_invoice_cohort(
     _validate_date_span(filters.start_date, filters.end_date)
 
     records, source_status, data_complete = await _load_normalized_cohort(ai_db, filters)
-    records = _apply_filters(records, filters)
+    records = qualified_records(_apply_filters(records, filters))
 
     # Sort
     sort_by = filters.sort_by
@@ -626,8 +843,8 @@ async def get_billability_stats(
 
     records, source_status, data_complete = await _load_normalized_cohort(ai_db, filters)
 
-    # Only count records with AI data
-    ai_records = [r for r in records if r.get("ai_record_state") == "present"]
+    # Only count qualified records with AI data
+    ai_records = qualified_ai_runs(records)
 
     billability_determined = 0
     billability_undetermined = 0

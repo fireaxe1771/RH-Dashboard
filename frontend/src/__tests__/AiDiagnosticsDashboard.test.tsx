@@ -25,6 +25,7 @@ import { aiAnalyticsApi } from '../services/aiAnalyticsApi';
 
 const DIAGNOSTICS_SUMMARY = {
   ai_runs: 100,
+  did_not_qualify: 7,
   completed: 90,
   errors: 5,
   retries: 10,
@@ -94,6 +95,8 @@ describe('AiDiagnosticsDashboard', () => {
   test('renders KPI cards with diagnostics values', async () => {
     render(<AiDiagnosticsDashboard />);
     await waitFor(() => expect(screen.getByText('AI Runs')).toBeInTheDocument());
+    expect(screen.getByText('Did Not Qualify')).toBeInTheDocument();
+    expect(screen.getByText('No qualifying AI fee tile')).toBeInTheDocument();
     expect(screen.getByText('Completed')).toBeInTheDocument();
     expect(screen.getByText('Errors')).toBeInTheDocument();
     expect(screen.getByText('Retries')).toBeInTheDocument();

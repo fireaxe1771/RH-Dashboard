@@ -60,6 +60,7 @@ class AiAnalyticsFilters(BaseModel):
 
 class AiOutcomeSummary(BaseModel):
     total_ai_invoices: int
+    did_not_qualify: int = 0
     released: int
     cancelled_rejected: int
     pending: int
@@ -117,10 +118,16 @@ class AiDepartmentOutcomeStat(BaseModel):
     human_intervention_count: int = 0
 
 
+class AiPipelineStageBreakdown(BaseModel):
+    label: str
+    count: int
+
+
 class AiPipelineStageStat(BaseModel):
     stage: str
     count: int
     description: str = ""
+    breakdown: Optional[List[AiPipelineStageBreakdown]] = None
 
 
 class AiBillabilityStat(BaseModel):
@@ -140,6 +147,7 @@ class AiBillabilityStat(BaseModel):
 
 class AiDiagnosticsSummary(BaseModel):
     ai_runs: int
+    did_not_qualify: int = 0
     completed: int
     errors: int
     retries: int

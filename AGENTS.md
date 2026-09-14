@@ -510,3 +510,186 @@ every 30s.
 `backend/scripts/measure_v2_projection_size.py`. Median v2 projection is
 ~2.9 KB — within the v1 estimate. Annual growth ~68 MB/year, 10-year ~684 MB.
 The 16 MB document limit is not a concern.
+
+## AI Outcomes Funnel — Verified Data Flow (2026-09-12, corrected)
+
+The funnel (`GET /outcomes/funnel`, `AiOutcomesDashboard.FunnelView`) has 6
+stages; each stage is a subset of the previous one so counts never grow
+top to bottom (`test_funnel_cancelled_outcome` asserts monotonicity):
+
+1. **Reached Ready to Invoice Insurance** — rows in `AIInvoiceProcessRHTemp`
+   joined to Claims. Breakdown: "Eligible for AI processing" /
+   "Did not qualify — no qualifying AI tile" / "Eligibility unknown —
+   configuration unavailable" (see *AI Tile Eligibility* below).
+2. **Eligible for AI processing** — the qualified cohort (eligible +
+   unknown). This replaced the former "Marked for AI billing"
+   (`dept_send_auto_invoice_status = 2`) stage: the legacy flag no longer
+   gates anything.
+3. **Step 1: level & category evaluated** — an `ai_line_items` doc exists.
+   `breakdown` lists each identified `billing_level` value, then
+   "Category identified (no level)" (`billing_category` set, no level), then
+   "Not identified" (neither). Low-confidence identifications stay in their
+   level row (`level_identification_low_confidence`).
+4. **AI processing completed** — `COMPLETED` within the evaluated cohort.
+5. **Line items saved to RH** — `line_items_save_to_rh_status = true`;
+   this is what lands the claim on the review grid. `breakdown` partitions
+   the saved cohort by grid outcome — "Released" / "Cancelled / Rejected"
+   (cancellation detail row, cancelled log, or `ai_line_items.is_cancelled`)
+   / "In review grid (pending)" — so the three sum to the stage count, plus
+   "Cancelled — <reason>" rows per normalized rejection category (via
+   `reason_normalization.CATEGORY_LABELS`).
+6. **Released** — process log "Invoice to Insurance - Released" or status 7.
+
+Released and cancelled are sibling terminal outcomes, not successive
+stages, so cancelled/pending are never emitted as stages of their own — a
+stage after Released with a higher count would break the subset contract.
+
+### Legacy "is AI" flags (verified 2026-09-12; superseded)
+
+The dashboard's eligibility rule is the fee-tile configuration in
+`department_fees_resources` — see *AI Tile Eligibility (authoritative
+rule)* below. None of the flags in this list gate a funnel stage or
+metric any more; they are documented so nobody reintroduces them:
+
+- **`Departments.IsSendInvoiceAI`** (tinyint, values 0/2) — the legacy
+  invoicing flag, snapshotted onto `ai_line_items` as
+  `dept_send_auto_invoice_status`. Historically `2` correlated with line
+  items being produced, and it is still passed through for display, but
+  eligibility is derived from tile config, not from it.
+  **It is NOT a routing mode** — there is no straight-through/auto-send
+  path; every writeback goes through human grid review (send=2 claims
+  show Released logs from reviewers).
+- **`Departments.ai_fee_calc_status_id`** (1/3/NULL) — the MVI fee-calc
+  feature flag, snapshotted as `dept_ai_fee_mvi_status` ("Active"/
+  "Not Active": 1→Active, 3/NULL→Not Active). A different capability —
+  does not gate invoicing either; send=2 claims write back regardless of it.
+- **`dept_ai_identify_billable_status`** — null on all 21,047 docs,
+  all-time. Dead field; never written.
+- **`AIInvoiceProcessRHTemp.AI_inv_process_status`** — queue lifecycle
+  state (0 queued, 2 processed, 4 terminal, 7 post-release, 9 active
+  review), not an AI yes/no flag.
+- **`Claims.is_truck_claim_AI`** — unrelated truck-claim feature.
+
+### New ai_line_items fields (schema v3)
+
+`billing_level`, `level_identification_confidence`,
+`level_identification_low_confidence`, `level_identification_reasoning`
+appeared ~2026-09 (the step-1 level-identification output; ~200 docs at
+review time, only for departments whose fee schedules define levels).
+`is_cancelled`, `cancellation_reason`, `cancelled_on`,
+`is_invoice_sent_manually`, `sent_invoice_manually_on`,
+`lineitems_edited*` also exist on newer docs. Wired through
+`SUMMARY_PROJECTION`, `build_normalized_record`, the worker projection
+(schema v3), and `_PASSTHROUGH_FIELDS`/`_TRACE_PASSTHROUGH_FIELDS`.
+
+**v1/v2 projections lack these fields** — until a backfill rewrites them,
+projection mode reports everything "Not identified" / "Send mode unknown"
+in the funnel breakdowns. Run `ai_analytics_worker.backfill.run_backfill`
+after deploying schema v3.
+
+### Bugs fixed (2026-09-12)
+
+- **STRING_SPLIT ntext failure**: `get_process_logs_for_claims` and
+  `get_cancellation_details_for_claims` pass claim IDs as one CSV param.
+  Over ~4000 chars, pyodbc sends it as `ntext`, which `STRING_SPLIT`
+  rejects — both queries failed on every realistic cohort, so Released/
+  Cancelled were always 0 and `recoveryhub_sql` reported "partial".
+  Fixed with `STRING_SPLIT(CAST(%(claim_ids_csv)s AS nvarchar(max)), ',')`.
+  Never pass a large CSV param uncast into `STRING_SPLIT`.
+- **`to_list(length=1000)` cap**: `get_ai_line_items_for_claim_ids`
+  silently truncated AI-side reads at 1,000 docs. Now `length=None`.
+
+### Gotchas
+
+- ~13% of `AIInvoiceProcessRHTemp` claims have no `ai_line_items` doc —
+  step 1 never ran for them (department not AI-enabled at the time, still
+  queued, or skipped). "Step 1 evaluated" < intake is real, not a bug.
+- `is_invoice_sent_manually` is true on ~19k docs — most invoices are sent
+  outside the grid release path, so Released reflects grid releases only.
+- `AI_inv_process_status = 0` exists (~113 rows) and classifies "unknown".
+- Rejection categories distinguish `unknown` (a reason WAS recorded but the
+  reason_id/text didn't map) from `no_reason_recorded` (claim was cancelled
+  but no reason exists on the SQL detail row or the AI doc). As of
+  2026-09-12, ~188 cancelled claims have a "Cancelled" process log but no
+  `AIClaimInvoiceCancellationDetails` row — reviewers cancelled without
+  picking a reason. All 679 detail rows map to reason_ids 1-17.
+
+## Multi-Process Deployment & Leader Election (2026-09-12)
+
+The backend runs `uvicorn main:app --workers 4` (see `backend/Dockerfile`) —
+four separate OS processes, each running the FastAPI lifespan. Without
+coordination every process booted its own copy of the worker (4x duplicate
+change streams, reconciliation, and sync-integrity loops) and the worker
+control endpoints were per-process — `GET /status` could report "not
+running" while a backfill churned in a sibling process.
+
+**Leader election** (`ai_analytics_worker/leader_election.py`) fixes this
+with a lease doc `{"_id": "worker_leader"}` in `ai_analytics_worker_state`.
+`runtime._run_leader_campaign` acquires via atomic `find_one_and_update`,
+runs `run_worker` only while the lease is held, renews every
+`lease/3` seconds, and releases on shutdown. Non-leaders campaign every
+`WORKER_LEADER_CAMPAIGN_SECONDS`; failover after a leader dies takes at most
+lease + campaign seconds. `GET /worker/status` reports `is_leader` and
+`holder_id` so a non-leader read is diagnosable.
+
+Two more docs in the same collection use the generic lease helpers
+(`try_acquire_lease` / `renew_lease` / `release_lease`):
+
+- `{"_id": "backfill_leader"}` — held by whichever process is running a
+  backfill (manual `/worker/backfill` or the leader's startup hook), so
+  two Uvicorn processes can never run full scans concurrently.
+  `start_backfill()` returns `already_running` if the lease is held
+  elsewhere; `is_backfill_running_anywhere(db)` is the cross-process
+  check. A leader's hook/backfill is also cancelled when its term ends.
+- `{"_id": "worker_control", "enabled": bool}` — deployment-wide switch.
+  `POST /worker/stop` sets it false, stops the local campaign, and waits
+  for the lease to be released; peers' campaigns never acquire (or renew)
+  while it is false. `start_worker()` (lifespan or `/worker/start`) sets
+  it true again. Lifespan shutdown does not touch it.
+
+Config: `WORKER_LEADER_LEASE_SECONDS` (60), `WORKER_LEADER_CAMPAIGN_SECONDS`
+(15), `WORKER_BACKFILL_CONCURRENCY` (8; `.env` runs 25) — backfill refreshes
+claims concurrently under a semaphore; it is I/O-bound on Atlas round-trips,
+not CPU.
+
+**Stale change-stream resume tokens**: when a saved token points at an
+oplog position that has rolled off, MongoDB returns
+`ChangeStreamHistoryLost` (code 286) and the token can never work again.
+`run_change_stream_listener` detects this, discards the persisted token,
+and reopens a fresh stream; reconciliation covers the missed window.
+
+## AI Tile Eligibility (authoritative rule)
+
+A claim qualifies for AI invoicing iff its department's
+`department_fees_resources` doc has at least one `fees_resources_final` tile
+with `use_in_ai_process` truthy and `fee_send_option` in
+`{"auto", "queued", "limited_auto"}` (`AI_SEND_OPTIONS`). The legacy
+`Departments.IsSendInvoiceAI` flag / `dept_send_auto_invoice_status`
+snapshot no longer gates any funnel stage or metric.
+
+- **Source of truth**: `ai_analytics/normalization_core.py` —
+  `classify_fees` (tile-level detail) and `classify_ai_eligibility`
+  (per-claim: eligible / not_configured / unknown).
+  `ai_adoption_service._classify_fees` is an alias, not a reimplementation.
+- **Unknown fallback**: if the fee-config Mongo can't be read, every claim
+  is `unknown` (never `not_configured`), `data_complete=false`, and
+  `source_status["recoveryhub_ai_fee_config"]="unavailable"`. Unknown
+  claims stay in the qualified cohort so the dashboards degrade rather
+  than collapse.
+- **Snapshot (projection mode)**: `ai_analytics/eligibility_snapshot.py`
+  persists the last full department map in the dashboard-owned
+  `ai_department_eligibility` collection (TTL
+  `AI_ELIGIBILITY_SNAPSHOT_TTL_SECONDS`). With
+  `AI_ANALYTICS_USE_PROJECTION=true` a fresh snapshot is served without
+  touching RecoveryHub_AI Mongo; an expired one is refreshed from the
+  source, and if that fails the stale map is served with
+  `recoveryhub_ai_fee_config="stale"`. Direct mode always reads the
+  source and rewrites the snapshot.
+- **Historical rescue**: a normalized writeback `success` or a
+  `released`/`cancelled_rejected` outcome proves the claim was eligible
+  when it ran and overrides the current (possibly disabled) tile config.
+- **Metric scoping**: `qualified_records` / `qualified_ai_runs` in
+  `outcome_service.py` are the shared population helpers. Outcome
+  metrics use qualified records (eligible + unknown); diagnostics use
+  qualified AI runs (`ai_record_state == "present"`);
+  `did_not_qualify` counts only the definitive `not_configured` intake.

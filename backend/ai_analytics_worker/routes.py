@@ -58,10 +58,13 @@ from .health import (
 from .metrics import worker_metrics
 from .runtime import (
     is_backfill_running,
+    is_backfill_running_anywhere,
+    is_worker_leader,
     is_worker_running,
     start_backfill,
     start_worker,
     stop_worker,
+    worker_holder_id,
 )
 from .sync_integrity import sync_integrity_state
 from .sync_status import sync_health_snapshot
@@ -112,6 +115,11 @@ async def worker_ready_probe(response: Response) -> Dict[str, Any]:
       worker has never started (e.g. startup backfill not yet complete, or
       the lifespan startup failed before spawning the worker task).
 
+    A process whose leadership campaign is alive but which does not hold
+    the lease (a *candidate* under multi-process uvicorn) is ready with
+    ``reason == "leader_candidate"``; ``is_leader`` distinguishes it from
+    the active worker.
+
     Unauthenticated: container probes must not require auth tokens. Because
     this endpoint is reachable anonymously over the public ingress, the
     payload deliberately excludes ``last_error`` — see the comment on the
@@ -130,6 +138,22 @@ async def worker_ready_probe(response: Response) -> Dict[str, Any]:
         return {
             "ready": True,
             "status": status,
+            "is_leader": is_worker_leader(),
+            "last_started_at": worker_health.last_started_at,
+            "last_checkpoint_at": worker_health.last_checkpoint_at,
+        }
+
+    # Under uvicorn --workers N only the lease holder runs the worker loops;
+    # every other process is a live candidate whose campaign task is
+    # waiting for the lease. Readiness describes this web process, so a
+    # healthy candidate is ready — otherwise probes routed to non-leaders
+    # would report 503 for a deployment that is working as designed.
+    if is_worker_running() and not is_worker_leader() and status != STATUS_ERROR:
+        return {
+            "ready": True,
+            "status": status,
+            "is_leader": False,
+            "reason": "leader_candidate",
             "last_started_at": worker_health.last_started_at,
             "last_checkpoint_at": worker_health.last_checkpoint_at,
         }
@@ -191,6 +215,12 @@ async def worker_status() -> Dict[str, Any]:
         "metrics": worker_metrics.snapshot(),
         "sync_integrity": sync_integrity_state.snapshot(),
         "backfill_running": is_backfill_running(),
+        # Leadership is per-process: under uvicorn --workers N only the
+        # process holding the MongoDB lease runs the worker loops. A status
+        # read that lands on a non-leader reports is_leader=False with
+        # worker state at rest — that is expected, not an outage.
+        "is_leader": is_worker_leader(),
+        "holder_id": worker_holder_id(),
     }
 
 
@@ -321,16 +351,17 @@ async def worker_start() -> Dict[str, Any]:
 async def worker_stop() -> Dict[str, Any]:
     """Stop the running AI Analytics Worker gracefully.
 
-    Sets the worker's stop event and waits up to
-    ``CANCELLATION_TIMEOUT_SECONDS`` (5s) for it to drain before
-    cancelling the task.
+    Turns off the deployment-wide switch in Mongo (so no peer process
+    acquires the released lease), stops this process's campaign, and
+    waits up to ``CANCELLATION_TIMEOUT_SECONDS`` (5s) for the leader lease
+    to be released by whichever process holds it.
 
     Auth-protected via ``get_current_user``.
 
     Returns:
         ``{"action": "stopped" | "not_running", "running": false}``
     """
-    status = await stop_worker()
+    status = await stop_worker(deployment_wide=True)
     return {"action": status, "running": is_worker_running()}
 
 
@@ -348,8 +379,14 @@ async def worker_backfill() -> Dict[str, Any]:
 
     Auth-protected via ``get_current_user``.
 
+    Exactly one backfill runs per deployment (shared Mongo lease), so
+    ``already_running`` may refer to a scan in another process.
+
     Returns:
         ``{"action": "started" | "already_running", "backfill_running": bool}``
     """
     status = await start_backfill()
-    return {"action": status, "backfill_running": is_backfill_running()}
+    return {
+        "action": status,
+        "backfill_running": await is_backfill_running_anywhere(db_manager.db),
+    }

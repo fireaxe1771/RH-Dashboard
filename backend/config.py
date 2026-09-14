@@ -116,7 +116,7 @@ class Settings:
     # ``conversation_summaries`` (per-conversation summary list), adds
     # ``conversation_id`` and ``thread_id_is_billable`` from ai_line_items.
     AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION: int = int(
-        os.getenv("AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION", "2")
+        os.getenv("AI_ANALYTICS_WORKER_PROJECTION_SCHEMA_VERSION", "3")
     )
     # Coalescing debounce window (seconds). Multiple change events for the same
     # claim within this window collapse into a single refresh (Phase 6/8).
@@ -135,6 +135,17 @@ class Settings:
     # Backfill batch size for historical population (Phase 4/6) and for
     # stale-checkpoint date-range fallback (Phase 9).
     WORKER_BACKFILL_BATCH_SIZE: int = int(os.getenv("WORKER_BACKFILL_BATCH_SIZE", "500"))
+    # Max claims refreshed concurrently during backfill. The per-claim refresh
+    # is I/O-bound (Atlas round-trips), so a modest concurrency multiplies
+    # throughput without starving the FastAPI event loop. 1 = fully sequential.
+    WORKER_BACKFILL_CONCURRENCY: int = int(os.getenv("WORKER_BACKFILL_CONCURRENCY", "8"))
+    # Leader election for multi-process deployments (uvicorn --workers N).
+    # Exactly one process holds the lease in ai_analytics_worker_state and
+    # runs the worker loops; the others campaign until the lease expires.
+    WORKER_LEADER_LEASE_SECONDS: int = int(os.getenv("WORKER_LEADER_LEASE_SECONDS", "60"))
+    # How often a non-leader retries acquisition. Failover time after a
+    # leader dies is at most lease + campaign seconds.
+    WORKER_LEADER_CAMPAIGN_SECONDS: int = int(os.getenv("WORKER_LEADER_CAMPAIGN_SECONDS", "15"))
     # Max total attempts (including the initial attempt) for a single claim
     # refresh at the source repository layer before giving up. A value of 3
     # means 3 total attempts (1 initial + 2 retries), NOT 3 retries after the
@@ -296,6 +307,12 @@ class Settings:
             missing.append("WORKER_RECONCILIATION_INTERVAL_MINUTES (must be >= 1)")
         if self.WORKER_BACKFILL_BATCH_SIZE < 1:
             missing.append("WORKER_BACKFILL_BATCH_SIZE (must be >= 1)")
+        if self.WORKER_BACKFILL_CONCURRENCY < 1:
+            missing.append("WORKER_BACKFILL_CONCURRENCY (must be >= 1)")
+        if self.WORKER_LEADER_LEASE_SECONDS < 5:
+            missing.append("WORKER_LEADER_LEASE_SECONDS (must be >= 5)")
+        if self.WORKER_LEADER_CAMPAIGN_SECONDS < 1:
+            missing.append("WORKER_LEADER_CAMPAIGN_SECONDS (must be >= 1)")
         if self.WORKER_MAX_RETRIES < 0:
             missing.append("WORKER_MAX_RETRIES (must be >= 0)")
         if self.WORKER_DEAD_LETTER_THRESHOLD < 1:

@@ -104,6 +104,7 @@ async def run_backfill(
     stop_event: Optional[asyncio.Event] = None,
     batch_size: Optional[int] = None,
     max_claims_per_cycle: Optional[int] = None,
+    concurrency: Optional[int] = None,
 ) -> BackfillResult:
     """Run a historical backfill of all ``ai_line_items`` claims.
 
@@ -118,6 +119,11 @@ async def run_backfill(
         max_claims_per_cycle: maximum claims to process before yielding. Defaults
             to ``worker_config.max_claims_per_cycle``. Prevents event-loop
             starvation during large backfills (Section 1.1.5).
+        concurrency: max claims refreshed in parallel within each batch.
+            Defaults to ``worker_config.backfill_concurrency``. Per-claim
+            refreshes are I/O-bound and independent, so bounded concurrency
+            multiplies throughput; each claim still yields through the
+            refresh's own awaits.
 
     Returns:
         A ``BackfillResult`` with statistics about the run.
@@ -133,6 +139,8 @@ async def run_backfill(
         batch_size = worker_config.backfill_batch_size
     if max_claims_per_cycle is None:
         max_claims_per_cycle = worker_config.max_claims_per_cycle
+    if concurrency is None:
+        concurrency = worker_config.backfill_concurrency
 
     result = BackfillResult()
     run_started_at = result.started_at
@@ -155,9 +163,10 @@ async def run_backfill(
 
     logger.info(
         "Backfill started (batch_size=%d, max_claims_per_cycle=%d, "
-        "worker_version=%s).",
+        "concurrency=%d, worker_version=%s).",
         batch_size,
         max_claims_per_cycle,
+        concurrency,
         worker_config.worker_version,
     )
 
@@ -169,6 +178,7 @@ async def run_backfill(
             stop_event=stop_event,
             batch_size=batch_size,
             max_claims_per_cycle=max_claims_per_cycle,
+            concurrency=concurrency,
         )
 
         result.completed_at = datetime.now(UTC)
@@ -225,15 +235,48 @@ async def _backfill_loop(
     stop_event: Optional[asyncio.Event],
     batch_size: int,
     max_claims_per_cycle: int,
+    concurrency: int,
 ) -> None:
     """Inner loop: enumerate claim_ids in batches and process each claim.
 
     Uses a cursor over ``ai_line_items`` with ``_id`` ordering for deterministic
     batching. The cursor is re-queried per batch with a ``_id > $last_id`` filter
     rather than held open, so a long backfill doesn't hold a cursor resource.
+
+    Within a batch, claims are refreshed concurrently with a semaphore bound —
+    each refresh is independent and I/O-bound, so this multiplies throughput
+    while capping simultaneous in-flight source queries.
     """
     last_id: Optional[ObjectId] = None
-    claims_since_yield = 0
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _process_doc(doc: Dict[str, Any]) -> None:
+        raw_claim_id = doc.get("claim_id")
+        claim_id: Optional[int] = None
+        if raw_claim_id is not None:
+            try:
+                claim_id = int(raw_claim_id)
+            except (ValueError, TypeError):
+                claim_id = None
+
+        if claim_id is None:
+            result.claims_skipped += 1
+            logger.warning(
+                "Backfill: skipping ai_line_items _id=%s with invalid "
+                "claim_id=%r.",
+                doc["_id"],
+                raw_claim_id,
+            )
+            return
+
+        if stop_event is not None and stop_event.is_set():
+            return
+
+        async with semaphore:
+            if stop_event is not None and stop_event.is_set():
+                return
+            result.total_claim_ids += 1
+            await _process_single_claim(ai_db, db, claim_id, result)
 
     while True:
         if stop_event is not None and stop_event.is_set():
@@ -258,42 +301,24 @@ async def _backfill_loop(
             # No more documents — backfill complete.
             return
 
-        # Process each claim in the batch.
-        for doc in batch:
+        # The batch is _id-sorted, so the last doc's _id is the next page
+        # boundary regardless of per-task completion order.
+        last_id = batch[-1]["_id"]
+
+        # Schedule the batch in chunks of at most ``max_claims_per_cycle``
+        # claims, each refreshed concurrently (semaphore-bounded). Per-claim
+        # errors are dead-lettered inside refresh_claim, and counter
+        # increments on ``result`` are atomic between awaits. Yielding to
+        # the event loop between chunks keeps the FastAPI process
+        # responsive during a large backfill and gives cancellation a
+        # prompt boundary.
+        chunk_size = max(1, max_claims_per_cycle)
+        for start in range(0, len(batch), chunk_size):
             if stop_event is not None and stop_event.is_set():
-                result.cancelled = True
-                logger.info("Backfill cancelled by stop_event.")
-                return
-
-            last_id = doc["_id"]
-            raw_claim_id = doc.get("claim_id")
-            claim_id: Optional[int] = None
-            if raw_claim_id is not None:
-                try:
-                    claim_id = int(raw_claim_id)
-                except (ValueError, TypeError):
-                    claim_id = None
-
-            if claim_id is None:
-                result.claims_skipped += 1
-                logger.warning(
-                    "Backfill: skipping ai_line_items _id=%s with invalid "
-                    "claim_id=%r.",
-                    doc["_id"],
-                    raw_claim_id,
-                )
-                continue
-
-            result.total_claim_ids += 1
-
-            await _process_single_claim(ai_db, db, claim_id, result)
-
-            claims_since_yield += 1
-            if claims_since_yield >= max_claims_per_cycle:
-                # Yield control to the event loop so the FastAPI process
-                # doesn't become unresponsive during a large backfill.
-                await asyncio.sleep(0)
-                claims_since_yield = 0
+                break
+            chunk = batch[start:start + chunk_size]
+            await asyncio.gather(*(_process_doc(doc) for doc in chunk))
+            await asyncio.sleep(0)
 
 
 async def _process_single_claim(

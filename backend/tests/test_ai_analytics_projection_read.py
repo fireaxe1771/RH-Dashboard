@@ -129,6 +129,10 @@ class TestProjectionToAiRecord:
             "claim_processing_status", "agent_exec_status",
             "invoice_total", "processing_time_seconds",
             "thread_id", "retry_thread_id",
+            "billing_level", "level_identification_confidence",
+            "level_identification_low_confidence",
+            "dept_send_auto_invoice_status",
+            "is_cancelled", "cancellation_reason",
         }
         assert set(result.keys()) == expected_keys
         assert all(v is None for v in result.values())
@@ -159,6 +163,12 @@ class TestProjectionToAiRecord:
             "retry_count": 1,
             "thread_id": None,
             "retry_thread_id": None,
+            "billing_level": None,
+            "level_identification_confidence": None,
+            "level_identification_low_confidence": None,
+            "dept_send_auto_invoice_status": None,
+            "is_cancelled": None,
+            "cancellation_reason": None,
         }
 
 
@@ -687,3 +697,55 @@ class TestAggregateAgentStatsFromProjections:
         # Only the July conversation should be counted
         assert len(results) == 1
         assert results[0]["agent"] == "agent_a"
+
+    @pytest.mark.asyncio
+    async def test_claim_ids_restrict_to_matching_projections(self, mock_mongo_db):
+        """``claim_ids`` filters on the projection ``_id`` (the claim ID)."""
+        from ai_analytics_worker.config import worker_config
+
+        collection = mock_mongo_db[worker_config.PROJECTIONS_COLLECTION]
+        await collection.insert_one({
+            "_id": 100,
+            "conversation_summaries": [
+                {"agent": "agent_a", "status": "completed",
+                 "processing_stage": "s1", "request_type": "r1",
+                 "created_at": "2026-07-01T09:00:00"},
+            ],
+        })
+        await collection.insert_one({
+            "_id": 200,
+            "conversation_summaries": [
+                {"agent": "agent_b", "status": "completed",
+                 "processing_stage": "s1", "request_type": "r1",
+                 "created_at": "2026-07-01T09:00:00"},
+            ],
+        })
+
+        results = await aggregate_agent_stats_from_projections(
+            mock_mongo_db, claim_ids=[100],
+        )
+
+        assert len(results) == 1
+        assert results[0]["agent"] == "agent_a"
+
+        assert await aggregate_agent_stats_from_projections(
+            mock_mongo_db, claim_ids=[999],
+        ) == []
+
+
+@pytest.mark.asyncio
+async def test_projection_without_ai_line_item_record_is_treated_as_missing(mock_mongo_db):
+    """A projection written for a claim that has conversations but no
+    ai_line_items document must not be surfaced as a present AI record."""
+    from ai_analytics.projection_read_repository import (
+        get_projection_records_for_claim_ids,
+    )
+    from ai_analytics_worker.config import worker_config as wc
+
+    await mock_mongo_db[wc.PROJECTIONS_COLLECTION].insert_many([
+        {"_id": 1, "has_ai_line_item_record": True, "ai_processing_status": "COMPLETED"},
+        {"_id": 2, "has_ai_line_item_record": False},
+        {"_id": 3, "ai_processing_status": "COMPLETED"},
+    ])
+    by_claim = await get_projection_records_for_claim_ids(mock_mongo_db, [1, 2, 3])
+    assert set(by_claim) == {1, 3}

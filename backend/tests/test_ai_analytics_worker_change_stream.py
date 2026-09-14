@@ -694,3 +694,19 @@ class TestWatchOptions:
         coll_filter = match_stage["$match"]["ns.coll"]["$in"]
         assert "ai_line_items" in coll_filter
         assert "ai_agent_conversations" in coll_filter
+
+
+def test_non_resumable_error_detected_by_label():
+    from pymongo.errors import OperationFailure
+    from ai_analytics_worker.change_stream_listener import _is_non_resumable_error
+
+    labeled = OperationFailure("resume failed", code=280, details={
+        "codeName": "ChangeStreamFatalError",
+        "errorLabels": ["NonResumableChangeStreamError"],
+    })
+    assert _is_non_resumable_error(labeled)
+
+    labeled._error_labels = {"NonResumableChangeStreamError"}
+    assert _is_non_resumable_error(OperationFailure("x", code=286))
+    assert _is_non_resumable_error(labeled)
+    assert not _is_non_resumable_error(OperationFailure("network", code=6))

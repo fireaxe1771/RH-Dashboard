@@ -95,6 +95,15 @@ _PASSTHROUGH_FIELDS: tuple[str, ...] = (
     "billing_category",
     "line_items_save_to_rh_status",
     "retry_count",
+    # Schema v3: step-1 level identification + routing/cancellation fields.
+    # v1/v2 projections lack these keys — .get() returns None, matching the
+    # direct-read path when the source doc doesn't have them.
+    "billing_level",
+    "level_identification_confidence",
+    "level_identification_low_confidence",
+    "dept_send_auto_invoice_status",
+    "is_cancelled",
+    "cancellation_reason",
 )
 
 
@@ -147,8 +156,11 @@ async def get_projection_records_for_claim_ids(
     """Fetch projection documents for a batch of claim IDs.
 
     Returns a dict keyed by ``claim_id`` → adapted ai_record dict (ready
-    to pass to ``build_normalized_record``). Claims with no projection
-    are absent from the result — ``build_normalized_record`` handles
+    to pass to ``build_normalized_record``). Claims with no projection,
+    or whose projection records that no ``ai_line_items`` document exists
+    (``has_ai_line_item_record=false``), are absent from the result so
+    they normalize as ``ai_record_state="missing"`` exactly like the
+    direct-read path — ``build_normalized_record`` handles
     ``ai_record=None`` gracefully, so callers iterate the SQL cohort and
     look up each claim_id in this dict, same as the direct-read path.
 
@@ -181,6 +193,8 @@ async def get_projection_records_for_claim_ids(
         # The projection's _id is the integer claim_id (Section 9.1).
         claim_id = doc.get("_id")
         if claim_id is None:
+            continue
+        if not doc.get("has_ai_line_item_record", True):
             continue
         try:
             cid = int(claim_id)
@@ -227,6 +241,10 @@ _TRACE_PASSTHROUGH_FIELDS: tuple[str, ...] = (
     # Phase 10 new fields (v2 projections only; v1 returns None)
     "conversation_id",
     "thread_id_is_billable",
+    # Schema v3: step-1 level identification fields
+    "billing_level",
+    "level_identification_confidence",
+    "level_identification_low_confidence",
 )
 
 # The projection stores line items under ``ai_line_items``; the trace
@@ -334,6 +352,7 @@ async def aggregate_agent_stats_from_projections(
     db: Any,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    claim_ids: Optional[List[int]] = None,
 ) -> List[Dict[str, Any]]:
     """Aggregate agent stats from projection conversation_summaries.
 
@@ -354,6 +373,8 @@ async def aggregate_agent_stats_from_projections(
             ``conversation_summaries.created_at`` (inclusive).
         end_date: optional ISO date filter (exclusive — the caller
             adds one day).
+        claim_ids: optional list of claim IDs to restrict the aggregation
+            to. The projection ``_id`` is the claim ID.
 
     Returns:
         List of dicts with keys ``agent``, ``status``,
@@ -388,6 +409,8 @@ async def aggregate_agent_stats_from_projections(
         # matching the date range (skips v1 projections entirely).
         {"$match": {"conversation_summaries": {"$ne": [], "$exists": True}}},
     ]
+    if claim_ids is not None:
+        pipeline.append({"$match": {"_id": {"$in": claim_ids}}})
     if match_stage:
         pipeline.append({"$match": match_stage})
 

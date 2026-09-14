@@ -115,7 +115,7 @@ class TestOutcomesFunnelRoute:
         response = test_client.get("/api/ai-analytics/outcomes/funnel", headers=AUTH)
         assert response.status_code == 200
         stages = response.json()
-        assert len(stages) == 7
+        assert len(stages) == 6
         assert all(s["count"] == 0 for s in stages)
 
     @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
@@ -131,7 +131,8 @@ class TestOutcomesFunnelRoute:
         mock_mongo.return_value = {
             100: {"claim_processing_status": "COMPLETED", "agent_exec_status": "success",
                   "confidence_level": 90, "line_items_save_to_rh_status": True,
-                  "billing_category": "Motor Vehicle Accident", "retry_count": 0},
+                  "billing_category": "Motor Vehicle Accident", "retry_count": 0,
+                  "dept_send_auto_invoice_status": 2},
         }
         mock_canc.return_value = {}
         mock_logs.return_value = {
@@ -141,13 +142,111 @@ class TestOutcomesFunnelRoute:
         response = test_client.get("/api/ai-analytics/outcomes/funnel", headers=AUTH)
         assert response.status_code == 200
         stages = response.json()
-        assert stages[0]["count"] == 1  # Entered RH AI workflow
-        assert stages[1]["count"] == 1  # Mongo AI record found
-        assert stages[2]["count"] == 1  # Billability determined
+        assert stages[0]["count"] == 1  # Reached Ready to Invoice Insurance
+        assert stages[1]["count"] == 1  # Eligible for AI processing
+        assert stages[2]["count"] == 1  # Step 1: level & category evaluated
         assert stages[3]["count"] == 1  # AI processing completed
         assert stages[4]["count"] == 1  # Line items saved to RH
-        assert stages[5]["count"] == 1  # Business released
-        assert stages[6]["count"] == 0  # Business cancelled/rejected
+        assert stages[5]["count"] == 1  # Released
+        assert len(stages) == 6
+        saved = {b["label"]: b["count"] for b in stages[4]["breakdown"]}
+        assert saved["Released"] == 1
+        assert saved["Cancelled / Rejected"] == 0
+        assert saved["In review grid (pending)"] == 0
+
+    @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
+    @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims")
+    @patch("ai_analytics.outcome_service.sql_repo.get_process_logs_for_claims")
+    def test_funnel_step1_breakdown(
+        self, mock_logs, mock_canc, mock_mongo, mock_cohort, test_client,
+    ):
+        """Step-1 stage breaks down by identified billing_level and groups
+        the rest as 'Not identified'. With the fee-config source mocked
+        out (participation unavailable), every claim is eligibility
+        'unknown' and remains in the qualified cohort."""
+        mock_cohort.return_value = [
+            {"claim_id": 100, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+            {"claim_id": 200, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+            {"claim_id": 300, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+            {"claim_id": 400, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+        ]
+        mock_mongo.return_value = {
+            100: {"claim_processing_status": "COMPLETED",
+                  "billing_level": "Motor Vehicle Incident Level 1",
+                  "dept_send_auto_invoice_status": 0},
+            200: {"claim_processing_status": "COMPLETED",
+                  "billing_level": "Motor Vehicle Incident Level 1",
+                  "dept_send_auto_invoice_status": 2},
+            300: {"claim_processing_status": "BILLING_LEVEL_NOT_ENABLED",
+                  "billing_category": "Motor Vehicle Accident"},
+            # 400 has no ai_line_items doc — step 1 never ran
+        }
+        mock_canc.return_value = {}
+        mock_logs.return_value = {}
+
+        response = test_client.get("/api/ai-analytics/outcomes/funnel", headers=AUTH)
+        assert response.status_code == 200
+        stages = response.json()
+
+        assert stages[0]["count"] == 4   # full cohort
+        intake = {b["label"]: b["count"] for b in stages[0]["breakdown"]}
+        assert intake["Eligible for AI processing"] == 0
+        assert intake["Did not qualify — no qualifying AI tile"] == 0
+        assert intake["Eligibility unknown — configuration unavailable"] == 4
+
+        assert stages[1]["count"] == 4   # all unknown-eligibility claims qualify
+        assert stages[2]["count"] == 3   # step 1 evaluated (400 has no record)
+        breakdown = {b["label"]: b["count"] for b in stages[2]["breakdown"]}
+        assert breakdown["Motor Vehicle Incident Level 1"] == 2
+        # The BLNE record identified a category but no level
+        assert breakdown["Category identified (no level)"] == 1
+        assert breakdown["Not identified"] == 0
+
+        # Claims 100 and 200 completed; 300 is BILLING_LEVEL_NOT_ENABLED.
+        assert stages[3]["count"] == 2
+
+    @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
+    @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims")
+    @patch("ai_analytics.outcome_service.sql_repo.get_process_logs_for_claims")
+    def test_funnel_ai_side_cancellation(
+        self, mock_logs, mock_canc, mock_mongo, mock_cohort, test_client,
+    ):
+        """is_cancelled on the ai_line_items doc counts as cancelled even
+        without a SQL cancellation record or cancelled log."""
+        mock_cohort.return_value = [
+            {"claim_id": 100, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+        ]
+        mock_mongo.return_value = {
+            100: {"claim_processing_status": "COMPLETED",
+                  "line_items_save_to_rh_status": True,
+                  "is_cancelled": True,
+                  "cancellation_reason": "Wrong Level Selected"},
+        }
+        mock_canc.return_value = {}
+        mock_logs.return_value = {}
+
+        response = test_client.get("/api/ai-analytics/outcomes/funnel", headers=AUTH)
+        assert response.status_code == 200
+        stages = response.json()
+        saved = {b["label"]: b["count"] for b in stages[4]["breakdown"]}
+        assert saved["Cancelled / Rejected"] == 1
+        assert stages[5]["count"] == 0  # Released
+        # Saved = released + cancelled + pending
+        assert stages[4]["count"] == (
+            saved["Released"]
+            + saved["Cancelled / Rejected"]
+            + saved["In review grid (pending)"]
+        )
+        # Every stage is a subset of the previous one.
+        counts = [s["count"] for s in stages]
+        assert counts == sorted(counts, reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -373,3 +472,197 @@ class TestRouteErrorHandling:
             "/api/ai-analytics/outcomes/invoices?page_size=9999", headers=AUTH
         )
         assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# AI eligibility gating (department fee-tile configuration)
+# ---------------------------------------------------------------------------
+
+def _participation():
+    """Dept 1 has a qualifying AI fee tile; dept 2 does not."""
+    return {
+        1: {"uses_ai": True, "ai_mode": "auto", "qualifying_fee_count": 1,
+            "has_auto": True, "has_queued": False, "has_limited_auto": False},
+        2: {"uses_ai": False, "ai_mode": "not_using_ai",
+            "qualifying_fee_count": 0, "has_auto": False,
+            "has_queued": False, "has_limited_auto": False},
+    }
+
+
+class TestAiEligibilityGating:
+    @patch("ai_analytics.outcome_service.get_ai_participation_map", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
+    @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims")
+    @patch("ai_analytics.outcome_service.sql_repo.get_process_logs_for_claims")
+    def test_summary_counts_qualified_and_did_not_qualify(
+        self, mock_logs, mock_canc, mock_mongo, mock_cohort, mock_part, test_client,
+    ):
+        mock_part.return_value = _participation()
+        mock_cohort.return_value = [
+            {"claim_id": 100, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+            {"claim_id": 200, "AI_inv_process_status": 2, "dept_id": 2,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+        ]
+        mock_mongo.return_value = {}
+        mock_canc.return_value = {}
+        mock_logs.return_value = {}
+
+        response = test_client.get("/api/ai-analytics/outcomes/summary", headers=AUTH)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_ai_invoices"] == 1
+        assert data["did_not_qualify"] == 1
+        assert data["source_status"]["recoveryhub_ai_fee_config"] == "available"
+        assert data["data_complete"] is True
+
+    @patch("ai_analytics.outcome_service.get_ai_participation_map", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
+    @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims")
+    @patch("ai_analytics.outcome_service.sql_repo.get_process_logs_for_claims")
+    def test_funnel_intake_partition_and_nonqualifying_exclusion(
+        self, mock_logs, mock_canc, mock_mongo, mock_cohort, mock_part, test_client,
+    ):
+        """The legacy dept_send_auto_invoice_status=2 flag alone does not
+        qualify a claim — dept 2 has no qualifying tile, so its AI doc is
+        excluded from the evaluated stage and its breakdown."""
+        mock_part.return_value = _participation()
+        mock_cohort.return_value = [
+            {"claim_id": 100, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+            {"claim_id": 200, "AI_inv_process_status": 2, "dept_id": 2,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+        ]
+        mock_mongo.return_value = {
+            100: {"claim_processing_status": "COMPLETED",
+                  "billing_level": "Motor Vehicle Incident Level 1",
+                  "line_items_save_to_rh_status": True},
+            200: {"claim_processing_status": "COMPLETED",
+                  "billing_level": "Nonqualifying Level",
+                  "dept_send_auto_invoice_status": 2,
+                  "line_items_save_to_rh_status": False},
+        }
+        mock_canc.return_value = {}
+        mock_logs.return_value = {
+            100: [{"log_text": "Invoice to Insurance - Released",
+                   "user_id": 7486, "user_type_id": 2}],
+        }
+
+        response = test_client.get("/api/ai-analytics/outcomes/funnel", headers=AUTH)
+        assert response.status_code == 200
+        stages = response.json()
+        assert len(stages) == 6
+
+        assert stages[0]["count"] == 2
+        intake = {b["label"]: b["count"] for b in stages[0]["breakdown"]}
+        assert intake["Eligible for AI processing"] == 1
+        assert intake["Did not qualify — no qualifying AI tile"] == 1
+        assert "Eligibility unknown — configuration unavailable" not in intake
+
+        assert stages[1]["count"] == 1  # only the eligible claim
+        assert stages[2]["count"] == 1  # claim 200's AI doc excluded
+        breakdown = {b["label"]: b["count"] for b in stages[2]["breakdown"]}
+        assert breakdown["Motor Vehicle Incident Level 1"] == 1
+        assert "Nonqualifying Level" not in breakdown
+        assert breakdown["Not identified"] == 0
+
+        assert stages[3]["count"] == 1
+        assert stages[4]["count"] == 1
+        assert stages[5]["count"] == 1
+        saved = {b["label"]: b["count"] for b in stages[4]["breakdown"]}
+        assert saved["Cancelled / Rejected"] == 0
+        assert saved["In review grid (pending)"] == 0
+
+        # Stages nest monotonically and saved = released + cancelled + pending
+        counts = [s["count"] for s in stages]
+        assert counts == sorted(counts, reverse=True)
+        assert stages[4]["count"] == (
+            saved["Released"]
+            + saved["Cancelled / Rejected"]
+            + saved["In review grid (pending)"]
+        )
+
+    @patch("ai_analytics.outcome_service.get_ai_participation_map", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
+    @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims")
+    @patch("ai_analytics.outcome_service.sql_repo.get_process_logs_for_claims")
+    def test_historical_activity_rescues_disabled_department(
+        self, mock_logs, mock_canc, mock_mongo, mock_cohort, mock_part, test_client,
+    ):
+        """A successful writeback proves the claim was eligible when it ran
+        even though the department currently has no qualifying tile."""
+        mock_part.return_value = _participation()
+        mock_cohort.return_value = [
+            {"claim_id": 200, "AI_inv_process_status": 4, "dept_id": 2,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+        ]
+        mock_mongo.return_value = {
+            200: {"claim_processing_status": "COMPLETED",
+                  "line_items_save_to_rh_status": True},
+        }
+        mock_canc.return_value = {}
+        mock_logs.return_value = {
+            200: [{"log_text": "Invoice to Insurance - Released",
+                   "user_id": 7486, "user_type_id": 2}],
+        }
+
+        response = test_client.get("/api/ai-analytics/outcomes/funnel", headers=AUTH)
+        stages = response.json()
+        intake = {b["label"]: b["count"] for b in stages[0]["breakdown"]}
+        assert intake["Eligible for AI processing"] == 1
+        assert intake["Did not qualify — no qualifying AI tile"] == 0
+        assert stages[5]["count"] == 1  # Released
+
+    @patch("ai_analytics.outcome_service.get_ai_participation_map", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
+    @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims")
+    @patch("ai_analytics.outcome_service.sql_repo.get_process_logs_for_claims")
+    def test_participation_unavailable_marks_unknown_not_disqualified(
+        self, mock_logs, mock_canc, mock_mongo, mock_cohort, mock_part, test_client,
+    ):
+        mock_part.return_value = None
+        mock_cohort.return_value = [
+            {"claim_id": 100, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+        ]
+        mock_mongo.return_value = {}
+        mock_canc.return_value = {}
+        mock_logs.return_value = {}
+
+        response = test_client.get("/api/ai-analytics/outcomes/summary", headers=AUTH)
+        data = response.json()
+        # Unknown claims stay in the qualified cohort — nothing collapses
+        assert data["total_ai_invoices"] == 1
+        assert data["did_not_qualify"] == 0
+        assert data["source_status"]["recoveryhub_ai_fee_config"] == "unavailable"
+        assert data["data_complete"] is False
+
+    @patch("ai_analytics.outcome_service.get_ai_participation_map", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
+    @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims")
+    @patch("ai_analytics.outcome_service.sql_repo.get_process_logs_for_claims")
+    def test_participation_failure_treated_as_unavailable(
+        self, mock_logs, mock_canc, mock_mongo, mock_cohort, mock_part, test_client,
+    ):
+        """An unexpected exception from the participation lookup degrades to
+        the same unknown/unavailable state as a clean None."""
+        mock_part.side_effect = RuntimeError("mongo unreachable")
+        mock_cohort.return_value = [
+            {"claim_id": 100, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+        ]
+        mock_mongo.return_value = {}
+        mock_canc.return_value = {}
+        mock_logs.return_value = {}
+
+        response = test_client.get("/api/ai-analytics/outcomes/summary", headers=AUTH)
+        data = response.json()
+        assert data["total_ai_invoices"] == 1
+        assert data["did_not_qualify"] == 0
+        assert data["source_status"]["recoveryhub_ai_fee_config"] == "unavailable"
+        assert data["data_complete"] is False

@@ -30,7 +30,13 @@ from .normalization import (
     AI_COMPLETED_STATUSES,
     AI_NOT_ENABLED_STATUSES,
 )
-from .outcome_service import _load_normalized_cohort, _apply_filters, _validate_date_span
+from .outcome_service import (
+    _load_normalized_cohort,
+    _apply_filters,
+    _validate_date_span,
+    qualified_ai_runs,
+    count_not_configured,
+)
 from config import settings
 from database import db_manager
 
@@ -51,38 +57,42 @@ async def get_diagnostics_summary(
     records, source_status, data_complete = await _load_normalized_cohort(ai_db, filters)
     records = _apply_filters(records, filters)
 
-    total = len(records)
-    completed = sum(1 for r in records if r.get("ai_processing_status") in AI_COMPLETED_STATUSES)
+    did_not_qualify = count_not_configured(records)
+    runs = qualified_ai_runs(records)
+
+    total = len(runs)
+    completed = sum(1 for r in runs if r.get("ai_processing_status") in AI_COMPLETED_STATUSES)
     errors = sum(
-        1 for r in records
+        1 for r in runs
         if classify_ai_execution_outcome(
             r.get("ai_processing_status"), r.get("agent_execution_status")
         ) == "failed"
     )
-    retries = sum(1 for r in records if r.get("retry_count", 0) > 0)
+    retries = sum(1 for r in runs if r.get("retry_count", 0) > 0)
     retry_success = sum(
-        1 for r in records
+        1 for r in runs
         if r.get("retry_count", 0) > 0
         and r.get("ai_processing_status") in AI_COMPLETED_STATUSES
     )
     low_confidence = sum(
-        1 for r in records
+        1 for r in runs
         if r.get("confidence") is not None and r["confidence"] < 50
     )
     writeback_failures = sum(
-        1 for r in records if r.get("writeback_status") == "failed_or_not_saved"
+        1 for r in runs if r.get("writeback_status") == "failed_or_not_saved"
     )
 
     # Duration percentiles
     durations = [
         calculate_processing_duration(ai_record={"processing_time_seconds": r.get("processing_time_seconds")})
-        for r in records
+        for r in runs
         if r.get("processing_time_seconds") is not None
     ]
     duration_stats = calculate_duration_percentiles(durations)
 
     return AiDiagnosticsSummary(
         ai_runs=total,
+        did_not_qualify=did_not_qualify,
         completed=completed,
         errors=errors,
         retries=retries,
@@ -110,7 +120,7 @@ async def get_status_distribution(
     _validate_date_span(filters.start_date, filters.end_date)
 
     records, _, _ = await _load_normalized_cohort(ai_db, filters)
-    records = _apply_filters(records, filters)
+    records = qualified_ai_runs(_apply_filters(records, filters))
 
     # claim_processing_status distribution
     cps_counts: Counter = Counter()
@@ -150,7 +160,7 @@ async def get_confidence_distribution(
     _validate_date_span(filters.start_date, filters.end_date)
 
     records, _, _ = await _load_normalized_cohort(ai_db, filters)
-    records = _apply_filters(records, filters)
+    records = qualified_ai_runs(_apply_filters(records, filters))
 
     # Group by confidence bucket
     buckets: Dict[str, Dict[str, int]] = defaultdict(lambda: {
@@ -201,7 +211,7 @@ async def get_retry_analysis(
     _validate_date_span(filters.start_date, filters.end_date)
 
     records, _, _ = await _load_normalized_cohort(ai_db, filters)
-    records = _apply_filters(records, filters)
+    records = qualified_ai_runs(_apply_filters(records, filters))
 
     total = len(records)
     records_with_retries = [r for r in records if r.get("retry_count", 0) > 0]
@@ -245,7 +255,7 @@ async def get_writeback_analysis(
     _validate_date_span(filters.start_date, filters.end_date)
 
     records, _, _ = await _load_normalized_cohort(ai_db, filters)
-    records = _apply_filters(records, filters)
+    records = qualified_ai_runs(_apply_filters(records, filters))
 
     total = len(records)
     status_counts: Counter = Counter()
@@ -287,19 +297,33 @@ async def get_agent_stats(
     """
     _validate_date_span(filters.start_date, filters.end_date)
 
+    # Restrict agent stats to qualified AI runs — conversations belonging
+    # to claims in departments with no qualifying AI fee tile are excluded.
+    records, _, _ = await _load_normalized_cohort(ai_db, filters)
+    records = _apply_filters(records, filters)
+    claim_ids = [
+        int(r["claim_id"]) for r in qualified_ai_runs(records)
+        if r.get("claim_id") is not None
+    ]
+    if not claim_ids:
+        return []
+
     if settings.AI_ANALYTICS_USE_PROJECTION:
         try:
             results = await projection_repo.aggregate_agent_stats_from_projections(
                 db_manager.db,
                 start_date=filters.start_date,
                 end_date=filters.end_date,
+                claim_ids=claim_ids,
             )
         except Exception as e:
             logger.error(f"Failed to fetch agent stats from projection: {e}")
             return []
     else:
         # Direct-read path: aggregate on the conversations collection.
-        match_stage: Dict[str, Any] = {}
+        match_stage: Dict[str, Any] = mongo_repo.build_conversation_claim_query(
+            claim_ids
+        )
         if filters.start_date or filters.end_date:
             date_filter: Dict[str, Any] = {}
             if filters.start_date:

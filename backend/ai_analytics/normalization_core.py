@@ -450,6 +450,89 @@ def classify_billability(
 
 
 # ---------------------------------------------------------------------------
+# AI eligibility (department configuration)
+# ---------------------------------------------------------------------------
+
+# fee_send_option values that qualify a fee tile for AI processing. The
+# tile-level configuration (use_in_ai_process + fee_send_option) is the
+# authoritative eligibility signal — the legacy Departments.IsSendInvoiceAI
+# flag does not gate AI invoicing.
+AI_SEND_OPTIONS = {"auto", "queued", "limited_auto"}
+
+ELIGIBILITY_ELIGIBLE = "eligible"
+ELIGIBILITY_NOT_CONFIGURED = "not_configured"
+ELIGIBILITY_UNKNOWN = "unknown"
+
+
+def classify_fees(fees: Any) -> Dict[str, Any]:
+    """Determine AI status from a list of finalized fee/resource records."""
+    if not isinstance(fees, list):
+        fees = []
+    qualifying = [
+        f
+        for f in fees
+        if isinstance(f, dict)
+        and f.get("use_in_ai_process")
+        and f.get("fee_send_option") in AI_SEND_OPTIONS
+    ]
+    options = {f.get("fee_send_option") for f in qualifying}
+
+    if not qualifying:
+        return {
+            "uses_ai": False,
+            "ai_mode": "not_using_ai",
+            "qualifying_fee_count": 0,
+            "has_auto": False,
+            "has_queued": False,
+            "has_limited_auto": False,
+        }
+
+    if len(options) > 1:
+        mode = "mixed"
+    elif "auto" in options:
+        mode = "auto"
+    elif "queued" in options:
+        mode = "queued"
+    else:
+        mode = "limited_auto"
+
+    return {
+        "uses_ai": True,
+        "ai_mode": mode,
+        "qualifying_fee_count": len(qualifying),
+        "has_auto": "auto" in options,
+        "has_queued": "queued" in options,
+        "has_limited_auto": "limited_auto" in options,
+    }
+
+
+def classify_ai_eligibility(
+    dept_uses_ai: Optional[bool],
+    writeback_status: Optional[str] = None,
+    business_outcome: Optional[str] = None,
+) -> str:
+    """Classify whether a claim's department was set up for AI billing.
+
+    Returns ``eligible``, ``not_configured``, or ``unknown``. ``None`` for
+    ``dept_uses_ai`` means the configuration source could not be read.
+    Actual AI billing activity — a successful writeback or a terminal grid
+    outcome — proves the claim was eligible when it ran and overrides the
+    current configuration.
+    """
+    if writeback_status == "success" or business_outcome in (
+        "released",
+        "cancelled_rejected",
+    ):
+        return ELIGIBILITY_ELIGIBLE
+
+    if dept_uses_ai is True:
+        return ELIGIBILITY_ELIGIBLE
+    if dept_uses_ai is False:
+        return ELIGIBILITY_NOT_CONFIGURED
+    return ELIGIBILITY_UNKNOWN
+
+
+# ---------------------------------------------------------------------------
 # Normalized record builder
 # ---------------------------------------------------------------------------
 
@@ -482,12 +565,15 @@ def build_normalized_record(
                 business_user_id = log.get("user_id")
 
     has_cancellation = cancellation is not None
+    # Newer ai_line_items docs carry their own cancellation flag — treat it
+    # as cancellation evidence alongside the SQL details table.
+    ai_cancelled = bool(ai_record.get("is_cancelled")) if ai_record else False
 
     outcome = classify_business_outcome(
         ai_inv_process_status=ai_inv_process_status,
         has_released_log=has_released,
         has_cancelled_log=has_cancelled,
-        has_cancellation_record=has_cancellation,
+        has_cancellation_record=has_cancellation or ai_cancelled,
     )
 
     # AI record state
@@ -518,6 +604,21 @@ def build_normalized_record(
         raw_reason_descr = cancellation.get("reason_descr") or cancellation.get("reason_description")
         normalized = normalize_reason(reason_id, raw_reason, raw_reason_descr)
         normalized_category = normalized["normalized_category"]
+    elif ai_cancelled and ai_record.get("cancellation_reason"):
+        # Cancellation recorded only on the AI-side document
+        raw_reason = ai_record["cancellation_reason"]
+        normalized = normalize_reason(None, raw_reason, None)
+        normalized_category = normalized["normalized_category"]
+
+    if (
+        outcome == "cancelled_rejected"
+        and normalized_category in (None, "unknown")
+        and not raw_reason
+    ):
+        # The claim was cancelled but no reason was recorded on either the
+        # SQL cancellation detail row or the AI-side document — distinct
+        # from "unknown", which means a reason WAS recorded but didn't map.
+        normalized_category = "no_reason_recorded"
 
     return {
         "claim_id": claim_id,
@@ -533,10 +634,27 @@ def build_normalized_record(
         "raw_rejection_reason": raw_reason,
         "raw_rejection_description": raw_reason_descr,
         "normalized_rejection_category": normalized_category,
+        "ai_inv_process_status": ai_inv_process_status,
         "ai_processing_status": claim_processing_status,
         "agent_execution_status": agent_exec_status,
         "is_billable": ai_record.get("is_billable") if ai_record else None,
         "billing_category": ai_record.get("billing_category") if ai_record else None,
+        # Step-1 level identification output (present on docs from ~2026-09)
+        "billing_level": ai_record.get("billing_level") if ai_record else None,
+        "level_identification_confidence": (
+            ai_record.get("level_identification_confidence") if ai_record else None
+        ),
+        "level_identification_low_confidence": (
+            ai_record.get("level_identification_low_confidence") if ai_record else None
+        ),
+        # Snapshot of the department's IsSendInvoiceAI flag at processing
+        # time (2 = AI invoicing enabled → line items go to the review
+        # grid; 0 = evaluated only, never writes line items back). It is
+        # NOT a routing decision — there is no straight-through path.
+        "dept_send_auto_invoice_status": (
+            ai_record.get("dept_send_auto_invoice_status") if ai_record else None
+        ),
+        "ai_cancelled": ai_cancelled,
         "confidence": confidence,
         "writeback_status": writeback,
         "retry_count": retry,

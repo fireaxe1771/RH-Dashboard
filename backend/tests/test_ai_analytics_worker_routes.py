@@ -506,3 +506,34 @@ class TestSnapshotIndependence:
 
         assert worker_health.status == STATUS_RUNNING
         assert worker_health.last_started_at is not None
+
+
+class TestReadyProbeCandidate:
+    """A live non-leader campaign process is ready (multi-process uvicorn)."""
+
+    def test_candidate_with_live_campaign_is_ready(self, test_client, monkeypatch):
+        from ai_analytics_worker import routes as worker_routes
+
+        _patch_worker_enabled(monkeypatch, enabled=True)
+        assert worker_health.status == STATUS_STOPPED
+        monkeypatch.setattr(worker_routes, "is_worker_running", lambda: True)
+        monkeypatch.setattr(worker_routes, "is_worker_leader", lambda: False)
+
+        response = test_client.get(READY_URL)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ready"] is True
+        assert body["is_leader"] is False
+        assert body["reason"] == "leader_candidate"
+        assert "last_error" not in body
+
+    def test_candidate_in_error_state_is_not_ready(self, test_client, monkeypatch):
+        from ai_analytics_worker import routes as worker_routes
+
+        _patch_worker_enabled(monkeypatch, enabled=True)
+        worker_health.record_error("boom")
+        monkeypatch.setattr(worker_routes, "is_worker_running", lambda: True)
+        monkeypatch.setattr(worker_routes, "is_worker_leader", lambda: False)
+
+        response = test_client.get(READY_URL)
+        assert response.status_code == 503

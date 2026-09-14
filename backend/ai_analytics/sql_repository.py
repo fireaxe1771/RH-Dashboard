@@ -215,7 +215,11 @@ FROM dbo.AIClaimInvoiceCancellationDetails d
 LEFT JOIN dbo.AIClaimInvoiceCancellationReasons r
     ON r.id = d.reason_id
 WHERE d.claim_id IN (
-    SELECT value FROM STRING_SPLIT(%(claim_ids_csv)s, ',')
+    -- CAST is required: for large claim batches pyodbc sends the CSV param
+    -- as ntext, which STRING_SPLIT rejects ("Argument data type ntext is
+    -- invalid for argument 1"). Without the cast the query fails and the
+    -- caller silently gets no cancellation data.
+    SELECT value FROM STRING_SPLIT(CAST(%(claim_ids_csv)s AS nvarchar(max)), ',')
 )
 """
 
@@ -313,7 +317,11 @@ def get_process_logs_for_claims(
         created_date
     FROM dbo.ai_claims_process_logs
     WHERE claim_id IN (
-        SELECT value FROM STRING_SPLIT(%(claim_ids_csv)s, ',')
+        -- CAST is required: for large claim batches pyodbc sends the CSV param
+        -- as ntext, which STRING_SPLIT rejects ("Argument data type ntext is
+        -- invalid for argument 1"). Without the cast the query fails and the
+        -- caller silently gets no process-log data.
+        SELECT value FROM STRING_SPLIT(CAST(%(claim_ids_csv)s AS nvarchar(max)), ',')
     )
     ORDER BY claim_id, created_date ASC
     """

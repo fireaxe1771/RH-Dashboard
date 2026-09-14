@@ -26,6 +26,7 @@ import { aiAnalyticsApi } from '../services/aiAnalyticsApi';
 
 const SUMMARY = {
   total_ai_invoices: 100,
+  did_not_qualify: 12,
   released: 60,
   cancelled_rejected: 20,
   pending: 15,
@@ -123,7 +124,9 @@ describe('AiOutcomesDashboard', () => {
 
   test('renders KPI cards with summary values', async () => {
     render(<AiOutcomesDashboard />);
-    await waitFor(() => expect(screen.getByText('Total AI Invoices')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('AI-Eligible Claims')).toBeInTheDocument());
+    expect(screen.getByText('Did Not Qualify')).toBeInTheDocument();
+    expect(screen.getByText('No qualifying AI fee tile')).toBeInTheDocument();
     expect(screen.getByText('Business Release Rate')).toBeInTheDocument();
     expect(screen.getByText('Rejection Rate')).toBeInTheDocument();
     expect(screen.getByText('Writeback Success')).toBeInTheDocument();
@@ -199,7 +202,7 @@ describe('AiOutcomesDashboard', () => {
       ai_not_enabled: 0,
     });
     render(<AiOutcomesDashboard />);
-    await waitFor(() => expect(screen.getByText('Total AI Invoices')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('AI-Eligible Claims')).toBeInTheDocument());
     expect(screen.queryByText('Billing Not Enabled')).not.toBeInTheDocument();
   });
 
