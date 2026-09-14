@@ -67,6 +67,13 @@ _FIELD_MAP: Dict[str, str] = {
     "agent_execution_status": "agent_exec_status",
     "ai_invoice_total": "invoice_total",
     "processing_duration_seconds": "processing_time_seconds",
+    # AI outcome-accounting fields — the cohort classifier and the invoice
+    # list need the review reason and AI-side timestamps to classify the
+    # final result and measure processing age.
+    "review_message": "review_msg",
+    "ai_inserted_at": "inserted_at",
+    "ai_updated_at": "updated_at",
+    "ai_completed_at": "completed_at",
 }
 
 # Fields that exist in the raw ai_line_items doc but are NOT in the
@@ -104,6 +111,9 @@ _PASSTHROUGH_FIELDS: tuple[str, ...] = (
     "dept_send_auto_invoice_status",
     "is_cancelled",
     "cancellation_reason",
+    # Projection-stored line-item count; the raw doc carries a line_items
+    # list instead, so this only flows through on the projection path.
+    "ai_line_item_count",
 )
 
 

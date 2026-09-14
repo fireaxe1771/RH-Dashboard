@@ -98,3 +98,37 @@ async def test_trace_uses_projection_summary_when_conversation_read_fails(sql_ro
     assert "conversation_summaries" not in trace.raw_ai_record
     assert "has_ai_line_item_record" not in trace.raw_ai_record
     assert trace.data_complete is False
+
+
+@pytest.mark.asyncio
+async def test_trace_classifies_final_ai_result(sql_row, monkeypatch):
+    """The trace uses the same classifier as the cohort: an old in-flight
+    workflow reports stuck; a saved one reports saved_to_recoveryhub."""
+    from ai_analytics.invoice_trace_service import get_invoice_trace
+    from config import settings
+    from database import db_manager
+
+    monkeypatch.setattr(settings, "AI_ANALYTICS_USE_PROJECTION", True)
+    monkeypatch.setattr(db_manager, "db", object())
+    projection = {
+        "has_ai_line_item_record": True,
+        "claim_processing_status": "IN_PROGRESS",
+        "agent_exec_status": "in_progress",
+        "line_items_save_to_rh_status": False,
+        "updated_at": "2020-01-01T00:00:00Z",
+        "conversation_summaries": [],
+    }
+
+    with patch("ai_analytics.invoice_trace_service.sql_repo.get_ai_invoice_record_for_claim", return_value=sql_row), \
+         patch("ai_analytics.invoice_trace_service.sql_repo.get_process_logs_for_claim", return_value=[]), \
+         patch("ai_analytics.invoice_trace_service.sql_repo.get_cancellation_details_for_claim", return_value=[]), \
+         patch("ai_analytics.invoice_trace_service.sql_repo.get_final_line_items", return_value=[]), \
+         patch("ai_analytics.invoice_trace_service.sql_repo.get_final_resource_line_items", return_value=[]), \
+         patch("ai_analytics.invoice_trace_service.projection_repo.get_projection_for_trace", new_callable=AsyncMock, return_value=projection), \
+         patch("ai_analytics.invoice_trace_service.mongo_repo.get_agent_conversations_for_claim", new_callable=AsyncMock, return_value=[]):
+        trace = await get_invoice_trace(object(), 100)
+
+    assert trace.ai_result == "stuck"
+    assert trace.is_stuck is True
+    assert trace.processing_age_seconds is not None
+    assert trace.processing_age_seconds > 30 * 60

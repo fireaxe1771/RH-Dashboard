@@ -30,7 +30,9 @@ class TestOutcomesSummaryRoute:
         assert data["total_ai_invoices"] == 0
         assert data["released"] == 0
         assert data["cancelled_rejected"] == 0
-        assert data["business_release_rate"] == 0.0
+        # Zero released + zero cancelled → undefined rate (None), per
+        # calculate_release_rate's zero-denominator contract.
+        assert data["business_release_rate"] is None
 
     @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
     @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
@@ -207,8 +209,15 @@ class TestOutcomesFunnelRoute:
         assert breakdown["Category identified (no level)"] == 1
         assert breakdown["Not identified"] == 0
 
-        # Claims 100 and 200 completed; 300 is BILLING_LEVEL_NOT_ENABLED.
-        assert stages[3]["count"] == 2
+        # Claims 100 and 200 are COMPLETED but their writeback is unknown,
+        # so their final AI result is "unknown" (nonterminal). 300 is
+        # BILLING_LEVEL_NOT_ENABLED → not_required (terminal).
+        assert stages[3]["stage"] == "AI processing reached final result"
+        assert stages[3]["count"] == 1
+        final = {b["label"]: b["count"] for b in stages[3]["breakdown"]}
+        assert final["Not required"] == 1
+        dropoff = {b["label"]: b["count"] for b in stages[3]["dropoff_breakdown"]}
+        assert dropoff["Result unknown"] == 2
 
     @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
     @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
@@ -245,6 +254,70 @@ class TestOutcomesFunnelRoute:
             + saved["In review grid (pending)"]
         )
         # Every stage is a subset of the previous one.
+        counts = [s["count"] for s in stages]
+        assert counts == sorted(counts, reverse=True)
+
+    @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
+    @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims")
+    @patch("ai_analytics.outcome_service.sql_repo.get_process_logs_for_claims")
+    def test_funnel_final_result_partition(
+        self, mock_logs, mock_canc, mock_mongo, mock_cohort, test_client,
+    ):
+        """Stage 4 counts every terminal ai_result and partitions it by
+        result; the dropoff breakdown partitions evaluated nonterminal
+        records with result_filter values for drill-down."""
+        mock_cohort.return_value = [
+            {"claim_id": c, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"}
+            for c in (100, 200, 300, 400, 500, 600)
+        ]
+        mock_mongo.return_value = {
+            100: {"claim_processing_status": "COMPLETED",
+                  "line_items_save_to_rh_status": True},          # saved
+            200: {"claim_processing_status": "COMPLETED",
+                  "line_items_save_to_rh_status": False},         # output rejected
+            300: {"claim_processing_status": "ERROR"},            # execution failed
+            400: {"claim_processing_status": "BILLING_LEVEL_NOT_ENABLED",
+                  "line_items_save_to_rh_status": False},         # not required
+            500: {"claim_processing_status": "IN_PROGRESS",
+                  "line_items_save_to_rh_status": False,
+                  "updated_at": "2020-01-01T00:00:00Z"},          # stuck
+            600: {"claim_processing_status": "COMPLETED"},        # unknown result
+        }
+        mock_canc.return_value = {}
+        mock_logs.return_value = {
+            100: [{"log_text": "Invoice to Insurance - Released",
+                   "user_id": 7486, "user_type_id": 2}],
+        }
+
+        response = test_client.get("/api/ai-analytics/outcomes/funnel", headers=AUTH)
+        assert response.status_code == 200
+        stages = response.json()
+        assert len(stages) == 6
+
+        stage4 = stages[3]
+        assert stage4["stage"] == "AI processing reached final result"
+        assert stage4["count"] == 4  # saved + rejected + failed + not_required
+
+        by_filter = {b["result_filter"]: b for b in stage4["breakdown"]}
+        assert by_filter["saved_to_recoveryhub"]["count"] == 1
+        assert by_filter["ai_output_rejected"]["count"] == 1
+        assert by_filter["execution_failed"]["count"] == 1
+        assert by_filter["not_required"]["count"] == 1
+        # Breakdown always partitions the stage count.
+        assert sum(b["count"] for b in stage4["breakdown"]) == stage4["count"]
+
+        dropoff = {b["result_filter"]: b for b in stage4["dropoff_breakdown"]}
+        assert dropoff["stuck"]["count"] == 1
+        assert "Stuck beyond 30 minutes" == dropoff["stuck"]["label"]
+        assert dropoff["unknown"]["count"] == 1
+        # in_progress has count 0 → row omitted.
+        assert "in_progress" not in dropoff
+        assert sum(b["count"] for b in stage4["dropoff_breakdown"]) + stage4["count"] == 6
+
+        assert stages[4]["count"] == 1  # saved to RH
+        assert stages[5]["count"] == 1  # released
         counts = [s["count"] for s in stages]
         assert counts == sorted(counts, reverse=True)
 
@@ -357,6 +430,67 @@ class TestInvoiceCohortRoute:
         assert response.status_code == 200
         data = response.json()
         assert len(data["invoices"]) == 1
+
+    @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
+    @patch("ai_analytics.outcome_service.mongo_repo.get_ai_line_items_for_claim_ids", new_callable=AsyncMock)
+    @patch("ai_analytics.outcome_service.sql_repo.get_cancellation_details_for_claims")
+    @patch("ai_analytics.outcome_service.sql_repo.get_process_logs_for_claims")
+    def test_invoice_cohort_ai_result_filter_and_fields(
+        self, mock_logs, mock_canc, mock_mongo, mock_cohort, test_client,
+    ):
+        mock_cohort.return_value = [
+            {"claim_id": 100, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+            {"claim_id": 200, "AI_inv_process_status": 2, "dept_id": 1,
+             "ai_business_updated_at": "2026-01-15T10:00:00"},
+        ]
+        mock_mongo.return_value = {
+            100: {"claim_processing_status": "COMPLETED",
+                  "line_items_save_to_rh_status": False,
+                  "review_msg": "Rejected: wrong level",
+                  "inserted_at": "2026-01-15T09:00:00Z",
+                  "updated_at": "2026-01-15T09:05:00Z",
+                  "completed_at": "2026-01-15T09:05:00Z",
+                  "line_items": [{"item": "a"}, {"item": "b"}]},
+            200: {"claim_processing_status": "COMPLETED",
+                  "line_items_save_to_rh_status": True},
+        }
+        mock_canc.return_value = {}
+        mock_logs.return_value = {}
+
+        # Unfiltered: both records carry the new outcome fields.
+        response = test_client.get("/api/ai-analytics/outcomes/invoices", headers=AUTH)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_count"] == 2
+        by_claim = {i["claim_id"]: i for i in data["invoices"]}
+        rejected = by_claim[100]
+        assert rejected["ai_result"] == "ai_output_rejected"
+        assert rejected["review_message"] == "Rejected: wrong level"
+        assert rejected["ai_line_item_count"] == 2
+        assert rejected["ai_inserted_at"] == "2026-01-15T09:00:00Z"
+        assert rejected["ai_updated_at"] == "2026-01-15T09:05:00Z"
+        assert rejected["ai_completed_at"] == "2026-01-15T09:05:00Z"
+        assert rejected["is_stuck"] is False
+        assert rejected["processing_age_seconds"] is not None
+        assert by_claim[200]["ai_result"] == "saved_to_recoveryhub"
+
+        # ai_result filter narrows the cohort.
+        response = test_client.get(
+            "/api/ai-analytics/outcomes/invoices?ai_result=ai_output_rejected",
+            headers=AUTH,
+        )
+        data = response.json()
+        assert data["total_count"] == 1
+        assert data["invoices"][0]["claim_id"] == 100
+
+        response = test_client.get(
+            "/api/ai-analytics/outcomes/invoices?ai_result=saved_to_recoveryhub",
+            headers=AUTH,
+        )
+        data = response.json()
+        assert data["total_count"] == 1
+        assert data["invoices"][0]["claim_id"] == 200
 
 
 # ---------------------------------------------------------------------------

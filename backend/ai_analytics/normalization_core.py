@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from .reason_normalization import normalize_reason
@@ -203,6 +204,137 @@ def classify_writeback_status(
         return "not_saved"
 
     return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Final AI result classification
+# ---------------------------------------------------------------------------
+#
+# ``classify_ai_result`` collapses the three raw lifecycle signals
+# (claim_processing_status, agent_exec_status, writeback_status) plus record
+# age into a single final-result value so the outcomes funnel and the
+# invoice cohort can explain where every evaluated claim ended up.
+
+AI_RESULT_SAVED = "saved_to_recoveryhub"
+AI_RESULT_OUTPUT_REJECTED = "ai_output_rejected"
+AI_RESULT_EXECUTION_FAILED = "execution_failed"
+AI_RESULT_STUCK = "stuck"
+AI_RESULT_IN_PROGRESS = "in_progress"
+AI_RESULT_NOT_REQUIRED = "not_required"
+AI_RESULT_UNKNOWN = "unknown"
+
+# Results that represent a finished AI workflow — the funnel's
+# "reached final result" stage is exactly this set.
+TERMINAL_AI_RESULTS = frozenset({
+    AI_RESULT_SAVED,
+    AI_RESULT_OUTPUT_REJECTED,
+    AI_RESULT_EXECUTION_FAILED,
+    AI_RESULT_NOT_REQUIRED,
+})
+
+
+def _parse_ai_timestamp(value: Any) -> Optional[datetime]:
+    """Parse a timestamp into an aware UTC datetime.
+
+    Accepts aware or naive ``datetime`` objects (naive is treated as UTC)
+    and ISO 8601 strings including a trailing ``Z``. Returns ``None`` for
+    missing or malformed values — never raises.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def classify_ai_result(
+    claim_processing_status: Optional[str],
+    agent_exec_status: Optional[str],
+    writeback_status: Optional[str],
+    ai_updated_at: Any = None,
+    ai_inserted_at: Any = None,
+    *,
+    now: Optional[datetime] = None,
+    stuck_threshold_minutes: int = 30,
+) -> Dict[str, Any]:
+    """Classify the final AI result for an evaluated claim.
+
+    Returns a dict with keys ``ai_result`` (one of the ``AI_RESULT_*``
+    constants), ``is_stuck`` (bool), and ``processing_age_seconds``
+    (float or ``None`` when no usable timestamp exists).
+
+    Age is measured from ``ai_updated_at`` falling back to
+    ``ai_inserted_at``, clamped to >= 0. Malformed or missing timestamps
+    yield ``None`` age and never throw.
+
+    Precedence:
+    1. writeback ``success`` → ``saved_to_recoveryhub``
+    2. execution outcome ``failed`` → ``execution_failed``
+    3. writeback ``not_required`` or ``BILLING_LEVEL_NOT_ENABLED``
+       → ``not_required``
+    4. ``COMPLETED`` with writeback ``not_saved`` → ``ai_output_rejected``
+    5. ``INITIATED``/``IN_PROGRESS`` or agent ``pending``/``in_progress``/
+       ``retry`` → ``stuck`` when age >= threshold else ``in_progress``
+    6. anything else (including ``COMPLETED`` with unknown/pending
+       writeback) → ``unknown``
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
+
+    ts = _parse_ai_timestamp(ai_updated_at) or _parse_ai_timestamp(ai_inserted_at)
+    age_seconds: Optional[float] = None
+    if ts is not None:
+        age_seconds = max(0.0, (now - ts).total_seconds())
+
+    threshold_seconds = max(0, stuck_threshold_minutes) * 60
+    is_stuck = (
+        age_seconds is not None
+        and age_seconds >= threshold_seconds
+    )
+
+    if writeback_status == "success":
+        result = AI_RESULT_SAVED
+    elif (
+        classify_ai_execution_outcome(claim_processing_status, agent_exec_status)
+        == "failed"
+    ):
+        result = AI_RESULT_EXECUTION_FAILED
+    elif (
+        writeback_status == "not_required"
+        or claim_processing_status in AI_NOT_ENABLED_STATUSES
+    ):
+        result = AI_RESULT_NOT_REQUIRED
+    elif (
+        claim_processing_status in AI_COMPLETED_STATUSES
+        and writeback_status == "not_saved"
+    ):
+        result = AI_RESULT_OUTPUT_REJECTED
+    elif (
+        claim_processing_status in ("INITIATED", "IN_PROGRESS")
+        or agent_exec_status in AGENT_IN_PROGRESS_STATUSES
+    ):
+        result = AI_RESULT_STUCK if is_stuck else AI_RESULT_IN_PROGRESS
+    else:
+        result = AI_RESULT_UNKNOWN
+
+    return {
+        "ai_result": result,
+        "is_stuck": result == AI_RESULT_STUCK,
+        "processing_age_seconds": age_seconds,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -669,7 +801,35 @@ def build_normalized_record(
         "amount_invoiced": sql_row.get("amount_invoiced"),
         "processing_time_seconds": ai_record.get("processing_time_seconds") if ai_record else None,
         "business_user_id": business_user_id,
+        # AI outcome-accounting fields. On the direct-read path these come
+        # from the raw ai_line_items document (review_msg, inserted_at,
+        # updated_at, completed_at, line_items). On the projection path the
+        # read adapter has already mapped them to the same raw names and
+        # supplies ai_line_item_count directly.
+        "review_message": ai_record.get("review_msg") if ai_record else None,
+        "ai_inserted_at": ai_record.get("inserted_at") if ai_record else None,
+        "ai_updated_at": ai_record.get("updated_at") if ai_record else None,
+        "ai_completed_at": ai_record.get("completed_at") if ai_record else None,
+        "ai_line_item_count": _ai_line_item_count(ai_record),
     }
+
+
+def _ai_line_item_count(ai_record: Optional[Dict[str, Any]]) -> int:
+    """Number of AI-generated line items.
+
+    The projection supplies ``ai_line_item_count`` directly; the direct
+    read path derives it from the ``line_items`` array when it is a list.
+    """
+    if not ai_record:
+        return 0
+    count = ai_record.get("ai_line_item_count")
+    if count is not None:
+        try:
+            return int(count)
+        except (ValueError, TypeError):
+            pass
+    items = ai_record.get("line_items")
+    return len(items) if isinstance(items, list) else 0
 
 
 def index_ai_records_by_claim_id(

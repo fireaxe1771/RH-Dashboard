@@ -1,8 +1,67 @@
+import type { CSSProperties } from 'react';
 import { createApiFetch } from './fetchWrapper';
 
 // ---------------------------------------------------------------------------
 // Types — mirror the backend Pydantic models
 // ---------------------------------------------------------------------------
+
+// Final AI result values — must match the backend AI_RESULT_* constants.
+export type AiResult =
+  | 'saved_to_recoveryhub'
+  | 'ai_output_rejected'
+  | 'execution_failed'
+  | 'stuck'
+  | 'in_progress'
+  | 'not_required'
+  | 'unknown';
+
+export const AI_RESULT_LABELS: Record<AiResult, string> = {
+  saved_to_recoveryhub: 'Saved to RH',
+  ai_output_rejected: 'AI Output Rejected',
+  execution_failed: 'Execution Failed',
+  stuck: 'Stuck',
+  in_progress: 'In Progress',
+  not_required: 'Not Required',
+  unknown: 'Unknown',
+};
+
+// Shown when a stuck record carries no source error/review message.
+export const AI_STUCK_FALLBACK_REASON =
+  'No source error was recorded. The workflow exceeded the inactivity threshold; investigate in FireRecovery_AI.';
+
+// Shown when an execution-failed record carries no source error/review
+// message — factual, does not invent a cause.
+export const AI_EXECUTION_FAILED_FALLBACK_REASON =
+  'The AI execution failed, but no source error reason was recorded; inspect the agent conversation history.';
+
+/** Compact human age: seconds → "45s", minutes → "12m", hours → "3h", days → "2d". */
+export function formatProcessingAge(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined) return '—';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${Math.round(hours)}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
+export function aiResultBadgeStyle(result: AiResult): CSSProperties {
+  const base: CSSProperties = { padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600, whiteSpace: 'nowrap' };
+  switch (result) {
+    case 'saved_to_recoveryhub':
+      return { ...base, backgroundColor: 'rgba(34, 197, 94, 0.15)', color: '#22c55e' };
+    case 'ai_output_rejected':
+    case 'execution_failed':
+      return { ...base, backgroundColor: 'rgba(239, 68, 68, 0.15)', color: '#ef4444' };
+    case 'stuck':
+      return { ...base, backgroundColor: 'rgba(249, 115, 22, 0.15)', color: '#f97316' };
+    case 'in_progress':
+      return { ...base, backgroundColor: 'rgba(234, 179, 8, 0.15)', color: '#eab308' };
+    case 'not_required':
+    default:
+      return { ...base, backgroundColor: 'rgba(148, 163, 184, 0.15)', color: '#94a3b8' };
+  }
+}
 
 export interface AiAnalyticsFilters {
   start_date?: string;
@@ -17,6 +76,7 @@ export interface AiAnalyticsFilters {
   writeback_status?: string;
   billing_category?: string;
   reason_category?: string;
+  ai_result?: string;
   page?: number;
   page_size?: number;
   sort_by?: string;
@@ -48,6 +108,7 @@ export interface AiOutcomeSummary {
 export interface AiPipelineStageBreakdown {
   label: string;
   count: number;
+  result_filter?: string | null;
 }
 
 export interface AiPipelineStageStat {
@@ -55,6 +116,7 @@ export interface AiPipelineStageStat {
   count: number;
   description: string;
   breakdown?: AiPipelineStageBreakdown[] | null;
+  dropoff_breakdown?: AiPipelineStageBreakdown[] | null;
 }
 
 export interface AiOutcomeTrendPoint {
@@ -128,6 +190,14 @@ export interface AiInvoiceListItem {
   invoice_total: number | null;
   amount_invoiced: number | null;
   processing_time_seconds: number | null;
+  ai_result: AiResult;
+  review_message: string | null;
+  ai_inserted_at: string | null;
+  ai_updated_at: string | null;
+  ai_completed_at: string | null;
+  ai_line_item_count: number;
+  is_stuck: boolean;
+  processing_age_seconds: number | null;
 }
 
 export interface AiInvoiceCohortResponse {
@@ -279,6 +349,9 @@ export interface AiInvoiceTrace {
   incident_duration_in_minutes: number | null;
   confidence_level: number | null;
   review_msg: string | null;
+  ai_result: AiResult;
+  is_stuck: boolean;
+  processing_age_seconds: number | null;
   line_items_save_to_rh_status: boolean | null;
   invoice_total: number | null;
   processing_time_seconds: number | null;
@@ -414,6 +487,7 @@ function buildQueryParams(filters: AiAnalyticsFilters): URLSearchParams {
   if (filters.writeback_status) params.set('writeback_status', filters.writeback_status);
   if (filters.billing_category) params.set('billing_category', filters.billing_category);
   if (filters.reason_category) params.set('reason_category', filters.reason_category);
+  if (filters.ai_result) params.set('ai_result', filters.ai_result);
   if (filters.page) params.set('page', String(filters.page));
   if (filters.page_size) params.set('page_size', String(filters.page_size));
   if (filters.sort_by) params.set('sort_by', filters.sort_by);

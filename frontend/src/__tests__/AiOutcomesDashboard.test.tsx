@@ -1,9 +1,20 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import React from 'react';
 import { AiOutcomesDashboard } from '../components/ai/AiOutcomesDashboard';
 
 vi.mock('../services/aiAnalyticsApi', () => ({
+  AI_RESULT_LABELS: {
+    saved_to_recoveryhub: 'Saved to RH',
+    ai_output_rejected: 'AI Output Rejected',
+    execution_failed: 'Execution Failed',
+    stuck: 'Stuck',
+    in_progress: 'In Progress',
+    not_required: 'Not Required',
+    unknown: 'Unknown',
+  },
+  AI_STUCK_FALLBACK_REASON:
+    'No source error was recorded. The workflow exceeded the inactivity threshold; investigate in FireRecovery_AI.',
   aiAnalyticsApi: {
     getOutcomeSummary: vi.fn(),
     getOutcomeFunnel: vi.fn(),
@@ -49,7 +60,21 @@ const FUNNEL = [
   { stage: 'Reached Ready to Invoice Insurance', count: 100, description: 'Claims in AIInvoiceProcessRHTemp' },
   { stage: 'Eligible for AI processing', count: 90, description: 'Department has a qualifying AI fee tile' },
   { stage: 'Step 1: level & category evaluated', count: 85, description: 'ai_line_items record exists — step 1 ran' },
-  { stage: 'AI processing completed', count: 80, description: 'claim_processing_status = COMPLETED' },
+  {
+    stage: 'AI processing reached final result',
+    count: 80,
+    description: 'Evaluated claims with a terminal AI result',
+    breakdown: [
+      { label: 'Accepted and saved to RecoveryHub', count: 55, result_filter: 'saved_to_recoveryhub' },
+      { label: 'AI output rejected', count: 15, result_filter: 'ai_output_rejected' },
+      { label: 'Execution failed', count: 5, result_filter: 'execution_failed' },
+      { label: 'Not required', count: 5, result_filter: 'not_required' },
+    ],
+    dropoff_breakdown: [
+      { label: 'Stuck beyond 30 minutes', count: 3, result_filter: 'stuck' },
+      { label: 'Result unknown', count: 2, result_filter: 'unknown' },
+    ],
+  },
   { stage: 'Line items saved to RH', count: 70, description: 'AI line items saved to RecoveryHub; this is not the same as invoice release.' },
   { stage: 'Released', count: 60, description: 'Invoice to Insurance - Released' },
 ];
@@ -148,6 +173,71 @@ describe('AiOutcomesDashboard', () => {
     // "AI Completed" and "Released" also appear as KPI labels — verify they exist
     expect(screen.getAllByText('AI Completed').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('Released').length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('renders final-result breakdown and not-yet-final dropoff rows', async () => {
+    render(<AiOutcomesDashboard />);
+    await waitFor(() =>
+      expect(screen.getByText('AI processing reached final result')).toBeInTheDocument()
+    );
+    expect(screen.getByText('Accepted and saved to RecoveryHub')).toBeInTheDocument();
+    expect(screen.getByText('Not yet at final result')).toBeInTheDocument();
+    expect(screen.getByText('Stuck beyond 30 minutes')).toBeInTheDocument();
+    expect(screen.getByText('Result unknown')).toBeInTheDocument();
+  });
+
+  test('renders AI Processing Exceptions panel derived from funnel', async () => {
+    render(<AiOutcomesDashboard />);
+    await waitFor(() => expect(screen.getByText('AI Processing Exceptions')).toBeInTheDocument());
+    expect(screen.getByText('Stuck processing')).toBeInTheDocument();
+    // 'Execution failed' also appears in the funnel stage-4 breakdown
+    expect(screen.getAllByText('Execution failed').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('Unknown result')).toBeInTheDocument();
+    // Counts come from the funnel breakdown/dropoff (stuck=3, rejected=15,
+    // failed=5, unknown=2)
+    expect(screen.getByText('Stuck processing').parentElement).toHaveTextContent('3');
+  });
+
+  test('clicking an exception card filters the cohort grid via ai_result', async () => {
+    render(<AiOutcomesDashboard />);
+    await waitFor(() => expect(screen.getByText('Stuck processing')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Stuck processing'));
+    await waitFor(() =>
+      expect(aiAnalyticsApi.getInvoiceCohort).toHaveBeenCalledWith(
+        expect.objectContaining({ ai_result: 'stuck' })
+      )
+    );
+    // Funnel/KPI aggregate calls must NOT carry the result filter
+    for (const call of (aiAnalyticsApi.getOutcomeFunnel as ReturnType<typeof vi.fn>).mock.calls) {
+      expect(call[0].ai_result).toBeUndefined();
+    }
+  });
+
+  test('funnel breakdown row click sets the same result filter', async () => {
+    render(<AiOutcomesDashboard />);
+    await waitFor(() =>
+      expect(screen.getAllByText('AI output rejected').length).toBeGreaterThanOrEqual(2)
+    );
+    // First match is the funnel breakdown row (funnel renders before the panel)
+    fireEvent.click(screen.getAllByText('AI output rejected')[0]);
+    await waitFor(() =>
+      expect(aiAnalyticsApi.getInvoiceCohort).toHaveBeenCalledWith(
+        expect.objectContaining({ ai_result: 'ai_output_rejected' })
+      )
+    );
+  });
+
+  test('clear filter resets the cohort grid filter', async () => {
+    render(<AiOutcomesDashboard />);
+    await waitFor(() => expect(screen.getByText('Stuck processing')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Stuck processing'));
+    await waitFor(() => expect(screen.getAllByText('Clear filter').length).toBeGreaterThanOrEqual(1));
+    fireEvent.click(screen.getByText('Clear filter'));
+    await waitFor(() =>
+      expect(aiAnalyticsApi.getInvoiceCohort).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ ai_result: 'stuck' })
+      )
+    );
   });
 
   test('renders rejection reasons with normalized categories', async () => {

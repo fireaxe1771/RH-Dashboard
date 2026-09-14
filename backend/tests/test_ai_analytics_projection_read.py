@@ -133,9 +133,28 @@ class TestProjectionToAiRecord:
             "level_identification_low_confidence",
             "dept_send_auto_invoice_status",
             "is_cancelled", "cancellation_reason",
+            "review_msg", "inserted_at", "updated_at", "completed_at",
+            "ai_line_item_count",
         }
         assert set(result.keys()) == expected_keys
         assert all(v is None for v in result.values())
+
+    def test_summary_adapter_maps_ai_result_fields(self):
+        """Outcome-accounting fields: projection names map to the raw
+        ai_line_items names that build_normalized_record reads."""
+        projection = {
+            "review_message": "Rejected: wrong level",
+            "ai_inserted_at": "2026-01-01T10:00:00Z",
+            "ai_updated_at": "2026-01-01T10:05:00Z",
+            "ai_completed_at": "2026-01-01T10:04:00Z",
+            "ai_line_item_count": 4,
+        }
+        result = projection_to_ai_record(projection)
+        assert result["review_msg"] == "Rejected: wrong level"
+        assert result["inserted_at"] == "2026-01-01T10:00:00Z"
+        assert result["updated_at"] == "2026-01-01T10:05:00Z"
+        assert result["completed_at"] == "2026-01-01T10:04:00Z"
+        assert result["ai_line_item_count"] == 4
 
     def test_full_projection_maps_all_fields(self):
         """A complete projection maps every field build_normalized_record reads."""
@@ -169,6 +188,11 @@ class TestProjectionToAiRecord:
             "dept_send_auto_invoice_status": None,
             "is_cancelled": None,
             "cancellation_reason": None,
+            "review_msg": None,
+            "inserted_at": None,
+            "updated_at": None,
+            "completed_at": None,
+            "ai_line_item_count": None,
         }
 
 

@@ -5,6 +5,29 @@ import { AiInvoiceTrace } from '../components/ai/AiInvoiceTrace';
 import { AiInvoiceTrace as AiInvoiceTraceType } from '../services/aiAnalyticsApi';
 
 vi.mock('../services/aiAnalyticsApi', () => ({
+  AI_RESULT_LABELS: {
+    saved_to_recoveryhub: 'Saved to RH',
+    ai_output_rejected: 'AI Output Rejected',
+    execution_failed: 'Execution Failed',
+    stuck: 'Stuck',
+    in_progress: 'In Progress',
+    not_required: 'Not Required',
+    unknown: 'Unknown',
+  },
+  AI_STUCK_FALLBACK_REASON:
+    'No source error was recorded. The workflow exceeded the inactivity threshold; investigate in FireRecovery_AI.',
+  AI_EXECUTION_FAILED_FALLBACK_REASON:
+    'The AI execution failed, but no source error reason was recorded; inspect the agent conversation history.',
+  aiResultBadgeStyle: () => ({}),
+  formatProcessingAge: (s: number | null | undefined) => {
+    if (s === null || s === undefined) return '—';
+    if (s < 60) return `${Math.round(s)}s`;
+    const m = s / 60;
+    if (m < 60) return `${Math.round(m)}m`;
+    const h = m / 60;
+    if (h < 24) return `${Math.round(h)}h`;
+    return `${Math.round(h / 24)}d`;
+  },
   aiAnalyticsApi: {
     getInvoiceTrace: vi.fn(),
   },
@@ -42,6 +65,9 @@ const TRACE: AiInvoiceTraceType = {
   incident_duration_in_minutes: 30,
   confidence_level: 95,
   review_msg: 'All line items verified.',
+  ai_result: 'saved_to_recoveryhub',
+  is_stuck: false,
+  processing_age_seconds: 120,
   line_items_save_to_rh_status: true,
   invoice_total: 1500.0,
   processing_time_seconds: 12.5,
@@ -105,17 +131,82 @@ describe('AiInvoiceTrace', () => {
     expect(screen.getAllByText(/Run #42/i).length).toBeGreaterThanOrEqual(1);
   });
 
-  test('renders summary fields (outcome, AI status, confidence, writeback)', async () => {
+  test('renders summary fields (outcome, final AI result, lifecycle, RecoveryHub save)', async () => {
     (aiAnalyticsApi.getInvoiceTrace as ReturnType<typeof vi.fn>).mockResolvedValue(TRACE);
     render(<AiInvoiceTrace claimId={1001} onBack={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('Business Outcome')).toBeInTheDocument());
-    expect(screen.getByText('AI Status')).toBeInTheDocument();
+    expect(screen.getByText('Final AI Result')).toBeInTheDocument();
+    expect(screen.getByText('AI Lifecycle')).toBeInTheDocument();
     expect(screen.getByText('Confidence')).toBeInTheDocument();
-    expect(screen.getByText('Writeback')).toBeInTheDocument();
+    expect(screen.getByText('RecoveryHub Save')).toBeInTheDocument();
     // Outcome badge text
     expect(screen.getByText('released')).toBeInTheDocument();
-    // Writeback success
-    expect(screen.getByText('Success')).toBeInTheDocument();
+    // Final AI result badge (also shown by the RecoveryHub Save value)
+    expect(screen.getAllByText('Saved to RH').length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('shows AI Result Reason heading for rejected output', async () => {
+    (aiAnalyticsApi.getInvoiceTrace as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...TRACE,
+      ai_result: 'ai_output_rejected',
+      line_items_save_to_rh_status: false,
+      review_msg: 'Output failed validation.',
+    });
+    render(<AiInvoiceTrace claimId={1001} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('AI Result Reason')).toBeInTheDocument());
+    expect(screen.getByText('Output failed validation.')).toBeInTheDocument();
+    expect(screen.getByText('AI Output Rejected')).toBeInTheDocument();
+  });
+
+  test('shows stuck fallback text when no review message exists', async () => {
+    (aiAnalyticsApi.getInvoiceTrace as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...TRACE,
+      ai_result: 'stuck',
+      is_stuck: true,
+      review_msg: null,
+      line_items_save_to_rh_status: false,
+      claim_processing_status: 'IN_PROGRESS',
+    });
+    render(<AiInvoiceTrace claimId={1001} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('Stuck')).toBeInTheDocument());
+    expect(
+      screen.getByText(/No source error was recorded\. The workflow exceeded the inactivity threshold/)
+    ).toBeInTheDocument();
+  });
+
+  test('shows execution-failed fallback reason when no review message exists', async () => {
+    (aiAnalyticsApi.getInvoiceTrace as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...TRACE,
+      ai_result: 'execution_failed',
+      review_msg: null,
+      line_items_save_to_rh_status: false,
+      claim_processing_status: 'ERROR',
+      agent_exec_status: 'error',
+    });
+    render(<AiInvoiceTrace claimId={1001} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('AI Result Reason')).toBeInTheDocument());
+    expect(
+      screen.getByText(/The AI execution failed, but no source error reason was recorded/)
+    ).toBeInTheDocument();
+  });
+
+  test('shows AI Last Updated and Processing Age for stuck records', async () => {
+    (aiAnalyticsApi.getInvoiceTrace as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...TRACE,
+      ai_result: 'stuck',
+      is_stuck: true,
+      processing_age_seconds: 5400,
+      review_msg: null,
+      line_items_save_to_rh_status: false,
+      claim_processing_status: 'IN_PROGRESS',
+      updated_at: '2026-01-12T14:30:00Z',
+    });
+    render(<AiInvoiceTrace claimId={1001} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('AI Last Updated')).toBeInTheDocument());
+    expect(screen.getByText('Processing Age')).toBeInTheDocument();
+    expect(screen.getByText('2h')).toBeInTheDocument();
+    // Time is shown, not just the date
+    expect(screen.getByText(new Date('2026-01-12T14:30:00Z').toLocaleString())).toBeInTheDocument();
   });
 
   test('back button calls onBack', async () => {

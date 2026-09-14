@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Download } from 'lucide-react';
 import { billingStyles, LoadingState, ErrorState, EmptyState, formatCurrency } from '../billing/shared';
 import { exportToCsv } from '../../utils/export';
@@ -7,11 +7,18 @@ import {
   AiAnalyticsFilters,
   AiInvoiceListItem,
   AiInvoiceCohortResponse,
+  AiResult,
+  AI_RESULT_LABELS,
+  AI_STUCK_FALLBACK_REASON,
+  AI_EXECUTION_FAILED_FALLBACK_REASON,
+  aiResultBadgeStyle,
+  formatProcessingAge,
 } from '../../services/aiAnalyticsApi';
 
 interface Props {
   filters: AiAnalyticsFilters;
   onRowClick?: (claimId: number) => void;
+  onClearResultFilter?: () => void;
 }
 
 const outcomeBadgeStyle = (outcome: string): React.CSSProperties => {
@@ -27,24 +34,57 @@ const outcomeBadgeStyle = (outcome: string): React.CSSProperties => {
   }
 };
 
-const writebackStatusLabel = (status: string): string => {
-  switch (status) {
-    case 'success': return 'Saved to RH';
-    case 'not_saved': return 'Not saved';
-    case 'not_required': return 'Not required';
-    case 'pending': return 'Writeback pending';
-    default: return 'Unknown';
-  }
-};
+const REASON_PREVIEW_LEN = 80;
 
-const writebackBadgeStyle = (status: string): React.CSSProperties => {
-  switch (status) {
-    case 'success': return { color: '#22c55e' };
-    case 'not_saved': return { color: '#ef4444' };
-    case 'not_required': return { color: '#94a3b8' };
-    case 'pending': return { color: '#eab308' };
-    default: return { color: 'var(--text-muted)' };
+const ReasonCell: React.FC<{ inv: AiInvoiceListItem }> = ({ inv }) => {
+  const [expanded, setExpanded] = useState(false);
+  const message = inv.review_message;
+
+  if (inv.ai_result === 'stuck' && !message) {
+    return (
+      <span style={{ fontSize: '12px', color: 'var(--text-muted)', whiteSpace: 'normal' }}>
+        {AI_STUCK_FALLBACK_REASON}
+      </span>
+    );
   }
+  if (inv.ai_result === 'execution_failed' && !message) {
+    return (
+      <span style={{ fontSize: '12px', color: 'var(--text-muted)', whiteSpace: 'normal' }}>
+        {AI_EXECUTION_FAILED_FALLBACK_REASON}
+      </span>
+    );
+  }
+  if (!message) return <span>—</span>;
+
+  const isLong = message.length > REASON_PREVIEW_LEN;
+  const shown = expanded || !isLong ? message : `${message.slice(0, REASON_PREVIEW_LEN)}…`;
+  return (
+    <span style={{ fontSize: '12px', whiteSpace: 'normal' }}>
+      {shown}
+      {isLong && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpanded((v) => !v);
+          }}
+          style={{
+            marginLeft: '6px',
+            border: 'none',
+            background: 'none',
+            padding: 0,
+            fontSize: '11px',
+            fontWeight: 600,
+            color: 'var(--accent-primary)',
+            cursor: 'pointer',
+          }}
+        >
+          {expanded ? 'Hide reason' : 'Show reason'}
+        </button>
+      )}
+    </span>
+  );
 };
 
 const tableHeaderStyle: React.CSSProperties = {
@@ -67,18 +107,26 @@ const tableCellStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-export const AiInvoiceCohortGrid: React.FC<Props> = ({ filters, onRowClick }) => {
+export const AiInvoiceCohortGrid: React.FC<Props> = ({ filters, onRowClick, onClearResultFilter }) => {
   const [data, setData] = useState<AiInvoiceCohortResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const pageSize = 50;
 
+  // Any filter change (including ai_result drill-downs) must restart at
+  // page 1 — otherwise a stale page >1 can render an empty grid.
+  const filterKey = useMemo(() => JSON.stringify(filters), [filters]);
+  const prevFilterKeyRef = useRef(filterKey);
+
   React.useEffect(() => {
     let active = true;
+    const requestPage = prevFilterKeyRef.current !== filterKey ? 1 : page;
+    prevFilterKeyRef.current = filterKey;
+    if (requestPage !== page) setPage(1);
     setLoading(true);
     setError(null);
-    const fullFilters = { ...filters, page, page_size: pageSize };
+    const fullFilters = { ...filters, page: requestPage, page_size: pageSize };
     aiAnalyticsApi
       .getInvoiceCohort(fullFilters)
       .then((res) => {
@@ -96,7 +144,7 @@ export const AiInvoiceCohortGrid: React.FC<Props> = ({ filters, onRowClick }) =>
     return () => {
       active = false;
     };
-  }, [filters, page]);
+  }, [filters, filterKey, page]);
 
   const columns = useMemo(
     () => [
@@ -104,31 +152,51 @@ export const AiInvoiceCohortGrid: React.FC<Props> = ({ filters, onRowClick }) =>
       'Department',
       'Run #',
       'Business Outcome',
-      'Rejection Reason',
-      'AI Status',
+      'Final AI Result',
+      'Reason',
+      'AI Items',
       'Confidence',
-      'Writeback',
       'Invoice Total',
-      'Updated',
+      'AI Last Updated',
+      'Processing Age',
     ],
     [],
   );
 
   const handleExport = () => {
     if (!data) return;
+    const csvColumns = [
+      'Claim ID',
+      'Department',
+      'Run #',
+      'Business Outcome',
+      'Final AI Result',
+      'AI Review Reason',
+      'AI Items',
+      'Confidence',
+      'Invoice Total',
+      'AI Last Updated',
+      'Processing Age Seconds',
+    ];
     const rows = data.invoices.map((inv) => ({
       'Claim ID': inv.claim_id,
       Department: inv.department_name || '—',
       'Run #': inv.run_number || '—',
       'Business Outcome': inv.business_outcome,
-      'Rejection Reason': inv.raw_rejection_reason || '—',
-      'AI Status': inv.ai_processing_status || '—',
+      'Final AI Result': AI_RESULT_LABELS[inv.ai_result] ?? inv.ai_result,
+      'AI Review Reason': inv.review_message
+        ?? (inv.ai_result === 'stuck'
+          ? AI_STUCK_FALLBACK_REASON
+          : inv.ai_result === 'execution_failed'
+            ? AI_EXECUTION_FAILED_FALLBACK_REASON
+            : inv.raw_rejection_reason ?? '—'),
+      'AI Items': inv.ai_line_item_count,
       Confidence: inv.confidence ?? '—',
-      Writeback: inv.writeback_status,
       'Invoice Total': inv.invoice_total ?? 0,
-      Updated: inv.ai_business_updated_at || '—',
+      'AI Last Updated': inv.ai_updated_at || '—',
+      'Processing Age Seconds': inv.processing_age_seconds ?? '—',
     }));
-    exportToCsv('AI_Invoice_Cohort', columns, rows);
+    exportToCsv('AI_Invoice_Cohort', csvColumns, rows);
   };
 
   const totalPages = data ? Math.ceil(data.total_count / pageSize) : 0;
@@ -143,8 +211,8 @@ export const AiInvoiceCohortGrid: React.FC<Props> = ({ filters, onRowClick }) =>
         <h3 style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
           Invoice Cohort ({data.total_count.toLocaleString()} AI cohort claims)
         </h3>
-        <div title="Saved to RH means line items were persisted. Not saved is not a confirmed technical failure; pending means AI has not completed; not required means no writeback was expected." style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-          Saved to RH · Not saved · Writeback pending · Not required · Unknown
+        <div title="Final AI Result is the terminal disposition of the AI workflow: Saved to RH, AI Output Rejected, Execution Failed, Stuck, In Progress, Not Required, or Unknown." style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+          Saved to RH · AI Output Rejected · Execution Failed · Stuck · In Progress · Not Required · Unknown
         </div>
         <button
           onClick={handleExport}
@@ -173,6 +241,45 @@ export const AiInvoiceCohortGrid: React.FC<Props> = ({ filters, onRowClick }) =>
       >
         AI cohort claims only. Eligibility-unknown claims may be included when configuration is unavailable. Writeback describes whether AI line items were saved to RecoveryHub; it does not mean the invoice was released.
       </div>
+      {filters.ai_result && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            marginBottom: '12px',
+            padding: '8px 12px',
+            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+            border: '1px solid rgba(59, 130, 246, 0.3)',
+            borderRadius: 'var(--border-radius-md)',
+            fontSize: '12px',
+            color: 'var(--text-primary)',
+          }}
+        >
+          <span>
+            Showing final AI result:{' '}
+            <strong>{AI_RESULT_LABELS[filters.ai_result as AiResult] ?? filters.ai_result}</strong>
+          </span>
+          {onClearResultFilter && (
+            <button
+              type="button"
+              onClick={onClearResultFilter}
+              style={{
+                padding: '2px 10px',
+                fontSize: '11px',
+                fontWeight: 600,
+                border: '1px solid var(--border-color)',
+                borderRadius: 'var(--border-radius-md)',
+                backgroundColor: 'var(--bg-primary)',
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+              }}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      )}
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
@@ -204,24 +311,38 @@ export const AiInvoiceCohortGrid: React.FC<Props> = ({ filters, onRowClick }) =>
                     {inv.business_outcome.replace('_', ' ')}
                   </span>
                 </td>
-                <td style={{ ...tableCellStyle, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {inv.raw_rejection_reason || '—'}
+                <td style={tableCellStyle}>
+                  <span
+                    title={
+                      inv.ai_result === 'ai_output_rejected'
+                        ? 'AI finished but its output was not accepted for writeback.'
+                        : inv.ai_result === 'stuck'
+                          ? 'No AI-side update beyond the inactivity threshold.'
+                          : undefined
+                    }
+                    style={aiResultBadgeStyle(inv.ai_result)}
+                  >
+                    {AI_RESULT_LABELS[inv.ai_result] ?? inv.ai_result}
+                  </span>
                 </td>
-                <td style={tableCellStyle} title="AI status describes the AI workflow, not the business invoice outcome.">{inv.ai_processing_status || '—'}</td>
+                <td style={{ ...tableCellStyle, maxWidth: '260px', whiteSpace: 'normal' }}>
+                  <ReasonCell inv={inv} />
+                </td>
+                <td style={tableCellStyle}>{inv.ai_line_item_count}</td>
                 <td style={tableCellStyle}>
                   {inv.confidence !== null ? `${inv.confidence}%` : '—'}
-                </td>
-                <td style={{ ...tableCellStyle, ...writebackBadgeStyle(inv.writeback_status) }}>
-                  <span title={inv.writeback_status === 'not_saved' ? 'The source reports that line items were not saved. It does not provide a specific writeback error code.' : undefined}>
-                    {writebackStatusLabel(inv.writeback_status)}
-                  </span>
                 </td>
                 <td style={tableCellStyle}>
                   {inv.invoice_total !== null ? formatCurrency(inv.invoice_total) : '—'}
                 </td>
                 <td style={{ ...tableCellStyle, color: 'var(--text-muted)', fontSize: '12px' }}>
-                  {inv.ai_business_updated_at
-                    ? new Date(inv.ai_business_updated_at).toLocaleDateString()
+                  {inv.ai_updated_at
+                    ? new Date(inv.ai_updated_at).toLocaleString()
+                    : '—'}
+                </td>
+                <td style={{ ...tableCellStyle, color: 'var(--text-muted)', fontSize: '12px' }}>
+                  {inv.ai_result === 'stuck' || inv.ai_result === 'in_progress'
+                    ? formatProcessingAge(inv.processing_age_seconds)
                     : '—'}
                 </td>
               </tr>

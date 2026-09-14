@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from .normalization_core import AI_RESULT_UNKNOWN
+
 
 # ---------------------------------------------------------------------------
 # Filters
@@ -41,6 +43,13 @@ class AiAnalyticsFilters(BaseModel):
     billing_category: Optional[str] = None
     reason_category: Optional[str] = Field(
         None, description="Normalized rejection reason category"
+    )
+    ai_result: Optional[str] = Field(
+        None,
+        description=(
+            "Final AI result: saved_to_recoveryhub | ai_output_rejected | "
+            "execution_failed | stuck | in_progress | not_required | unknown"
+        ),
     )
     # Pagination
     page: int = Field(1, ge=1)
@@ -122,6 +131,10 @@ class AiDepartmentOutcomeStat(BaseModel):
 class AiPipelineStageBreakdown(BaseModel):
     label: str
     count: int
+    result_filter: Optional[str] = Field(
+        None,
+        description="ai_result value this row filters the invoice cohort to",
+    )
 
 
 class AiPipelineStageStat(BaseModel):
@@ -129,6 +142,10 @@ class AiPipelineStageStat(BaseModel):
     count: int
     description: str = ""
     breakdown: Optional[List[AiPipelineStageBreakdown]] = None
+    dropoff_breakdown: Optional[List[AiPipelineStageBreakdown]] = Field(
+        None,
+        description="Evaluated records that have not reached a final result",
+    )
 
 
 class AiBillabilityStat(BaseModel):
@@ -210,6 +227,15 @@ class AiInvoiceListItem(BaseModel):
     invoice_total: Optional[float] = None
     amount_invoiced: Optional[float] = None
     processing_time_seconds: Optional[float] = None
+    # Final AI result (outcome accounting)
+    ai_result: str = AI_RESULT_UNKNOWN
+    review_message: Optional[str] = None
+    ai_inserted_at: Optional[str] = None
+    ai_updated_at: Optional[str] = None
+    ai_completed_at: Optional[str] = None
+    ai_line_item_count: int = 0
+    is_stuck: bool = False
+    processing_age_seconds: Optional[float] = None
 
 
 class AiInvoiceCohortResponse(BaseModel):
@@ -296,6 +322,9 @@ class AiInvoiceTrace(BaseModel):
     incident_duration_in_minutes: Optional[int] = None
     confidence_level: Optional[float] = None
     review_msg: Optional[str] = None
+    ai_result: str = AI_RESULT_UNKNOWN
+    is_stuck: bool = False
+    processing_age_seconds: Optional[float] = None
     line_items_save_to_rh_status: Optional[bool] = None
     invoice_total: Optional[float] = None
     processing_time_seconds: Optional[float] = None

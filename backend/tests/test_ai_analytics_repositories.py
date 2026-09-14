@@ -183,15 +183,44 @@ class TestMongoRepositoryMocked:
         ai_db = AsyncMock()
         mock_cursor = AsyncMock()
         mock_cursor.to_list.return_value = [
-            {"_id": "abc", "claim_id": 12345, "claim_processing_status": "COMPLETED"},
-            {"_id": "def", "claim_id": 67890, "claim_processing_status": "INITIATED"},
+            {"_id": "abc", "claim_id": 12345, "claim_processing_status": "COMPLETED",
+             "ai_line_item_count": 3},
+            {"_id": "def", "claim_id": 67890, "claim_processing_status": "INITIATED",
+             "ai_line_item_count": 0},
         ]
-        ai_db[AI_LINE_ITEMS_COLLECTION].find.return_value = mock_cursor
+        ai_db[AI_LINE_ITEMS_COLLECTION].aggregate.return_value = mock_cursor
 
         result = await get_ai_line_items_for_claim_ids(ai_db, [12345, 67890])
         assert len(result) == 2
         assert 12345 in result
         assert result[12345]["claim_processing_status"] == "COMPLETED"
+        assert result[12345]["ai_line_item_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_get_ai_line_items_for_claim_ids_computes_count_without_line_items(self):
+        """The aggregation must compute ai_line_item_count server-side and
+        must NOT project the full line_items array."""
+        ai_db = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.to_list.return_value = []
+        ai_db[AI_LINE_ITEMS_COLLECTION].aggregate.return_value = mock_cursor
+
+        await get_ai_line_items_for_claim_ids(ai_db, [12345])
+
+        pipeline = ai_db[AI_LINE_ITEMS_COLLECTION].aggregate.call_args[0][0]
+        assert pipeline[0] == {"$match": {"claim_id": {"$in": [12345, "12345"]}}}
+        project = pipeline[1]["$project"]
+        assert project["ai_line_item_count"] == {
+            "$size": {
+                "$cond": [
+                    {"$isArray": "$line_items"},
+                    "$line_items",
+                    [],
+                ]
+            }
+        }
+        # The full array must not be projected back to the client.
+        assert "line_items" not in project
 
     @pytest.mark.asyncio
     async def test_get_ai_line_items_for_claim_ids_string_claim_id(self):
@@ -201,7 +230,7 @@ class TestMongoRepositoryMocked:
         mock_cursor.to_list.return_value = [
             {"_id": "abc", "claim_id": "12345", "claim_processing_status": "COMPLETED"},
         ]
-        ai_db[AI_LINE_ITEMS_COLLECTION].find.return_value = mock_cursor
+        ai_db[AI_LINE_ITEMS_COLLECTION].aggregate.return_value = mock_cursor
 
         result = await get_ai_line_items_for_claim_ids(ai_db, [12345])
         assert 12345 in result  # int key, not string

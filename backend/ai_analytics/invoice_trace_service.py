@@ -20,6 +20,7 @@ RecoveryHub_AI Mongo for both ai_line_items and conversations).
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .models import AiInvoiceTrace, AiConversationRecord, AiLineItemEntry, AiFinalLineItemEntry, AiLineItemComparison
@@ -28,6 +29,7 @@ from . import mongo_repository as mongo_repo
 from . import projection_read_repository as projection_repo
 from .normalization import (
     classify_business_outcome,
+    classify_ai_result,
     classify_writeback_status,
     calculate_retry_count,
     detect_human_intervention,
@@ -360,6 +362,17 @@ async def get_invoice_trace(ai_db, claim_id: int) -> AiInvoiceTrace:
         retry_thread_id=ai_record.get("retry_thread_id") if ai_record else None,
         agent_exec_status=ai_record.get("agent_exec_status") if ai_record else None,
     )
+    # Final AI result — same pure classifier the cohort uses, so the trace
+    # always agrees with the grid row the user clicked through from.
+    result = classify_ai_result(
+        ai_record.get("claim_processing_status") if ai_record else None,
+        ai_record.get("agent_exec_status") if ai_record else None,
+        writeback,
+        ai_updated_at=ai_record.get("updated_at") if ai_record else None,
+        ai_inserted_at=ai_record.get("inserted_at") if ai_record else None,
+        now=datetime.now(timezone.utc),
+        stuck_threshold_minutes=settings.AI_ANALYTICS_STUCK_THRESHOLD_MINUTES,
+    )
 
     # Process logs for the trace (serialized)
     trace_logs = [
@@ -401,6 +414,9 @@ async def get_invoice_trace(ai_db, claim_id: int) -> AiInvoiceTrace:
         incident_duration_in_minutes=ai_record.get("incident_duration_in_minutes") if ai_record else None,
         confidence_level=ai_record.get("confidence_level") if ai_record else None,
         review_msg=ai_record.get("review_msg") if ai_record else None,
+        ai_result=result["ai_result"],
+        is_stuck=result["is_stuck"],
+        processing_age_seconds=result["processing_age_seconds"],
         line_items_save_to_rh_status=ai_record.get("line_items_save_to_rh_status") if ai_record else None,
         invoice_total=ai_record.get("invoice_total") if ai_record else None,
         processing_time_seconds=ai_record.get("processing_time_seconds") if ai_record else None,

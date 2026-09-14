@@ -102,8 +102,29 @@ async def get_ai_line_items_for_claim_ids(
         "claim_id": {"$in": int_ids + str_ids}
     }
 
+    # Aggregation rather than find+projection so the server computes the
+    # line-item count without returning the full line_items array — the
+    # outcome-accounting cohort needs the count but not the payload.
+    pipeline = [
+        {"$match": query},
+        {
+            "$project": {
+                **SUMMARY_PROJECTION,
+                "ai_line_item_count": {
+                    "$size": {
+                        "$cond": [
+                            {"$isArray": "$line_items"},
+                            "$line_items",
+                            [],
+                        ]
+                    }
+                },
+            }
+        },
+    ]
+
     try:
-        cursor = ai_db[AI_LINE_ITEMS_COLLECTION].find(query, SUMMARY_PROJECTION)
+        cursor = ai_db[AI_LINE_ITEMS_COLLECTION].aggregate(pipeline)
         # length=None returns all matches — a fixed cap here silently
         # truncated AI-side data for cohorts over 1,000 claims, which made
         # the funnel's "step 1 evaluated" stage undercount.

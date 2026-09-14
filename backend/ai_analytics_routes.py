@@ -164,6 +164,10 @@ _Q_WRITEBACK_STATUS = Query(
 )
 _Q_BILLING_CATEGORY = Query(None, description="Filter by billing category")
 _Q_REASON_CATEGORY = Query(None, description="Filter by normalized rejection reason category")
+_Q_AI_RESULT = Query(
+    None,
+    description="Filter final AI result: saved_to_recoveryhub | ai_output_rejected | execution_failed | stuck | in_progress | not_required | unknown",
+)
 _Q_PAGE = Query(1, ge=1, description="Page number (1-based)")
 _Q_PAGE_SIZE = Query(50, ge=1, le=250, description="Page size")
 _Q_SORT_BY = Query("ai_business_updated_at", description="Sort column")
@@ -358,6 +362,7 @@ async def invoice_cohort(
     writeback_status: Optional[str] = _Q_WRITEBACK_STATUS,
     billing_category: Optional[str] = _Q_BILLING_CATEGORY,
     reason_category: Optional[str] = _Q_REASON_CATEGORY,
+    ai_result: Optional[str] = _Q_AI_RESULT,
     page: int = _Q_PAGE,
     page_size: int = _Q_PAGE_SIZE,
     sort_by: str = _Q_SORT_BY,
@@ -373,6 +378,7 @@ async def invoice_cohort(
         billing_category, reason_category,
         page, page_size, sort_by, sort_direction, date_basis,
     )
+    filters.ai_result = ai_result
     return await get_invoice_cohort(ai_db, filters)
 
 

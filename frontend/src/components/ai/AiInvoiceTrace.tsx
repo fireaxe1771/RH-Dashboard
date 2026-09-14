@@ -7,6 +7,12 @@ import {
   AiLineItemEntry,
   AiFinalLineItemEntry,
   AiLineItemComparison,
+  AiResult,
+  AI_RESULT_LABELS,
+  AI_STUCK_FALLBACK_REASON,
+  AI_EXECUTION_FAILED_FALLBACK_REASON,
+  aiResultBadgeStyle,
+  formatProcessingAge,
 } from '../../services/aiAnalyticsApi';
 import { billingStyles, LoadingState, ErrorState, EmptyState, formatCurrency } from '../billing/shared';
 
@@ -359,15 +365,26 @@ export const AiInvoiceTrace: React.FC<Props> = ({ claimId, onBack }) => {
             <div><span style={outcomeBadgeStyle(trace.business_outcome)}>{trace.business_outcome.replace(/_/g, ' ')}</span></div>
           </div>
           <div>
-            <span style={labelStyle}>AI Status</span>
-            <div style={valueStyle}>{trace.claim_processing_status || '—'}</div>
+            <span style={labelStyle}>Final AI Result</span>
+            <div>
+              <span style={aiResultBadgeStyle(trace.ai_result)}>
+                {AI_RESULT_LABELS[trace.ai_result] ?? trace.ai_result}
+              </span>
+            </div>
+          </div>
+          <div>
+            <span style={labelStyle}>AI Lifecycle</span>
+            <div style={valueStyle} title="Raw claim processing status from FireRecovery_AI">
+              {trace.claim_processing_status || '—'}
+              {trace.agent_exec_status ? ` · ${trace.agent_exec_status}` : ''}
+            </div>
           </div>
           <div>
             <span style={labelStyle}>Confidence</span>
             <div style={valueStyle}>{trace.confidence_level !== null ? `${trace.confidence_level}%` : '—'}</div>
           </div>
           <div>
-            <span style={labelStyle}>Writeback</span>
+            <span style={labelStyle}>RecoveryHub Save</span>
             <div style={valueStyle}>{trace.line_items_save_to_rh_status === true ? 'Saved to RH' : trace.line_items_save_to_rh_status === false ? (trace.claim_processing_status === 'BILLING_LEVEL_NOT_ENABLED' ? 'Not required' : trace.claim_processing_status === 'INITIATED' || trace.claim_processing_status === 'IN_PROGRESS' ? 'Writeback pending' : 'Not saved') : 'Unknown'}</div>
           </div>
           <div>
@@ -375,9 +392,19 @@ export const AiInvoiceTrace: React.FC<Props> = ({ claimId, onBack }) => {
             <div style={valueStyle}>{trace.invoice_total !== null ? formatCurrency(trace.invoice_total) : '—'}</div>
           </div>
           <div>
+            <span style={labelStyle}>AI Last Updated</span>
+            <div style={valueStyle}>{trace.updated_at ? new Date(trace.updated_at).toLocaleString() : '—'}</div>
+          </div>
+          <div>
             <span style={labelStyle}>Processing Time</span>
             <div style={valueStyle}>{trace.processing_time_seconds !== null ? `${trace.processing_time_seconds.toFixed(1)}s` : '—'}</div>
           </div>
+          {(trace.ai_result === 'stuck' || trace.ai_result === 'in_progress') && (
+            <div>
+              <span style={labelStyle}>Processing Age</span>
+              <div style={valueStyle}>{formatProcessingAge(trace.processing_age_seconds)}</div>
+            </div>
+          )}
           <div>
             <span style={labelStyle}>Retries</span>
             <div style={valueStyle}>{trace.retry_count}</div>
@@ -400,11 +427,17 @@ export const AiInvoiceTrace: React.FC<Props> = ({ claimId, onBack }) => {
           </div>
         )}
 
-        {trace.review_msg && (
+        {(trace.review_msg || trace.ai_result === 'ai_output_rejected' || trace.ai_result === 'stuck' || trace.ai_result === 'execution_failed') && (
           <div style={{ marginTop: '16px' }}>
-            <span style={labelStyle}>AI Review Message</span>
+            <span style={labelStyle}>AI Result Reason</span>
             <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.5 }}>
-              {trace.review_msg}
+              {trace.review_msg
+                ? trace.review_msg
+                : trace.ai_result === 'stuck'
+                  ? AI_STUCK_FALLBACK_REASON
+                  : trace.ai_result === 'execution_failed'
+                    ? AI_EXECUTION_FAILED_FALLBACK_REASON
+                    : 'No reason was recorded for this result.'}
             </div>
           </div>
         )}

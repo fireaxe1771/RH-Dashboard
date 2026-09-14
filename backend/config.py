@@ -223,6 +223,14 @@ class Settings:
         os.getenv("AI_ANALYTICS_USE_PROJECTION", "false").lower() == "true"
     )
 
+    # Inactivity threshold (minutes) used by the AI outcome classifier to
+    # distinguish a workflow that is still running from one that is stuck.
+    # Records whose last AI-side update is older than this are reported as
+    # "stuck" instead of "in_progress".
+    AI_ANALYTICS_STUCK_THRESHOLD_MINUTES: int = int(
+        os.getenv("AI_ANALYTICS_STUCK_THRESHOLD_MINUTES", "30")
+    )
+
     def validate_settings(self) -> None:
         """Validates configuration parameters, stopping startup if required variables are missing."""
         missing = []

@@ -14,11 +14,14 @@ import {
   aiAnalyticsApi,
   AiAnalyticsFilters,
   AiOutcomeSummary,
+  AiPipelineStageBreakdown,
   AiPipelineStageStat,
   AiOutcomeTrendPoint,
   AiRejectionReasonStat,
   AiDepartmentOutcomeStat,
   AiBillabilityStat,
+  AiResult,
+  AI_RESULT_LABELS,
 } from '../../services/aiAnalyticsApi';
 import { billingStyles, LoadingState, ErrorState, EmptyState, formatPercent } from '../billing/shared';
 import { AiAnalyticsFilterBar } from './AiAnalyticsFilterBar';
@@ -69,7 +72,59 @@ const KpiCard: React.FC<KpiCardProps> = ({ label, value, icon, color, subtitle }
 // Funnel visualization
 // ---------------------------------------------------------------------------
 
-const FunnelView: React.FC<{ stages: AiPipelineStageStat[] }> = ({ stages }) => {
+interface FunnelViewProps {
+  stages: AiPipelineStageStat[];
+  onResultSelect?: (result: AiResult) => void;
+  selectedResult?: AiResult;
+}
+
+const FunnelBreakdownRow: React.FC<{
+  item: AiPipelineStageBreakdown;
+  danger?: boolean;
+  selected?: boolean;
+  onResultSelect?: (result: AiResult) => void;
+}> = ({ item, danger, selected, onResultSelect }) => {
+  const textColor = danger ? 'var(--color-danger, #ef4444)' : 'var(--text-muted)';
+  const countColor = danger ? 'var(--color-danger, #ef4444)' : 'var(--text-secondary, var(--text-muted))';
+  const inner = (
+    <>
+      <span style={{ fontSize: '11px', color: textColor }}>{item.label}</span>
+      <span style={{ fontSize: '11px', fontWeight: 600, color: countColor }}>
+        {item.count.toLocaleString()}
+      </span>
+    </>
+  );
+  const rowStyle: React.CSSProperties = {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    borderRadius: '4px',
+    backgroundColor: selected ? 'rgba(59, 130, 246, 0.12)' : 'transparent',
+    ...(selected ? { outline: '1px solid var(--accent-primary)' } : {}),
+  };
+  if (item.result_filter && onResultSelect) {
+    return (
+      <button
+        type="button"
+        onClick={() => onResultSelect(item.result_filter as AiResult)}
+        style={{
+          ...rowStyle,
+          border: 'none',
+          padding: '2px 4px',
+          cursor: 'pointer',
+          textAlign: 'left',
+        }}
+        title={`Filter invoice cohort to: ${item.label}`}
+      >
+        {inner}
+      </button>
+    );
+  }
+  return <div style={rowStyle}>{inner}</div>;
+};
+
+const FunnelView: React.FC<FunnelViewProps> = ({ stages, onResultSelect, selectedResult }) => {
   const maxCount = Math.max(...stages.map((s) => s.count), 1);
   return (
     <div style={billingStyles.card}>
@@ -135,31 +190,130 @@ const FunnelView: React.FC<{ stages: AiPipelineStageStat[] }> = ({ stages }) => 
                   }}
                 >
                   {stage.breakdown.map((b) => (
-                    <div
+                    <FunnelBreakdownRow
                       key={b.label}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                      }}
-                    >
-                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                        {b.label}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: '11px',
-                          fontWeight: 600,
-                          color: 'var(--text-secondary, var(--text-muted))',
-                        }}
-                      >
-                        {b.count.toLocaleString()}
-                      </span>
-                    </div>
+                      item={b}
+                      selected={selectedResult !== undefined && b.result_filter === selectedResult}
+                      onResultSelect={onResultSelect}
+                    />
+                  ))}
+                </div>
+              )}
+              {stage.dropoff_breakdown && stage.dropoff_breakdown.length > 0 && (
+                <div
+                  style={{
+                    marginTop: '4px',
+                    paddingLeft: '12px',
+                    borderLeft: '2px solid var(--color-danger, #ef4444)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '3px',
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: '10px',
+                      fontWeight: 600,
+                      color: 'var(--color-danger, #ef4444)',
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    Not yet at final result
+                  </span>
+                  {stage.dropoff_breakdown.map((b) => (
+                    <FunnelBreakdownRow
+                      key={b.label}
+                      item={b}
+                      danger
+                      selected={selectedResult !== undefined && b.result_filter === selectedResult}
+                      onResultSelect={onResultSelect}
+                    />
                   ))}
                 </div>
               )}
             </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// AI Processing Exceptions — counts derived from the funnel's final-result
+// stage; no extra API call. Clicking a card filters the invoice cohort grid.
+// ---------------------------------------------------------------------------
+
+const EXCEPTION_CARDS: { label: string; result: AiResult; source: 'breakdown' | 'dropoff' }[] = [
+  { label: 'Stuck processing', result: 'stuck', source: 'dropoff' },
+  { label: 'AI output rejected', result: 'ai_output_rejected', source: 'breakdown' },
+  { label: 'Execution failed', result: 'execution_failed', source: 'breakdown' },
+  { label: 'Unknown result', result: 'unknown', source: 'dropoff' },
+];
+
+const AiExceptionsPanel: React.FC<{
+  stages: AiPipelineStageStat[];
+  selected?: AiResult;
+  onSelect: (result: AiResult | undefined) => void;
+}> = ({ stages, selected, onSelect }) => {
+  const finalStage = stages.find((s) => s.stage === 'AI processing reached final result');
+  const countFor = (result: AiResult, source: 'breakdown' | 'dropoff'): number => {
+    const rows = source === 'breakdown' ? finalStage?.breakdown : finalStage?.dropoff_breakdown;
+    return rows?.find((b) => b.result_filter === result)?.count ?? 0;
+  };
+  return (
+    <div style={billingStyles.card}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+        <h3 style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+          AI Processing Exceptions
+        </h3>
+        {selected && (
+          <button
+            type="button"
+            onClick={() => onSelect(undefined)}
+            style={{
+              padding: '4px 10px',
+              fontSize: '11px',
+              fontWeight: 600,
+              border: '1px solid var(--border-color)',
+              borderRadius: 'var(--border-radius-md)',
+              backgroundColor: 'var(--bg-primary)',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+            }}
+          >
+            Clear filter
+          </button>
+        )}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px' }}>
+        {EXCEPTION_CARDS.map((card) => {
+          const active = selected === card.result;
+          return (
+            <button
+              key={card.result}
+              type="button"
+              onClick={() => onSelect(active ? undefined : card.result)}
+              style={{
+                padding: '12px',
+                textAlign: 'left',
+                cursor: 'pointer',
+                border: active ? '1px solid var(--accent-primary)' : '1px solid var(--border-color)',
+                borderRadius: 'var(--border-radius-md)',
+                backgroundColor: active ? 'rgba(59, 130, 246, 0.12)' : 'var(--bg-tertiary)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+              }}
+              title={`Show ${AI_RESULT_LABELS[card.result]} invoices in the cohort grid`}
+            >
+              <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                {card.label}
+              </span>
+              <span style={{ fontSize: '22px', fontWeight: 700, color: active ? 'var(--accent-primary)' : 'var(--color-danger, #ef4444)' }}>
+                {countFor(card.result, card.source).toLocaleString()}
+              </span>
+            </button>
           );
         })}
       </div>
@@ -387,6 +541,10 @@ export const AiOutcomesDashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedClaimId, setSelectedClaimId] = useState<number | null>(null);
+  // Final-AI-result drill-down filter — applies ONLY to the invoice cohort
+  // grid, never to the aggregate endpoints, so selecting a result does not
+  // collapse the funnel/KPIs it was derived from.
+  const [selectedAiResult, setSelectedAiResult] = useState<AiResult | undefined>(undefined);
 
   // Auto-refresh every 30s so projection changes from the worker are visible
   // without a manual page reload.
@@ -561,9 +719,20 @@ export const AiOutcomesDashboard: React.FC = () => {
 
       {/* Funnel + Rejection Reasons side by side */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
-        <FunnelView stages={funnel} />
+        <FunnelView
+          stages={funnel}
+          onResultSelect={(r) => setSelectedAiResult(r)}
+          selectedResult={selectedAiResult}
+        />
         <RejectionReasonsView stats={rejectionReasons} />
       </div>
+
+      {/* AI processing exceptions — derived from the funnel's final-result stage */}
+      <AiExceptionsPanel
+        stages={funnel}
+        selected={selectedAiResult}
+        onSelect={setSelectedAiResult}
+      />
 
       {/* Billability (Phase 4) */}
       <BillabilityView stats={billability} />
@@ -572,7 +741,11 @@ export const AiOutcomesDashboard: React.FC = () => {
       <DepartmentView stats={departments} />
 
       {/* Invoice cohort drill-down */}
-      <AiInvoiceCohortGrid filters={filters} onRowClick={(id) => setSelectedClaimId(id)} />
+      <AiInvoiceCohortGrid
+        filters={{ ...filters, ai_result: selectedAiResult }}
+        onRowClick={(id) => setSelectedClaimId(id)}
+        onClearResultFilter={selectedAiResult ? () => setSelectedAiResult(undefined) : undefined}
+      />
     </div>
   );
 };

@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from .models import (
@@ -53,9 +53,18 @@ from .normalization import (
 )
 from .normalization_core import (
     classify_ai_eligibility,
+    classify_ai_result,
     ELIGIBILITY_ELIGIBLE,
     ELIGIBILITY_NOT_CONFIGURED,
     ELIGIBILITY_UNKNOWN,
+    AI_RESULT_SAVED,
+    AI_RESULT_OUTPUT_REJECTED,
+    AI_RESULT_EXECUTION_FAILED,
+    AI_RESULT_STUCK,
+    AI_RESULT_IN_PROGRESS,
+    AI_RESULT_NOT_REQUIRED,
+    AI_RESULT_UNKNOWN,
+    TERMINAL_AI_RESULTS,
 )
 from .reason_normalization import normalize_reason, CATEGORY_LABELS
 from .eligibility_snapshot import (
@@ -70,6 +79,15 @@ from database import db_manager
 logger = logging.getLogger(__name__)
 
 MAX_DATE_SPAN_DAYS = 366
+
+
+def _serialize_dt(val: Any) -> Optional[str]:
+    """Serialize a datetime-or-string timestamp to an ISO string (or None)."""
+    if val is None:
+        return None
+    if hasattr(val, "isoformat"):
+        return val.isoformat()
+    return str(val)
 
 
 def _validate_date_span(start_date: Optional[str], end_date: Optional[str]) -> None:
@@ -194,8 +212,11 @@ async def _load_normalized_cohort(
         data_complete = False
     logger.info(f"AI analytics: SQL process logs took {time.perf_counter() - t_logs:.3f}s ({len(logs_by_claim)} claims)")
 
-    # 5. Normalize in memory
+    # 5. Normalize in memory and classify the final AI result. One shared
+    # ``now`` keeps the stuck/in-progress boundary consistent across the
+    # whole cohort.
     t_norm = time.perf_counter()
+    now = datetime.now(timezone.utc)
     normalized: List[Dict[str, Any]] = []
     for sql_row in cohort_rows:
         claim_id = int(sql_row["claim_id"])
@@ -203,6 +224,17 @@ async def _load_normalized_cohort(
         cancellation = cancellations_by_claim.get(claim_id)
         logs = logs_by_claim.get(claim_id, [])
         record = build_normalized_record(sql_row, ai_record, cancellation, logs)
+        record.update(
+            classify_ai_result(
+                record.get("ai_processing_status"),
+                record.get("agent_execution_status"),
+                record.get("writeback_status"),
+                ai_updated_at=record.get("ai_updated_at"),
+                ai_inserted_at=record.get("ai_inserted_at"),
+                now=now,
+                stuck_threshold_minutes=settings.AI_ANALYTICS_STUCK_THRESHOLD_MINUTES,
+            )
+        )
         normalized.append(record)
     logger.info(f"AI analytics: Normalization took {time.perf_counter() - t_norm:.3f}s ({len(normalized)} records)")
 
@@ -317,6 +349,8 @@ def _apply_filters(
             continue
         if filters.reason_category and r.get("normalized_rejection_category") != filters.reason_category:
             continue
+        if filters.ai_result and r.get("ai_result") != filters.ai_result:
+            continue
         result.append(r)
     return result
 
@@ -416,7 +450,11 @@ async def get_outcome_funnel(
     3. Step 1 — the AI identifies the billing level/category → an
        ai_line_items document exists. Broken down by identified level,
        with unidentified records grouped together.
-    4. AI processing completed (COMPLETED).
+    4. AI processing reached a final result — the record's ``ai_result``
+       is terminal (saved / output rejected / execution failed / not
+       required). Its breakdown partitions the terminal count by result;
+       its ``dropoff_breakdown`` partitions the evaluated records that
+       have not finished (stuck / still processing / unknown).
     5. Line items written back to RecoveryHub — the claim lands on the
        review grid. Its breakdown partitions the saved cohort by grid
        outcome: released / cancelled-rejected / pending review / unknown, so
@@ -496,15 +534,64 @@ async def get_outcome_funnel(
         AiPipelineStageBreakdown(label="Not identified", count=not_identified)
     )
 
-    completed = [
-        r for r in evaluated
-        if r.get("ai_processing_status") in AI_COMPLETED_STATUSES
+    # Final AI result — every evaluated record lands in exactly one terminal
+    # result (saved / output rejected / execution failed / not required) or a
+    # nonterminal state (stuck / still processing / unknown).
+    threshold = settings.AI_ANALYTICS_STUCK_THRESHOLD_MINUTES
+    terminal_records = [
+        r for r in evaluated if r.get("ai_result") in TERMINAL_AI_RESULTS
+    ]
+    result_counts: Counter = Counter(
+        r.get("ai_result") for r in evaluated
+    )
+    final_breakdown = [
+        AiPipelineStageBreakdown(
+            label="Accepted and saved to RecoveryHub",
+            count=result_counts.get(AI_RESULT_SAVED, 0),
+            result_filter=AI_RESULT_SAVED,
+        ),
+        AiPipelineStageBreakdown(
+            label="AI output rejected",
+            count=result_counts.get(AI_RESULT_OUTPUT_REJECTED, 0),
+            result_filter=AI_RESULT_OUTPUT_REJECTED,
+        ),
+        AiPipelineStageBreakdown(
+            label="Execution failed",
+            count=result_counts.get(AI_RESULT_EXECUTION_FAILED, 0),
+            result_filter=AI_RESULT_EXECUTION_FAILED,
+        ),
+        AiPipelineStageBreakdown(
+            label="Not required",
+            count=result_counts.get(AI_RESULT_NOT_REQUIRED, 0),
+            result_filter=AI_RESULT_NOT_REQUIRED,
+        ),
+    ]
+    dropoff_breakdown = [
+        AiPipelineStageBreakdown(label=label, count=n, result_filter=result)
+        for label, result, n in (
+            (
+                f"Stuck beyond {threshold} minutes",
+                AI_RESULT_STUCK,
+                result_counts.get(AI_RESULT_STUCK, 0),
+            ),
+            (
+                "Still processing",
+                AI_RESULT_IN_PROGRESS,
+                result_counts.get(AI_RESULT_IN_PROGRESS, 0),
+            ),
+            (
+                "Result unknown",
+                AI_RESULT_UNKNOWN,
+                result_counts.get(AI_RESULT_UNKNOWN, 0),
+            ),
+        )
+        if n > 0
     ]
 
     # Writeback → review grid. Outcomes are drawn from the saved cohort;
     # released and cancelled are sibling business outcomes, not extra stages.
     writeback_records = [
-        r for r in completed if r.get("writeback_status") == "success"
+        r for r in evaluated if r.get("ai_result") == AI_RESULT_SAVED
     ]
     released_records = [
         r for r in writeback_records if r["business_outcome"] == "released"
@@ -568,9 +655,11 @@ async def get_outcome_funnel(
             breakdown=step1_breakdown,
         ),
         AiPipelineStageStat(
-            stage="AI processing completed",
-            count=len(completed),
-            description="claim_processing_status = COMPLETED",
+            stage="AI processing reached final result",
+            count=len(terminal_records),
+            description="Evaluated claims with a terminal AI result",
+            breakdown=final_breakdown,
+            dropoff_breakdown=dropoff_breakdown or None,
         ),
         AiPipelineStageStat(
             stage="Line items saved to RH",
@@ -823,6 +912,14 @@ async def get_invoice_cohort(
             invoice_total=r.get("invoice_total"),
             amount_invoiced=r.get("amount_invoiced"),
             processing_time_seconds=r.get("processing_time_seconds"),
+            ai_result=r.get("ai_result", AI_RESULT_UNKNOWN),
+            review_message=r.get("review_message"),
+            ai_inserted_at=_serialize_dt(r.get("ai_inserted_at")),
+            ai_updated_at=_serialize_dt(r.get("ai_updated_at")),
+            ai_completed_at=_serialize_dt(r.get("ai_completed_at")),
+            ai_line_item_count=r.get("ai_line_item_count", 0),
+            is_stuck=bool(r.get("is_stuck")),
+            processing_age_seconds=r.get("processing_age_seconds"),
         )
         for r in page_records
     ]

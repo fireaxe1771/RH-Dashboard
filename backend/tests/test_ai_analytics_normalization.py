@@ -6,6 +6,7 @@ confidence bucketing, and billability classification.
 """
 
 import pytest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 from ai_analytics.normalization import (
@@ -28,6 +29,15 @@ from ai_analytics.normalization import (
     ELIGIBILITY_UNKNOWN,
     build_normalized_record,
     index_ai_records_by_claim_id,
+    classify_ai_result,
+    AI_RESULT_SAVED,
+    AI_RESULT_OUTPUT_REJECTED,
+    AI_RESULT_EXECUTION_FAILED,
+    AI_RESULT_STUCK,
+    AI_RESULT_IN_PROGRESS,
+    AI_RESULT_NOT_REQUIRED,
+    AI_RESULT_UNKNOWN,
+    TERMINAL_AI_RESULTS,
     RELEASED_LOG_TEXT,
     CANCELLED_LOG_TEXT,
     STATUS_TERMINAL,
@@ -511,6 +521,203 @@ class TestBuildNormalizedRecord:
         }
         result = build_normalized_record(sql_row, None, None, None)
         assert result["business_outcome"] == "pending"
+
+    def test_ai_outcome_fields_from_raw_record(self):
+        """Direct-read path: review_msg/timestamps map to the normalized
+        names and the line-item count derives from the line_items list."""
+        sql_row = {"claim_id": 22222, "ai_inv_process_status": 2}
+        ai_record = {
+            "claim_processing_status": "COMPLETED",
+            "line_items_save_to_rh_status": False,
+            "review_msg": "Output rejected: bad level",
+            "inserted_at": "2026-01-01T10:00:00Z",
+            "updated_at": "2026-01-01T10:05:00Z",
+            "completed_at": "2026-01-01T10:04:00Z",
+            "line_items": [{"item": "a"}, {"item": "b"}, {"item": "c"}],
+        }
+        result = build_normalized_record(sql_row, ai_record, None, None)
+        assert result["review_message"] == "Output rejected: bad level"
+        assert result["ai_inserted_at"] == "2026-01-01T10:00:00Z"
+        assert result["ai_updated_at"] == "2026-01-01T10:05:00Z"
+        assert result["ai_completed_at"] == "2026-01-01T10:04:00Z"
+        assert result["ai_line_item_count"] == 3
+
+    def test_ai_line_item_count_prefers_projection_count(self):
+        """Projection path supplies ai_line_item_count directly."""
+        sql_row = {"claim_id": 33333, "ai_inv_process_status": 2}
+        result = build_normalized_record(
+            sql_row, {"ai_line_item_count": 7}, None, None
+        )
+        assert result["ai_line_item_count"] == 7
+
+    def test_ai_line_item_count_zero_without_list(self):
+        sql_row = {"claim_id": 44444, "ai_inv_process_status": 2}
+        assert build_normalized_record(
+            sql_row, {"line_items": "not-a-list"}, None, None
+        )["ai_line_item_count"] == 0
+        assert build_normalized_record(
+            sql_row, None, None, None
+        )["ai_line_item_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# classify_ai_result — final AI result (outcome accounting)
+# ---------------------------------------------------------------------------
+
+NOW = datetime(2026, 2, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+
+class TestClassifyAiResult:
+    def test_writeback_success_is_saved(self):
+        r = classify_ai_result("COMPLETED", "success", "success", now=NOW)
+        assert r["ai_result"] == AI_RESULT_SAVED
+        assert r["is_stuck"] is False
+
+    def test_saved_takes_precedence_over_agent_error(self):
+        r = classify_ai_result("COMPLETED", "error", "success", now=NOW)
+        assert r["ai_result"] == AI_RESULT_SAVED
+
+    def test_execution_failed(self):
+        r = classify_ai_result("ERROR", "error", "unknown", now=NOW)
+        assert r["ai_result"] == AI_RESULT_EXECUTION_FAILED
+        assert AI_RESULT_EXECUTION_FAILED in TERMINAL_AI_RESULTS
+
+    def test_completed_with_agent_error_is_failed_not_rejected(self):
+        r = classify_ai_result("COMPLETED", "error", "unknown", now=NOW)
+        assert r["ai_result"] == AI_RESULT_EXECUTION_FAILED
+
+    def test_not_required_via_billing_level_not_enabled(self):
+        r = classify_ai_result(
+            "BILLING_LEVEL_NOT_ENABLED", "success", "not_required", now=NOW
+        )
+        assert r["ai_result"] == AI_RESULT_NOT_REQUIRED
+
+    def test_completed_not_saved_is_output_rejected(self):
+        r = classify_ai_result("COMPLETED", "success", "not_saved", now=NOW)
+        assert r["ai_result"] == AI_RESULT_OUTPUT_REJECTED
+
+    def test_completed_unknown_writeback_stays_unknown(self):
+        """COMPLETED + unknown/pending writeback must NOT be called rejected."""
+        assert classify_ai_result(
+            "COMPLETED", "success", "unknown", now=NOW
+        )["ai_result"] == AI_RESULT_UNKNOWN
+        assert classify_ai_result(
+            "COMPLETED", "success", "pending", now=NOW
+        )["ai_result"] == AI_RESULT_UNKNOWN
+
+    def test_stuck_at_exact_threshold(self):
+        """Exactly 30 minutes old → stuck (boundary is inclusive)."""
+        updated = NOW - timedelta(minutes=30)
+        r = classify_ai_result(
+            "IN_PROGRESS", "in_progress", "pending",
+            ai_updated_at=updated, now=NOW, stuck_threshold_minutes=30,
+        )
+        assert r["ai_result"] == AI_RESULT_STUCK
+        assert r["is_stuck"] is True
+        assert r["processing_age_seconds"] == 1800.0
+
+    def test_below_threshold_is_in_progress(self):
+        updated = NOW - timedelta(minutes=29)
+        r = classify_ai_result(
+            "IN_PROGRESS", "in_progress", "pending",
+            ai_updated_at=updated, now=NOW,
+        )
+        assert r["ai_result"] == AI_RESULT_IN_PROGRESS
+        assert r["is_stuck"] is False
+
+    def test_initiated_and_agent_statuses_trigger_stuck_path(self):
+        old = (NOW - timedelta(hours=2)).isoformat()
+        for cps, aes in (
+            ("INITIATED", None),
+            ("IN_PROGRESS", "pending"),
+            (None, "retry"),
+            (None, "in_progress"),
+        ):
+            r = classify_ai_result(
+                cps, aes, "pending", ai_updated_at=old, now=NOW
+            )
+            assert r["ai_result"] == AI_RESULT_STUCK, (cps, aes)
+
+    def test_age_falls_back_to_inserted_at(self):
+        inserted = NOW - timedelta(minutes=45)
+        r = classify_ai_result(
+            "INITIATED", None, "pending",
+            ai_updated_at=None, ai_inserted_at=inserted, now=NOW,
+        )
+        assert r["ai_result"] == AI_RESULT_STUCK
+        assert r["processing_age_seconds"] == 2700.0
+
+    def test_naive_datetime_treated_as_utc(self):
+        updated = (NOW - timedelta(minutes=45)).replace(tzinfo=None)
+        r = classify_ai_result(
+            "IN_PROGRESS", None, "pending",
+            ai_updated_at=updated, now=NOW,
+        )
+        assert r["ai_result"] == AI_RESULT_STUCK
+
+    def test_iso_string_with_z_suffix(self):
+        r = classify_ai_result(
+            "IN_PROGRESS", None, "pending",
+            ai_updated_at="2026-02-01T11:00:00Z", now=NOW,
+        )
+        assert r["processing_age_seconds"] == 3600.0
+        assert r["ai_result"] == AI_RESULT_STUCK
+
+    def test_malformed_timestamp_yields_none_age_not_stuck(self):
+        r = classify_ai_result(
+            "IN_PROGRESS", "in_progress", "pending",
+            ai_updated_at="not-a-date", now=NOW,
+        )
+        assert r["processing_age_seconds"] is None
+        assert r["ai_result"] == AI_RESULT_IN_PROGRESS
+        assert r["is_stuck"] is False
+
+    def test_missing_timestamps_never_stuck(self):
+        r = classify_ai_result("IN_PROGRESS", None, "pending", now=NOW)
+        assert r["processing_age_seconds"] is None
+        assert r["ai_result"] == AI_RESULT_IN_PROGRESS
+
+    def test_future_timestamp_clamped_to_zero(self):
+        r = classify_ai_result(
+            "IN_PROGRESS", None, "pending",
+            ai_updated_at=NOW + timedelta(minutes=5), now=NOW,
+        )
+        assert r["processing_age_seconds"] == 0.0
+        assert r["ai_result"] == AI_RESULT_IN_PROGRESS
+
+    def test_unknown_when_nothing_matches(self):
+        r = classify_ai_result(None, None, None, now=NOW)
+        assert r["ai_result"] == AI_RESULT_UNKNOWN
+
+    def test_aware_non_utc_now_normalized(self):
+        """An aware ``now`` in a non-UTC zone must still compare correctly."""
+        now_plus2 = NOW.astimezone(timezone(timedelta(hours=2)))
+        updated = NOW - timedelta(minutes=45)
+        r = classify_ai_result(
+            "IN_PROGRESS", None, "pending",
+            ai_updated_at=updated, now=now_plus2,
+        )
+        assert r["processing_age_seconds"] == 2700.0
+        assert r["ai_result"] == AI_RESULT_STUCK
+
+    def test_negative_threshold_clamped_to_zero(self):
+        """A bad negative threshold must not mark every fresh workflow stuck
+        — it clamps to 0, so only age >= 0 counts (effectively all timed
+        records), matching max(0, threshold) semantics."""
+        updated = NOW - timedelta(seconds=10)
+        r = classify_ai_result(
+            "IN_PROGRESS", None, "pending",
+            ai_updated_at=updated, now=NOW, stuck_threshold_minutes=-5,
+        )
+        # Threshold clamps to 0 minutes; a 10s-old record is past it.
+        assert r["ai_result"] == AI_RESULT_STUCK
+        # Missing age can never be stuck regardless of threshold.
+        r2 = classify_ai_result(
+            "IN_PROGRESS", None, "pending",
+            now=NOW, stuck_threshold_minutes=-5,
+        )
+        assert r2["ai_result"] == AI_RESULT_IN_PROGRESS
+        assert r2["is_stuck"] is False
 
 
 # ---------------------------------------------------------------------------
