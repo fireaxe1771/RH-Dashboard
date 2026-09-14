@@ -16,10 +16,12 @@ endpoints are provided, each with a distinct purpose:
 - ``/status`` — **operational dashboard**. Returns the full
   ``worker_health.snapshot()`` plus ``worker_metrics.snapshot()`` so
   operators can see lifecycle timestamps, error counts, and cumulative
-  throughput counters. Auth-protected like other ``/api/*`` routes.
+  throughput counters. It also reports deployment-wide worker availability
+  from the MongoDB leader lease, because the local snapshot is process-local.
+  Auth-protected like other ``/api/*`` routes.
 
-The liveness, readiness, and operational status endpoints read in-memory
-state. The sync-health endpoint additionally checks the deployment-wide
+The liveness and readiness endpoints read in-memory state because they are
+container probes. The operational endpoints check the deployment-wide
 MongoDB leader lease so a non-leader Uvicorn process does not report the
 worker as stopped while its peer is active.
 
@@ -91,9 +93,8 @@ async def _deployment_worker_active() -> bool:
     try:
         return await is_lease_held(db_manager.db, LEADER_LOCK_ID)
     except Exception:
-        # Fall back to this process's local state if Mongo is temporarily
-        # unavailable; do not turn a transient status-read failure into a
-        # false healthy result.
+        # Treat a transient lease-read failure as unavailable; do not turn
+        # it into a false healthy result.
         return False
 
 
@@ -233,16 +234,29 @@ async def worker_status() -> Dict[str, Any]:
     and ``worker_metrics.snapshot()`` under separate keys so consumers can
     distinguish lifecycle state from throughput counters.
     """
+    deployment_worker_active = await _deployment_worker_active()
+    deployment_sync = sync_health_snapshot(
+        deployment_worker_active=deployment_worker_active
+    )
+
     return {
         "enabled": worker_config.enabled,
         "health": worker_health.snapshot(),
         "metrics": worker_metrics.snapshot(),
         "sync_integrity": sync_integrity_state.snapshot(),
-        "backfill_running": is_backfill_running(),
+        "backfill_running": (
+            is_backfill_running()
+            if db_manager.db is None
+            else await is_backfill_running_anywhere(db_manager.db)
+        ),
         # Leadership is per-process: under uvicorn --workers N only the
-        # process holding the MongoDB lease runs the worker loops. A status
-        # read that lands on a non-leader reports is_leader=False with
-        # worker state at rest — that is expected, not an outage.
+        # process holding the MongoDB lease runs the worker loops. The local
+        # health snapshot below can therefore be stopped on a healthy
+        # candidate process; these deployment-wide fields are the operational
+        # source of truth for the worker toggle and status display.
+        "deployment_worker_active": deployment_worker_active,
+        "worker_status": deployment_sync["worker_status"],
+        "worker_availability": deployment_sync["worker_availability"],
         "is_leader": is_worker_leader(),
         "holder_id": worker_holder_id(),
     }

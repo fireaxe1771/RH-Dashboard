@@ -23,7 +23,12 @@ export const WorkerToggle: React.FC = () => {
   const fetchStatus = useCallback(async () => {
     try {
       const status = await aiAnalyticsApi.getWorkerStatus();
-      setRunning(status.health.status === 'running' || status.health.status === 'reconciling');
+      setRunning(
+        status.deployment_worker_active ??
+          (status.worker_availability === 'active' ||
+            status.health.status === 'running' ||
+            status.health.status === 'reconciling'),
+      );
       setProjectionCount(status.sync_integrity?.projection_count ?? null);
       // Sync backfill state with the backend — clears "Backfilling…" when done
       setBackfillRunning(status.backfill_running ?? false);

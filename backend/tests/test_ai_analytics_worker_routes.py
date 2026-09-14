@@ -439,6 +439,30 @@ class TestStatusEndpoint:
             parsed = datetime.fromisoformat(value)
             assert parsed.tzinfo is not None
 
+    def test_status_exposes_deployment_worker_state_for_candidate(
+        self, test_client, monkeypatch
+    ):
+        """A candidate must not make the status panel report the worker off."""
+        from ai_analytics_worker import routes as worker_routes
+
+        _patch_worker_enabled(monkeypatch, enabled=True)
+
+        async def active_lease() -> bool:
+            return True
+
+        monkeypatch.setattr(
+            worker_routes, "_deployment_worker_active", active_lease
+        )
+        monkeypatch.setattr(worker_routes, "is_worker_leader", lambda: False)
+
+        response = test_client.get(STATUS_URL, headers=AUTH)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["health"]["status"] == STATUS_STOPPED
+        assert body["deployment_worker_active"] is True
+        assert body["worker_status"] == STATUS_RUNNING
+        assert body["worker_availability"] == "active"
+
 
 # ---------------------------------------------------------------------------
 # Auth enforcement

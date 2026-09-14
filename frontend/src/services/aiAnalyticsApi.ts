@@ -383,6 +383,11 @@ export interface AiWorkerStatus {
   metrics: AiWorkerMetrics;
   sync_integrity: AiSyncIntegrity;
   backfill_running?: boolean;
+  deployment_worker_active?: boolean;
+  worker_status?: string;
+  worker_availability?: 'active' | 'starting' | 'unavailable' | 'disabled' | 'error';
+  is_leader?: boolean;
+  holder_id?: string | null;
 }
 
 // ---------------------------------------------------------------------------
