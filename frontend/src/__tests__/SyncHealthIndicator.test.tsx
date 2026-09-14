@@ -19,8 +19,10 @@ const mockResolveDeadLetter = aiAnalyticsApi.resolveDeadLetter as ReturnType<typ
 
 const SYNCED_HEALTH: AiSyncHealth = {
   status: 'synced',
+  data_status: 'synced',
   worker_enabled: true,
   worker_status: 'running',
+  worker_availability: 'active',
   last_started_at: '2026-08-13T12:00:00Z',
   last_successful_event_at: '2026-08-13T12:05:00Z',
   last_checkpoint_at: '2026-08-13T12:04:00Z',
@@ -50,6 +52,7 @@ const SYNCED_HEALTH: AiSyncHealth = {
 const ERROR_HEALTH: AiSyncHealth = {
   ...SYNCED_HEALTH,
   status: 'error',
+  data_status: 'error',
   worker_status: 'error',
   consecutive_error_count: 3,
   last_error: 'MongoDB connection lost',
@@ -62,6 +65,7 @@ const ERROR_HEALTH: AiSyncHealth = {
 const CATCHING_UP_HEALTH: AiSyncHealth = {
   ...SYNCED_HEALTH,
   status: 'catching-up',
+  data_status: 'catching-up',
   sync_integrity: {
     ...SYNCED_HEALTH.sync_integrity,
     divergent_count: 3,
@@ -125,15 +129,17 @@ describe('SyncHealthIndicator', () => {
     });
   });
 
-  it('should render stopped status badge when worker disabled', async () => {
+  it('should separate unknown data status from disabled worker state', async () => {
     mockGetSyncHealth.mockResolvedValue({
       ...SYNCED_HEALTH,
-      status: 'stopped',
+      status: 'unknown',
+      data_status: 'unknown',
       worker_enabled: false,
+      worker_availability: 'disabled',
     });
     render(<SyncHealthIndicator />);
     await waitFor(() => {
-      expect(screen.getByText('Sync Stopped')).toBeInTheDocument();
+      expect(screen.getByText('Sync Status Unknown')).toBeInTheDocument();
     });
   });
 

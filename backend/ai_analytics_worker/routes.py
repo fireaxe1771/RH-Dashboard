@@ -18,9 +18,10 @@ endpoints are provided, each with a distinct purpose:
   operators can see lifecycle timestamps, error counts, and cumulative
   throughput counters. Auth-protected like other ``/api/*`` routes.
 
-All endpoints are read-only on in-memory state — no MongoDB queries on the
-hot path. The snapshot is already in memory (Phase 1 singletons), so the
-endpoints never block the event loop.
+The liveness, readiness, and operational status endpoints read in-memory
+state. The sync-health endpoint additionally checks the deployment-wide
+MongoDB leader lease so a non-leader Uvicorn process does not report the
+worker as stopped while its peer is active.
 
 Source: none (reads in-memory singletons ``worker_health`` and
 ``worker_metrics``).
@@ -32,8 +33,10 @@ Architectural constraints:
   external ingress, making these responses world-readable.
 - ``/status`` is auth-protected via ``get_current_user`` and is the only
   endpoint that exposes ``last_error``.
-- Endpoints never block — they return the current in-memory snapshot
-  synchronously.
+- ``/health``, ``/ready``, and ``/status`` never block — they return the
+  current in-memory snapshot synchronously. ``/sync-health`` performs one
+  awaited MongoDB lease read per request; a lease-read failure degrades to
+  process-local state rather than failing the request.
 - Datetimes in the response are ISO 8601 strings (FastAPI serializes
   timezone-aware datetimes correctly).
 """
@@ -56,6 +59,7 @@ from .health import (
     worker_health,
 )
 from .metrics import worker_metrics
+from .leader_election import LEADER_LOCK_ID, is_lease_held
 from .runtime import (
     is_backfill_running,
     is_backfill_running_anywhere,
@@ -72,6 +76,26 @@ from .sync_status import sync_health_snapshot
 # Router mounted under the "/api/ai-analytics/worker" prefix in main.py.
 # Tags group these endpoints in the OpenAPI docs.
 worker_router = APIRouter(tags=["AI Analytics Worker"])
+
+
+async def _deployment_worker_active() -> bool:
+    """Return whether any process currently holds the worker leader lease.
+
+    The sync-health endpoint can be served by a non-leader Uvicorn process,
+    whose local health singleton remains ``stopped`` by design. The shared
+    lease is the deployment-wide source of truth for whether another process
+    is actively running the worker.
+    """
+    if not worker_config.enabled or db_manager.db is None:
+        return False
+    try:
+        return await is_lease_held(db_manager.db, LEADER_LOCK_ID)
+    except Exception:
+        # Fall back to this process's local state if Mongo is temporarily
+        # unavailable; do not turn a transient status-read failure into a
+        # false healthy result.
+        return False
+
 
 # Statuses that mean the worker is actively working and should receive
 # traffic. ``STATUS_RECONCILING`` is included because a reconciliation scan
@@ -245,7 +269,9 @@ async def worker_sync_health() -> Dict[str, Any]:
     text because it is auth-protected. The error text helps the operator
     diagnose issues visible on the dashboard.
     """
-    return sync_health_snapshot()
+    return sync_health_snapshot(
+        deployment_worker_active=await _deployment_worker_active()
+    )
 
 
 @worker_router.get(
