@@ -143,6 +143,20 @@ describe('SyncHealthIndicator', () => {
     });
   });
 
+  it('should show monitoring when an active worker is awaiting verification', async () => {
+    mockGetSyncHealth.mockResolvedValue({
+      ...SYNCED_HEALTH,
+      status: 'stopped',
+      data_status: 'unknown',
+      worker_availability: 'active',
+    });
+    render(<SyncHealthIndicator />);
+    await waitFor(() => {
+      expect(screen.getByText('Monitoring')).toBeInTheDocument();
+      expect(screen.queryByText('Sync Stopped')).not.toBeInTheDocument();
+    });
+  });
+
   it('should show dead-letter count badge when dead letters exist', async () => {
     mockGetDeadLetters.mockResolvedValue([DEAD_LETTER]);
     render(<SyncHealthIndicator />);
