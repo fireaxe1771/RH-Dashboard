@@ -69,10 +69,10 @@ const STATUS_CONFIG: Record<SyncStatus, StatusConfig> = {
   },
   stopped: {
     icon: <Pause size={16} />,
-    label: 'Sync Stopped',
+    label: 'Sync Disabled',
     color: '#6b7280',
     bgColor: '#f3f4f6',
-    description: 'Worker is not running. Cache is not being updated.',
+    description: 'Synchronization is disabled by configuration.',
   },
   unknown: {
     icon: <Pause size={16} />,
@@ -152,7 +152,16 @@ export const SyncHealthIndicator: React.FC = () => {
 
   if (!health) return null;
 
-  const config = STATUS_CONFIG[health.data_status || health.status] || STATUS_CONFIG.unknown;
+  const dataStatus = health.data_status || health.status;
+  const config =
+    health.worker_availability === 'active' &&
+    (dataStatus === 'unknown' || dataStatus === 'stopped')
+      ? {
+          ...STATUS_CONFIG.unknown,
+          label: 'Monitoring',
+          description: 'Worker is active. The next integrity check will confirm the projection status.',
+        }
+      : STATUS_CONFIG[dataStatus] || STATUS_CONFIG.unknown;
 
   return (
     <div style={{ ...billingStyles.card, padding: '0', minWidth: '280px' }}>
