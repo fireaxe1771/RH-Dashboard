@@ -610,14 +610,14 @@ class TestWriteback:
         assert proj["line_items_save_to_rh_status"] is True
         assert proj["writeback_state"] == "success"
 
-    def test_writeback_failed_when_saved_false_and_completed(self):
+    def test_writeback_not_saved_when_saved_false_and_completed(self):
         doc = make_ai_line_items(
             line_items_save_to_rh_status=False,
             claim_processing_status="COMPLETED",
         )
         proj = build_projection(12345, doc, [], PROCESSED_AT)
 
-        assert proj["writeback_state"] == "failed_or_not_saved"
+        assert proj["writeback_state"] == "not_saved"
 
     def test_writeback_not_required_when_billing_not_enabled(self):
         doc = make_ai_line_items(

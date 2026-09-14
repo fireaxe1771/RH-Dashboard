@@ -32,13 +32,14 @@ export interface AiOutcomeSummary {
   pending: number;
   unknown: number;
   terminal_count: number;
-  business_release_rate: number;
-  rejection_rate: number;
+  business_release_rate: number | null;
+  rejection_rate: number | null;
   ai_completed: number;
   ai_failed: number;
   ai_not_enabled: number;
   writeback_success: number;
-  writeback_failed: number;
+  writeback_not_saved: number;
+  confidence_count: number;
   avg_confidence: number | null;
   source_status: Record<string, string>;
   data_complete: boolean;
@@ -87,7 +88,7 @@ export interface AiDepartmentOutcomeStat {
   pending: number;
   release_rate: number | null;
   ai_completion_rate: number | null;
-  writeback_failure_rate: number | null;
+  writeback_not_saved_rate: number | null;
   avg_confidence: number | null;
   retry_count: number;
   human_intervention_count: number;
@@ -148,7 +149,7 @@ export interface AiDiagnosticsSummary {
   retries: number;
   retry_success: number;
   low_confidence: number;
-  writeback_failures: number;
+  writeback_not_saved: number;
   avg_duration: number | null;
   p50_duration: number | null;
   p90_duration: number | null;
@@ -193,9 +194,9 @@ export interface AiRetryAnalysis {
 export interface AiWritebackAnalysis {
   total_records: number;
   status_distribution: Record<string, number>;
-  failure_count: number;
-  failure_rate: number;
-  failure_by_processing_status: Record<string, number>;
+  not_saved_count: number;
+  not_saved_rate: number;
+  not_saved_by_processing_status: Record<string, number>;
 }
 
 // Invoice trace types

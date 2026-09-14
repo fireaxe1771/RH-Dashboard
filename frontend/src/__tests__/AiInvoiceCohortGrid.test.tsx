@@ -99,9 +99,28 @@ describe('AiInvoiceCohortGrid', () => {
     render(<AiInvoiceCohortGrid filters={FILTERS} />);
     await waitFor(() => expect(screen.getByText('1001')).toBeInTheDocument());
     expect(screen.getByText('Metro Fire')).toBeInTheDocument();
+    expect(screen.getByText(/Invoice Cohort \(2 AI cohort claims\)/)).toBeInTheDocument();
     expect(screen.getByText('1002')).toBeInTheDocument();
     // Department name null → em dash fallback
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+  });
+
+  test('uses clear writeback labels for each source state', async () => {
+    (aiAnalyticsApi.getInvoiceCohort as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...COHORT_RESPONSE,
+      invoices: [
+        { ...INVOICES[0], writeback_status: 'not_saved' },
+        { ...INVOICES[0], claim_id: 1003, writeback_status: 'pending' },
+        { ...INVOICES[0], claim_id: 1004, writeback_status: 'not_required' },
+        { ...INVOICES[0], claim_id: 1005, writeback_status: 'unknown' },
+      ],
+      total_count: 4,
+    });
+    render(<AiInvoiceCohortGrid filters={FILTERS} />);
+    await waitFor(() => expect(screen.getByText('Not saved')).toBeInTheDocument());
+    expect(screen.getByText('Writeback pending')).toBeInTheDocument();
+    expect(screen.getByText('Not required')).toBeInTheDocument();
+    expect(screen.getByText('Unknown')).toBeInTheDocument();
   });
 
   test('shows empty state when no invoices match', async () => {

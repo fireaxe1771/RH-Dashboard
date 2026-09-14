@@ -464,14 +464,17 @@ export const AiOutcomesDashboard: React.FC = () => {
         businessOutcome={businessOutcome}
         onBusinessOutcomeChange={setBusinessOutcome}
       />
+      <div style={{ marginBottom: '16px', fontSize: '12px', color: 'var(--text-muted)' }}>
+        Business outcome describes the invoice disposition. AI status describes processing. Writeback describes whether AI line items were saved to RecoveryHub.
+      </div>
 
       {/* KPI Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
         <KpiCard
-          label="AI-Eligible Claims"
+          label="AI Cohort Claims"
           value={summary.total_ai_invoices.toLocaleString()}
           icon={<Activity size={20} />}
-          subtitle={`${summary.terminal_count.toLocaleString()} terminal`}
+          subtitle={`${summary.terminal_count.toLocaleString()} terminal outcomes`}
         />
         <KpiCard
           label="Did Not Qualify"
@@ -481,18 +484,22 @@ export const AiOutcomesDashboard: React.FC = () => {
           subtitle="No qualifying AI fee tile"
         />
         <KpiCard
-          label="Business Release Rate"
+          label="Terminal Release Rate"
           value={formatPercent(summary.business_release_rate)}
           icon={<TrendingUp size={20} />}
           color="#22c55e"
-          subtitle={`${summary.released.toLocaleString()} released`}
+          subtitle={summary.terminal_count > 0
+            ? `${summary.released.toLocaleString()} released of terminal outcomes`
+            : 'No terminal outcomes'}
         />
         <KpiCard
-          label="Rejection Rate"
+          label="Terminal Rejection Rate"
           value={formatPercent(summary.rejection_rate)}
           icon={<TrendingDown size={20} />}
           color="#ef4444"
-          subtitle={`${summary.cancelled_rejected.toLocaleString()} rejected`}
+          subtitle={summary.terminal_count > 0
+            ? `${summary.cancelled_rejected.toLocaleString()} rejected · terminal only`
+            : 'No terminal outcomes'}
         />
         <KpiCard
           label="Pending"
@@ -505,17 +512,19 @@ export const AiOutcomesDashboard: React.FC = () => {
           value={summary.ai_completed.toLocaleString()}
           icon={<CheckCircle2 size={20} />}
           color="#22c55e"
+          subtitle="AI workflow finished"
         />
         <KpiCard
           label="Writeback Success"
           value={summary.writeback_success.toLocaleString()}
           icon={<Zap size={20} />}
-          subtitle={`${summary.writeback_failed} failed`}
+          subtitle={`${summary.writeback_not_saved.toLocaleString()} not saved`}
         />
         <KpiCard
-          label="Avg Confidence"
+          label="Avg AI Confidence"
           value={summary.avg_confidence !== null ? `${summary.avg_confidence}%` : '—'}
           icon={<HelpCircle size={20} />}
+          subtitle={`${summary.confidence_count.toLocaleString()} scored claims`}
         />
         {summary.ai_not_enabled > 0 && (
           <KpiCard

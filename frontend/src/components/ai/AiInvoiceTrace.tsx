@@ -368,7 +368,7 @@ export const AiInvoiceTrace: React.FC<Props> = ({ claimId, onBack }) => {
           </div>
           <div>
             <span style={labelStyle}>Writeback</span>
-            <div style={valueStyle}>{trace.line_items_save_to_rh_status === true ? 'Success' : trace.line_items_save_to_rh_status === false ? 'Not Saved' : '—'}</div>
+            <div style={valueStyle}>{trace.line_items_save_to_rh_status === true ? 'Saved to RH' : trace.line_items_save_to_rh_status === false ? (trace.claim_processing_status === 'BILLING_LEVEL_NOT_ENABLED' ? 'Not required' : trace.claim_processing_status === 'INITIATED' || trace.claim_processing_status === 'IN_PROGRESS' ? 'Writeback pending' : 'Not saved') : 'Unknown'}</div>
           </div>
           <div>
             <span style={labelStyle}>Invoice Total</span>

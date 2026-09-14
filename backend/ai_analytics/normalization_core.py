@@ -184,7 +184,11 @@ def classify_writeback_status(
     """Normalize the writeback status.
 
     Returns one of: ``success``, ``not_required``, ``pending``,
-    ``failed_or_not_saved``, ``unknown``.
+    ``not_saved``, ``unknown``.
+
+    The source schema exposes a save flag but no writeback error code. A false
+    flag after processing therefore means ``not_saved``; it must not be
+    presented as a confirmed technical failure.
     """
     if line_items_save_to_rh_status is True:
         return "success"
@@ -196,7 +200,7 @@ def classify_writeback_status(
         # If still in progress, writeback may be pending
         if claim_processing_status in ("INITIATED", "IN_PROGRESS"):
             return "pending"
-        return "failed_or_not_saved"
+        return "not_saved"
 
     return "unknown"
 

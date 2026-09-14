@@ -36,7 +36,7 @@ class AiAnalyticsFilters(BaseModel):
     confidence_max: Optional[float] = Field(None, ge=0, le=100)
     has_retry: Optional[bool] = None
     writeback_status: Optional[str] = Field(
-        None, description="success | not_required | pending | failed_or_not_saved | unknown"
+        None, description="success | not_required | pending | not_saved | unknown"
     )
     billing_category: Optional[str] = None
     reason_category: Optional[str] = Field(
@@ -66,13 +66,14 @@ class AiOutcomeSummary(BaseModel):
     pending: int
     unknown: int
     terminal_count: int
-    business_release_rate: float
-    rejection_rate: float
+    business_release_rate: Optional[float] = None
+    rejection_rate: Optional[float] = None
     ai_completed: int
     ai_failed: int
     ai_not_enabled: int
     writeback_success: int
-    writeback_failed: int
+    writeback_not_saved: int
+    confidence_count: int = 0
     avg_confidence: Optional[float] = None
     source_status: Dict[str, str] = Field(
         default_factory=dict,
@@ -112,7 +113,7 @@ class AiDepartmentOutcomeStat(BaseModel):
     pending: int
     release_rate: Optional[float] = None
     ai_completion_rate: Optional[float] = None
-    writeback_failure_rate: Optional[float] = None
+    writeback_not_saved_rate: Optional[float] = None
     avg_confidence: Optional[float] = None
     retry_count: int = 0
     human_intervention_count: int = 0
@@ -153,7 +154,7 @@ class AiDiagnosticsSummary(BaseModel):
     retries: int
     retry_success: int
     low_confidence: int
-    writeback_failures: int
+    writeback_not_saved: int
     avg_duration: Optional[float] = None
     p50_duration: Optional[float] = None
     p90_duration: Optional[float] = None

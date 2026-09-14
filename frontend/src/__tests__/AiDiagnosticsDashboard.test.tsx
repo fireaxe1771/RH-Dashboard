@@ -31,7 +31,7 @@ const DIAGNOSTICS_SUMMARY = {
   retries: 10,
   retry_success: 7,
   low_confidence: 8,
-  writeback_failures: 3,
+  writeback_not_saved: 3,
   avg_duration: 12.5,
   p50_duration: 10.0,
   p90_duration: 20.0,
@@ -64,10 +64,10 @@ const RETRY_ANALYSIS = {
 
 const WRITEBACK_ANALYSIS = {
   total_records: 100,
-  status_distribution: { success: 55, failed_or_not_saved: 5, not_required: 40 },
-  failure_count: 5,
-  failure_rate: 5.0,
-  failure_by_processing_status: { completed: 3, failed: 2 },
+  status_distribution: { success: 55, not_saved: 5, not_required: 40 },
+  not_saved_count: 5,
+  not_saved_rate: 5.0,
+  not_saved_by_processing_status: { completed: 3, failed: 2 },
 };
 
 const AGENT_STATS = [
@@ -101,7 +101,7 @@ describe('AiDiagnosticsDashboard', () => {
     expect(screen.getByText('Errors')).toBeInTheDocument();
     expect(screen.getByText('Retries')).toBeInTheDocument();
     expect(screen.getByText('Low Confidence (<50%)')).toBeInTheDocument();
-    expect(screen.getByText('Writeback Failures')).toBeInTheDocument();
+    expect(screen.getByText('Writeback Not Saved')).toBeInTheDocument();
     expect(screen.getByText('Avg Duration')).toBeInTheDocument();
     expect(screen.getByText('P95 Duration')).toBeInTheDocument();
   });
@@ -132,7 +132,7 @@ describe('AiDiagnosticsDashboard', () => {
   test('renders writeback analysis view', async () => {
     render(<AiDiagnosticsDashboard />);
     await waitFor(() => expect(screen.getByText('Writeback Status Analysis')).toBeInTheDocument());
-    expect(screen.getByText('Failure Rate')).toBeInTheDocument();
+    expect(screen.getByText('Not-Saved Rate')).toBeInTheDocument();
   });
 
   test('renders agent stats table', async () => {

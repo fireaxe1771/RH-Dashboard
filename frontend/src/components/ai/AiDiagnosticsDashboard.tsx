@@ -205,18 +205,21 @@ const WritebackAnalysisView: React.FC<{ data: AiWritebackAnalysis | null }> = ({
       <h3 style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 16px 0' }}>
         Writeback Status Analysis
       </h3>
+      <div style={{ marginBottom: '16px', fontSize: '12px', color: 'var(--text-muted)' }}>
+        Not saved means the source reports no RecoveryHub line-item save. The source does not provide a technical writeback error code.
+      </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '16px', marginBottom: '20px' }}>
         <div>
           <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Total</span>
           <div style={{ fontSize: '24px', fontWeight: 700 }}>{data.total_records}</div>
         </div>
         <div>
-          <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Failures</span>
-          <div style={{ fontSize: '24px', fontWeight: 700, color: '#ef4444' }}>{data.failure_count}</div>
+          <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Not Saved</span>
+          <div style={{ fontSize: '24px', fontWeight: 700, color: '#ef4444' }}>{data.not_saved_count}</div>
         </div>
         <div>
-          <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Failure Rate</span>
-          <div style={{ fontSize: '24px', fontWeight: 700 }}>{formatPercent(data.failure_rate)}</div>
+          <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Not-Saved Rate</span>
+          <div style={{ fontSize: '24px', fontWeight: 700 }}>{formatPercent(data.not_saved_rate)}</div>
         </div>
       </div>
       {Object.keys(data.status_distribution).length > 0 && (
@@ -234,13 +237,13 @@ const WritebackAnalysisView: React.FC<{ data: AiWritebackAnalysis | null }> = ({
           </div>
         </div>
       )}
-      {Object.keys(data.failure_by_processing_status).length > 0 && (
+      {Object.keys(data.not_saved_by_processing_status).length > 0 && (
         <div>
           <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-            Failures by AI Processing Status
+            Not Saved by AI Processing Status
           </span>
           <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            {Object.entries(data.failure_by_processing_status).map(([status, count]) => (
+            {Object.entries(data.not_saved_by_processing_status).map(([status, count]) => (
               <div key={status} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
                 <span>{status}</span>
                 <span style={{ fontWeight: 600, color: '#ef4444' }}>{count}</span>
@@ -390,7 +393,7 @@ export const AiDiagnosticsDashboard: React.FC = () => {
         <KpiCard label="Retries" value={summary.retries.toLocaleString()} icon={<RotateCcw size={20} />} color="#eab308"
           subtitle={summary.retry_success > 0 ? `${summary.retry_success} succeeded` : undefined} />
         <KpiCard label="Low Confidence (<50%)" value={summary.low_confidence.toLocaleString()} icon={<AlertTriangle size={20} />} color="#eab308" />
-        <KpiCard label="Writeback Failures" value={summary.writeback_failures.toLocaleString()} icon={<Zap size={20} />} color="#ef4444" />
+        <KpiCard label="Writeback Not Saved" value={summary.writeback_not_saved.toLocaleString()} icon={<Zap size={20} />} color="#ef4444" subtitle="Not a confirmed technical failure" />
         <KpiCard label="Avg Duration" value={summary.avg_duration !== null ? `${summary.avg_duration}s` : '—'} icon={<Clock size={20} />} />
         <KpiCard label="P95 Duration" value={summary.p95_duration !== null ? `${summary.p95_duration}s` : '—'} icon={<Gauge size={20} />}
           subtitle={summary.p50_duration !== null ? `P50: ${summary.p50_duration}s` : undefined} />

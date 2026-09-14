@@ -27,18 +27,23 @@ const outcomeBadgeStyle = (outcome: string): React.CSSProperties => {
   }
 };
 
+const writebackStatusLabel = (status: string): string => {
+  switch (status) {
+    case 'success': return 'Saved to RH';
+    case 'not_saved': return 'Not saved';
+    case 'not_required': return 'Not required';
+    case 'pending': return 'Writeback pending';
+    default: return 'Unknown';
+  }
+};
+
 const writebackBadgeStyle = (status: string): React.CSSProperties => {
   switch (status) {
-    case 'success':
-      return { color: '#22c55e' };
-    case 'failed_or_not_saved':
-      return { color: '#ef4444' };
-    case 'not_required':
-      return { color: '#94a3b8' };
-    case 'pending':
-      return { color: '#eab308' };
-    default:
-      return { color: 'var(--text-muted)' };
+    case 'success': return { color: '#22c55e' };
+    case 'not_saved': return { color: '#ef4444' };
+    case 'not_required': return { color: '#94a3b8' };
+    case 'pending': return { color: '#eab308' };
+    default: return { color: 'var(--text-muted)' };
   }
 };
 
@@ -136,8 +141,11 @@ export const AiInvoiceCohortGrid: React.FC<Props> = ({ filters, onRowClick }) =>
     <div style={billingStyles.card}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
         <h3 style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
-          Invoice Cohort ({data.total_count.toLocaleString()} total)
+          Invoice Cohort ({data.total_count.toLocaleString()} AI cohort claims)
         </h3>
+        <div title="Saved to RH means line items were persisted. Not saved is not a confirmed technical failure; pending means AI has not completed; not required means no writeback was expected." style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+          Saved to RH · Not saved · Writeback pending · Not required · Unknown
+        </div>
         <button
           onClick={handleExport}
           style={{
@@ -159,6 +167,12 @@ export const AiInvoiceCohortGrid: React.FC<Props> = ({ filters, onRowClick }) =>
         </button>
       </div>
 
+      <div
+        title="This table contains AI cohort claims in the selected period. Eligibility may be unknown when configuration is unavailable. Business outcome, AI processing status, and writeback are separate lifecycle measures."
+        style={{ marginBottom: '12px', fontSize: '12px', color: 'var(--text-muted)' }}
+      >
+        AI cohort claims only. Eligibility-unknown claims may be included when configuration is unavailable. Writeback describes whether AI line items were saved to RecoveryHub; it does not mean the invoice was released.
+      </div>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
@@ -186,19 +200,21 @@ export const AiInvoiceCohortGrid: React.FC<Props> = ({ filters, onRowClick }) =>
                 <td style={tableCellStyle}>{inv.department_name || '—'}</td>
                 <td style={tableCellStyle}>{inv.run_number || '—'}</td>
                 <td style={tableCellStyle}>
-                  <span style={outcomeBadgeStyle(inv.business_outcome)}>
+                  <span title="Business outcome is the invoice disposition: released, cancelled/rejected, pending, or unknown." style={outcomeBadgeStyle(inv.business_outcome)}>
                     {inv.business_outcome.replace('_', ' ')}
                   </span>
                 </td>
                 <td style={{ ...tableCellStyle, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {inv.raw_rejection_reason || '—'}
                 </td>
-                <td style={tableCellStyle}>{inv.ai_processing_status || '—'}</td>
+                <td style={tableCellStyle} title="AI status describes the AI workflow, not the business invoice outcome.">{inv.ai_processing_status || '—'}</td>
                 <td style={tableCellStyle}>
                   {inv.confidence !== null ? `${inv.confidence}%` : '—'}
                 </td>
                 <td style={{ ...tableCellStyle, ...writebackBadgeStyle(inv.writeback_status) }}>
-                  {inv.writeback_status.replace(/_/g, ' ')}
+                  <span title={inv.writeback_status === 'not_saved' ? 'The source reports that line items were not saved. It does not provide a specific writeback error code.' : undefined}>
+                    {writebackStatusLabel(inv.writeback_status)}
+                  </span>
                 </td>
                 <td style={tableCellStyle}>
                   {inv.invoice_total !== null ? formatCurrency(inv.invoice_total) : '—'}

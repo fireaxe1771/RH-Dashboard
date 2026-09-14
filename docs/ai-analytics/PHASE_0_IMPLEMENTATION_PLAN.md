@@ -1046,7 +1046,7 @@ via the source `ai_line_items._id` reference.
 | field | type | source | derivation | nullable? | meaning |
 |---|---|---|---|---|---|
 | `line_items_save_to_rh_status` | bool | `ai_line_items.line_items_save_to_rh_status` | Direct copy | YES | Raw writeback flag |
-| `writeback_state` | str | derived | `classify_writeback_status()` from `normalization_core.py` | NO | success / not_required / pending / failed_or_not_saved / unknown |
+| `writeback_state` | str | derived | `classify_writeback_status()` from `normalization_core.py` | NO | success / not_required / pending / not_saved / unknown |
 
 ### 9.10 Data-quality flags
 

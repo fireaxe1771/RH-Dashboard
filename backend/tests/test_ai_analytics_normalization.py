@@ -197,8 +197,10 @@ class TestClassifyWritebackStatus:
     def test_success(self):
         assert classify_writeback_status(True, "COMPLETED") == "success"
 
-    def test_failed(self):
-        assert classify_writeback_status(False, "COMPLETED") == "failed_or_not_saved"
+    def test_not_saved_after_completion(self):
+        # The source has no writeback error code, so this is not a confirmed
+        # technical failure.
+        assert classify_writeback_status(False, "COMPLETED") == "not_saved"
 
     def test_not_required_when_not_enabled(self):
         assert classify_writeback_status(False, "BILLING_LEVEL_NOT_ENABLED") == "not_required"

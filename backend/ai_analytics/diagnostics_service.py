@@ -78,8 +78,8 @@ async def get_diagnostics_summary(
         1 for r in runs
         if r.get("confidence") is not None and r["confidence"] < 50
     )
-    writeback_failures = sum(
-        1 for r in runs if r.get("writeback_status") == "failed_or_not_saved"
+    writeback_not_saved = sum(
+        1 for r in runs if r.get("writeback_status") == "not_saved"
     )
 
     # Duration percentiles
@@ -98,7 +98,7 @@ async def get_diagnostics_summary(
         retries=retries,
         retry_success=retry_success,
         low_confidence=low_confidence,
-        writeback_failures=writeback_failures,
+        writeback_not_saved=writeback_not_saved,
         avg_duration=duration_stats["avg"],
         p50_duration=duration_stats["p50"],
         p90_duration=duration_stats["p90"],
@@ -262,18 +262,19 @@ async def get_writeback_analysis(
     for r in records:
         status_counts[r.get("writeback_status", "unknown")] += 1
 
-    # Failure breakdown by AI processing status
-    failures = [r for r in records if r.get("writeback_status") == "failed_or_not_saved"]
-    failure_by_cps: Counter = Counter()
-    for r in failures:
-        failure_by_cps[r.get("ai_processing_status", "unknown")] += 1
+    # The source exposes no writeback error code, so report records whose
+    # line items were not saved rather than calling them confirmed failures.
+    not_saved = [r for r in records if r.get("writeback_status") == "not_saved"]
+    not_saved_by_cps: Counter = Counter()
+    for r in not_saved:
+        not_saved_by_cps[r.get("ai_processing_status", "unknown")] += 1
 
     return {
         "total_records": total,
         "status_distribution": dict(status_counts.most_common()),
-        "failure_count": len(failures),
-        "failure_rate": round(len(failures) / total * 100, 2) if total > 0 else 0.0,
-        "failure_by_processing_status": dict(failure_by_cps.most_common()),
+        "not_saved_count": len(not_saved),
+        "not_saved_rate": round(len(not_saved) / total * 100, 2) if total > 0 else 0.0,
+        "not_saved_by_processing_status": dict(not_saved_by_cps.most_common()),
     }
 
 

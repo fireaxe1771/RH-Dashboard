@@ -361,11 +361,12 @@ async def get_outcome_summary(
 
     # Writeback stats
     writeback_success = sum(1 for r in records if r.get("writeback_status") == "success")
-    writeback_failed = sum(
-        1 for r in records if r.get("writeback_status") == "failed_or_not_saved"
+    writeback_not_saved = sum(
+        1 for r in records if r.get("writeback_status") == "not_saved"
     )
 
-    # Confidence
+    # Confidence — report coverage alongside the average so sparse scores are
+    # not mistaken for a cohort-wide measurement.
     confidences = [r["confidence"] for r in records if r.get("confidence") is not None]
     avg_confidence = round(sum(confidences) / len(confidences), 2) if confidences else None
 
@@ -377,13 +378,14 @@ async def get_outcome_summary(
         pending=pending,
         unknown=unknown,
         terminal_count=terminal,
-        business_release_rate=calculate_release_rate(released, cancelled) or 0.0,
-        rejection_rate=calculate_rejection_rate(released, cancelled) or 0.0,
+        business_release_rate=calculate_release_rate(released, cancelled),
+        rejection_rate=calculate_rejection_rate(released, cancelled),
         ai_completed=ai_completed,
         ai_failed=ai_failed,
         ai_not_enabled=ai_not_enabled,
         writeback_success=writeback_success,
-        writeback_failed=writeback_failed,
+        writeback_not_saved=writeback_not_saved,
+        confidence_count=len(confidences),
         avg_confidence=avg_confidence,
         source_status=source_status,
         data_complete=data_complete,
@@ -417,8 +419,8 @@ async def get_outcome_funnel(
     4. AI processing completed (COMPLETED).
     5. Line items written back to RecoveryHub — the claim lands on the
        review grid. Its breakdown partitions the saved cohort by grid
-       outcome: released / cancelled-rejected / still pending review, so
-       the three sum to the stage count. Released and cancelled are
+       outcome: released / cancelled-rejected / pending review / unknown, so
+       the categories sum to the stage count. Released and cancelled are
        siblings, not successive stages, so they live in the breakdown
        rather than as stages of their own — a funnel stage must never
        exceed the one before it.
@@ -499,8 +501,8 @@ async def get_outcome_funnel(
         if r.get("ai_processing_status") in AI_COMPLETED_STATUSES
     ]
 
-    # Writeback → review grid. Outcomes are drawn from the writeback
-    # cohort so released + cancelled + pending == saved.
+    # Writeback → review grid. Outcomes are drawn from the saved cohort;
+    # released and cancelled are sibling business outcomes, not extra stages.
     writeback_records = [
         r for r in completed if r.get("writeback_status") == "success"
     ]
@@ -511,8 +513,11 @@ async def get_outcome_funnel(
         r for r in writeback_records
         if r["business_outcome"] == "cancelled_rejected"
     ]
-    pending_in_grid = (
-        len(writeback_records) - len(released_records) - len(cancelled_records)
+    pending_in_grid = sum(
+        1 for r in writeback_records if r["business_outcome"] == "pending"
+    )
+    unknown_in_grid = sum(
+        1 for r in writeback_records if r["business_outcome"] == "unknown"
     )
 
     # Grid-outcome breakdown of the saved cohort. Cancelled records are
@@ -530,6 +535,9 @@ async def get_outcome_funnel(
         ),
         AiPipelineStageBreakdown(
             label="In review grid (pending)", count=pending_in_grid
+        ),
+        AiPipelineStageBreakdown(
+            label="Unknown business outcome", count=unknown_in_grid
         ),
     ]
     saved_breakdown.extend(
@@ -551,7 +559,7 @@ async def get_outcome_funnel(
         AiPipelineStageStat(
             stage="Eligible for AI processing",
             count=len(qualified),
-            description="Department has a qualifying AI fee tile",
+            description="Department has a qualifying AI fee tile, or eligibility could not be confirmed",
         ),
         AiPipelineStageStat(
             stage="Step 1: level & category evaluated",
@@ -567,7 +575,7 @@ async def get_outcome_funnel(
         AiPipelineStageStat(
             stage="Line items saved to RH",
             count=len(writeback_records),
-            description="line_items_save_to_rh_status = true — enters review grid",
+            description="AI line items saved to RecoveryHub; this is not the same as invoice release.",
             breakdown=saved_breakdown,
         ),
         AiPipelineStageStat(
@@ -726,7 +734,7 @@ async def get_department_outcomes(
         pending = sum(1 for r in group if r["business_outcome"] == "pending")
 
         ai_completed = sum(1 for r in group if r.get("ai_processing_status") in AI_COMPLETED_STATUSES)
-        writeback_failed = sum(1 for r in group if r.get("writeback_status") == "failed_or_not_saved")
+        writeback_not_saved = sum(1 for r in group if r.get("writeback_status") == "not_saved")
 
         confidences = [r["confidence"] for r in group if r.get("confidence") is not None]
         avg_conf = round(sum(confidences) / len(confidences), 2) if confidences else None
@@ -748,7 +756,7 @@ async def get_department_outcomes(
             pending=pending,
             release_rate=calculate_release_rate(released, rejected),
             ai_completion_rate=round(ai_completed / len(group) * 100, 2) if group else None,
-            writeback_failure_rate=round(writeback_failed / len(group) * 100, 2) if group else None,
+            writeback_not_saved_rate=round(writeback_not_saved / len(group) * 100, 2) if group else None,
             avg_confidence=avg_conf,
             retry_count=retry_count,
             human_intervention_count=human_intervention,

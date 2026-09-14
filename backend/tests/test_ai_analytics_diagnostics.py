@@ -67,7 +67,7 @@ class TestDiagnosticsService:
         assert result.completed == 2
         assert result.retries == 1  # claim 200 has retry_count=2
         assert result.low_confidence == 1  # claim 200 has confidence=30
-        assert result.writeback_failures == 1  # claim 200 has writeback=False
+        assert result.writeback_not_saved == 1  # claim 200 has writeback=False
         assert result.avg_duration == 22.75  # (15.5 + 30.0) / 2
 
     @patch("ai_analytics.outcome_service.sql_repo.get_ai_invoice_cohort")
@@ -285,7 +285,7 @@ async def test_agent_stats_direct_path_filters_by_claim_id(mock_mongo_db):
         assert response.status_code == 200
         data = response.json()
         assert data["total_records"] == 0
-        assert data["failure_count"] == 0
+        assert data["not_saved_count"] == 0
 
     def test_diagnostics_agents_route(self, test_client):
         """Agent stats route — uses mock mongo from conftest."""

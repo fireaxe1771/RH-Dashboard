@@ -38,17 +38,20 @@ const SUMMARY = {
   ai_failed: 5,
   ai_not_enabled: 5,
   writeback_success: 55,
-  writeback_failed: 5,
+  writeback_not_saved: 5,
+  confidence_count: 95,
   avg_confidence: 88,
   source_status: { recoveryhub_sql: 'available', recoveryhub_ai_mongo: 'available' },
   data_complete: true,
 };
 
 const FUNNEL = [
-  { stage: 'AI Processing', count: 100, description: 'All invoices' },
-  { stage: 'AI Completed', count: 90, description: 'AI finished processing' },
-  { stage: 'Business Reviewed', count: 80, description: 'Human reviewed' },
-  { stage: 'Released', count: 60, description: 'Invoice released' },
+  { stage: 'Reached Ready to Invoice Insurance', count: 100, description: 'Claims in AIInvoiceProcessRHTemp' },
+  { stage: 'Eligible for AI processing', count: 90, description: 'Department has a qualifying AI fee tile' },
+  { stage: 'Step 1: level & category evaluated', count: 85, description: 'ai_line_items record exists — step 1 ran' },
+  { stage: 'AI processing completed', count: 80, description: 'claim_processing_status = COMPLETED' },
+  { stage: 'Line items saved to RH', count: 70, description: 'AI line items saved to RecoveryHub; this is not the same as invoice release.' },
+  { stage: 'Released', count: 60, description: 'Invoice to Insurance - Released' },
 ];
 
 const REJECTION_REASONS = [
@@ -80,7 +83,7 @@ const DEPARTMENTS = [
     pending: 10,
     release_rate: 60.0,
     ai_completion_rate: 90.0,
-    writeback_failure_rate: 5.0,
+    writeback_not_saved_rate: 5.0,
     avg_confidence: 85,
     retry_count: 2,
     human_intervention_count: 1,
@@ -124,13 +127,13 @@ describe('AiOutcomesDashboard', () => {
 
   test('renders KPI cards with summary values', async () => {
     render(<AiOutcomesDashboard />);
-    await waitFor(() => expect(screen.getByText('AI-Eligible Claims')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('AI Cohort Claims')).toBeInTheDocument());
     expect(screen.getByText('Did Not Qualify')).toBeInTheDocument();
     expect(screen.getByText('No qualifying AI fee tile')).toBeInTheDocument();
-    expect(screen.getByText('Business Release Rate')).toBeInTheDocument();
-    expect(screen.getByText('Rejection Rate')).toBeInTheDocument();
+    expect(screen.getByText('Terminal Release Rate')).toBeInTheDocument();
+    expect(screen.getByText('Terminal Rejection Rate')).toBeInTheDocument();
     expect(screen.getByText('Writeback Success')).toBeInTheDocument();
-    expect(screen.getByText('Avg Confidence')).toBeInTheDocument();
+    expect(screen.getByText('Avg AI Confidence')).toBeInTheDocument();
     // "Pending" and "AI Completed" appear as both KPI labels and funnel stages,
     // so use getAllByText to verify they render at least once.
     expect(screen.getAllByText('Pending').length).toBeGreaterThanOrEqual(1);
@@ -140,8 +143,8 @@ describe('AiOutcomesDashboard', () => {
   test('renders funnel with stage names and counts', async () => {
     render(<AiOutcomesDashboard />);
     await waitFor(() => expect(screen.getByText('AI Invoice Pipeline Funnel')).toBeInTheDocument());
-    expect(screen.getByText('AI Processing')).toBeInTheDocument();
-    expect(screen.getByText('Business Reviewed')).toBeInTheDocument();
+    expect(screen.getByText('Reached Ready to Invoice Insurance')).toBeInTheDocument();
+    expect(screen.getByText('Line items saved to RH')).toBeInTheDocument();
     // "AI Completed" and "Released" also appear as KPI labels — verify they exist
     expect(screen.getAllByText('AI Completed').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('Released').length).toBeGreaterThanOrEqual(1);
@@ -202,7 +205,7 @@ describe('AiOutcomesDashboard', () => {
       ai_not_enabled: 0,
     });
     render(<AiOutcomesDashboard />);
-    await waitFor(() => expect(screen.getByText('AI-Eligible Claims')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('AI Cohort Claims')).toBeInTheDocument());
     expect(screen.queryByText('Billing Not Enabled')).not.toBeInTheDocument();
   });
 

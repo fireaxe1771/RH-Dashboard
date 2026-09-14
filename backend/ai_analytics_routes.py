@@ -160,7 +160,7 @@ _Q_CONFIDENCE_MAX = Query(None, ge=0, le=100, description="Maximum confidence (0
 _Q_HAS_RETRY = Query(None, description="Filter by retry presence (true/false)")
 _Q_WRITEBACK_STATUS = Query(
     None,
-    description="Filter by writeback status: success | not_required | pending | failed_or_not_saved | unknown",
+    description="Filter by writeback status: success | not_required | pending | not_saved | unknown",
 )
 _Q_BILLING_CATEGORY = Query(None, description="Filter by billing category")
 _Q_REASON_CATEGORY = Query(None, description="Filter by normalized rejection reason category")
