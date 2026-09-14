@@ -24,7 +24,9 @@ from ai_analytics_worker.sync_status import (
     SYNC_STATUS_CATCHING_UP,
     SYNC_STATUS_DIVERGENCE_DETECTED,
     SYNC_STATUS_ERROR,
+    SYNC_STATUS_STOPPED,
     SYNC_STATUS_UNKNOWN,
+    derive_legacy_sync_status,
     derive_sync_status,
     sync_health_snapshot,
 )
@@ -66,6 +68,7 @@ class TestDeriveSyncStatus:
     def test_stopped_when_worker_disabled(self, monkeypatch):
         monkeypatch.setattr(settings, "AI_ANALYTICS_WORKER_ENABLED", False)
         assert derive_sync_status() == SYNC_STATUS_UNKNOWN
+        assert derive_legacy_sync_status() == SYNC_STATUS_STOPPED
 
     def test_error_when_worker_in_error_state(self, monkeypatch):
         monkeypatch.setattr(settings, "AI_ANALYTICS_WORKER_ENABLED", True)
@@ -140,6 +143,17 @@ class TestDeriveSyncStatus:
         monkeypatch.setattr(settings, "AI_ANALYTICS_WORKER_ENABLED", True)
         worker_health.set_status(STATUS_STOPPED)
         assert derive_sync_status() == SYNC_STATUS_UNKNOWN
+        assert derive_legacy_sync_status() == SYNC_STATUS_STOPPED
+
+    def test_candidate_ignores_stale_local_integrity_state(self, monkeypatch):
+        monkeypatch.setattr(settings, "AI_ANALYTICS_WORKER_ENABLED", True)
+        sync_integrity_state.record_error("stale error from previous term")
+        worker_health.set_status(STATUS_STOPPED)
+        assert (
+            derive_sync_status(deployment_worker_active=True)
+            == SYNC_STATUS_UNKNOWN
+        )
+        assert derive_sync_status() == SYNC_STATUS_ERROR
 
     def test_active_deployment_lease_does_not_claim_data_is_synced(
         self, monkeypatch
@@ -181,10 +195,19 @@ class TestSyncHealthSnapshot:
 
         snap = sync_health_snapshot(deployment_worker_active=True)
 
-        assert snap["status"] == SYNC_STATUS_UNKNOWN
+        assert snap["status"] == SYNC_STATUS_STOPPED
         assert snap["worker_status"] == STATUS_RUNNING
         assert snap["data_status"] == SYNC_STATUS_UNKNOWN
         assert snap["worker_availability"] == "active"
+
+    def test_snapshot_legacy_status_reports_stopped_when_disabled(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "AI_ANALYTICS_WORKER_ENABLED", False)
+        snap = sync_health_snapshot()
+        assert snap["status"] == SYNC_STATUS_STOPPED
+        assert snap["data_status"] == SYNC_STATUS_UNKNOWN
+        assert snap["worker_availability"] == "disabled"
 
     def test_snapshot_includes_last_error(self, monkeypatch):
         monkeypatch.setattr(settings, "AI_ANALYTICS_WORKER_ENABLED", True)

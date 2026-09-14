@@ -114,8 +114,8 @@ variable "ai_analytics_worker_enabled" {
 
 variable "ai_analytics_use_projection" {
   type        = string
-  default     = "true"
-  description = "Read AI analytics dashboard data from the ai_invoice_analytics projection maintained by the worker."
+  default     = "false"
+  description = "Read AI analytics dashboard data from the ai_invoice_analytics projection maintained by the worker. Keep false until the worker's initial backfill has completed (sync-health reports synced); projection reads treat missing documents as claims with no AI record."
 }
 
 # --- CORS / Frontend Origin ---

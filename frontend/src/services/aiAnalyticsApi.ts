@@ -303,6 +303,7 @@ export type SyncStatus =
   | 'catching-up'
   | 'divergence-detected'
   | 'error'
+  | 'stopped'
   | 'unknown';
 
 export interface AiSyncIntegrity {

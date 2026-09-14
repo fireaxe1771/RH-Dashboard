@@ -20,10 +20,15 @@ Status values (stable, do not rename — the frontend matches on these):
   ``catching-up`` then ``synced`` as the queue drains.
 - ``error`` — worker in error state OR integrity check failed fatally.
   Operator attention needed. Red.
+- ``stopped`` — worker disabled (``AI_ANALYTICS_WORKER_ENABLED=false``) or
+  not running in this process. Grey. Legacy ``status`` field only.
 - ``unknown`` — no local verification is available. The worker may be
-  disabled, starting, or running in another process. Grey.
+  disabled, starting, or running in another process. Grey. ``data_status``
+  field only.
 
-Worker lifecycle is exposed separately as ``worker_availability`` so a
+The legacy ``status`` field keeps its original derivation (including
+``stopped``) for existing consumers. New clients should read ``data_status``
+(projection data status) and ``worker_availability`` (worker lifecycle) so a
 lifecycle state is never confused with the projection's data status.
 
 The status is derived from existing singletons (``worker_health``,
@@ -60,28 +65,72 @@ SYNC_STATUS_SYNCING = "syncing"
 SYNC_STATUS_CATCHING_UP = "catching-up"
 SYNC_STATUS_DIVERGENCE_DETECTED = "divergence-detected"
 SYNC_STATUS_ERROR = "error"
+SYNC_STATUS_STOPPED = "stopped"
 SYNC_STATUS_UNKNOWN = "unknown"
 
 
-def derive_sync_status(*, deployment_worker_active: bool = False) -> str:
-    """Derive the current sync status from worker health + integrity state.
-
-    ``worker_health`` is process-local, while the worker runs under a
-    deployment-wide MongoDB leader lease. A request served by a non-leader
-    Uvicorn process therefore needs the shared active signal to avoid
-    reporting that the deployment is stopped just because this process has
-    never owned the lease.
+def derive_legacy_sync_status() -> str:
+    """Derive the legacy ``status`` value from process-local state only.
 
     Derivation order (first match wins):
-    1. Worker error or integrity failure → ``error``
-    2. Integrity check in progress → ``syncing``
-    3. Divergent claims found → ``catching-up``
-    4. Count mismatch without samples → ``divergence-detected``
-    5. Worker reconciling → ``syncing``
-    6. Worker running after a successful verification → ``synced``
-    7. No completed verification available → ``unknown``
+    1. Worker disabled → ``stopped``
+    2. Worker in error → ``error``
+    3. Integrity check failed → ``error``
+    4. Integrity check in progress → ``syncing``
+    5. Divergent claims found → ``catching-up``
+    6. Count mismatch but no divergent samples yet → ``divergence-detected``
+    7. Worker reconciling → ``syncing``
+    8. Worker running → ``synced``
+    9. Worker starting → ``syncing``
+    10. Worker stopped (enabled but not started) → ``stopped``
+    """
+    if not worker_config.enabled:
+        return SYNC_STATUS_STOPPED
+
+    health_status = worker_health.status
+
+    if health_status == STATUS_ERROR:
+        return SYNC_STATUS_ERROR
+    if sync_integrity_state.last_error is not None:
+        return SYNC_STATUS_ERROR
+    if sync_integrity_state.check_in_progress:
+        return SYNC_STATUS_SYNCING
+    if sync_integrity_state.divergent_count > 0:
+        return SYNC_STATUS_CATCHING_UP
+    if sync_integrity_state.count_mismatch:
+        return SYNC_STATUS_DIVERGENCE_DETECTED
+    if health_status == STATUS_RECONCILING:
+        return SYNC_STATUS_SYNCING
+    if health_status == STATUS_RUNNING:
+        return SYNC_STATUS_SYNCED
+    if health_status == STATUS_STARTING:
+        return SYNC_STATUS_SYNCING
+    return SYNC_STATUS_STOPPED
+
+
+def derive_sync_status(*, deployment_worker_active: bool = False) -> str:
+    """Derive the projection data status from worker health + integrity state.
+
+    ``worker_health`` and ``sync_integrity_state`` are process-local, while
+    the worker runs under a deployment-wide MongoDB leader lease. When this
+    process is a stopped candidate and another process holds the lease, the
+    local integrity state is stale (it belongs to a previous leadership term)
+    and must not be reported as the deployment's data status.
+
+    Derivation order (first match wins):
+    1. Local worker stopped while another process holds the lease → ``unknown``
+    2. Worker error or integrity failure → ``error``
+    3. Integrity check in progress → ``syncing``
+    4. Divergent claims found → ``catching-up``
+    5. Count mismatch without samples → ``divergence-detected``
+    6. Worker reconciling → ``syncing``
+    7. Worker running after a successful verification → ``synced``
+    8. No completed verification available → ``unknown``
     """
     health_status = worker_health.status
+
+    if deployment_worker_active and health_status == STATUS_STOPPED:
+        return SYNC_STATUS_UNKNOWN
 
     if health_status == STATUS_ERROR:
         return SYNC_STATUS_ERROR
@@ -126,9 +175,11 @@ def sync_health_snapshot(
     """Build the sync health dict for the /sync-health endpoint.
 
     Returns a dict with:
-    - ``status``: the derived sync status (synced/syncing/catching-up/...).
+    - ``status``: legacy process-local sync status (includes ``stopped``).
+    - ``data_status``: projection data status (includes ``unknown``).
     - ``worker_enabled``: whether the worker is enabled.
-    - ``worker_status``: the raw worker health status.
+    - ``worker_status``: the worker health status, deployment-aware.
+    - ``worker_availability``: worker lifecycle summary.
     - ``sync_integrity``: the integrity state snapshot.
     - ``metrics``: relevant throughput counters.
     - ``last_error``: the last error (from health or integrity), if any.
@@ -168,9 +219,7 @@ def sync_health_snapshot(
         worker_availability = "unavailable"
 
     return {
-        # ``status`` remains as a compatibility alias; new clients should
-        # consume data_status and worker_availability separately.
-        "status": data_status,
+        "status": derive_legacy_sync_status(),
         "data_status": data_status,
         "worker_enabled": worker_config.enabled,
         "worker_status": effective_worker_status,

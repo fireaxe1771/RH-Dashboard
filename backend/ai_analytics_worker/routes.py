@@ -33,8 +33,10 @@ Architectural constraints:
   external ingress, making these responses world-readable.
 - ``/status`` is auth-protected via ``get_current_user`` and is the only
   endpoint that exposes ``last_error``.
-- Endpoints never block — they return the current in-memory snapshot
-  synchronously.
+- ``/health``, ``/ready``, and ``/status`` never block — they return the
+  current in-memory snapshot synchronously. ``/sync-health`` performs one
+  awaited MongoDB lease read per request; a lease-read failure degrades to
+  process-local state rather than failing the request.
 - Datetimes in the response are ISO 8601 strings (FastAPI serializes
   timezone-aware datetimes correctly).
 """

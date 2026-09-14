@@ -67,6 +67,13 @@ const STATUS_CONFIG: Record<SyncStatus, StatusConfig> = {
     bgColor: '#fee2e2',
     description: 'Worker or integrity check has encountered an error.',
   },
+  stopped: {
+    icon: <Pause size={16} />,
+    label: 'Sync Stopped',
+    color: '#6b7280',
+    bgColor: '#f3f4f6',
+    description: 'Worker is not running. Cache is not being updated.',
+  },
   unknown: {
     icon: <Pause size={16} />,
     label: 'Sync Status Unknown',
