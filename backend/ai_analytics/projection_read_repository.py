@@ -53,6 +53,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ai_analytics_worker.config import worker_config
+from .fee_schedule import STEP1_SOURCE_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -95,12 +96,12 @@ _PASSTHROUGH_FIELDS: tuple[str, ...] = (
     "billing_category",
     "line_items_save_to_rh_status",
     "retry_count",
-    # Schema v3: step-1 level identification + routing/cancellation fields.
-    # v1/v2 projections lack these keys — .get() returns None, matching the
-    # direct-read path when the source doc doesn't have them.
-    "billing_level",
-    "level_identification_confidence",
-    "level_identification_low_confidence",
+    # Schema v3: routing/cancellation fields. Schema v4: step-1
+    # category/fee-item identification + intake evidence
+    # (fee_schedule.STEP1_SOURCE_FIELDS). Older projections lack these
+    # keys — .get() returns None, matching the direct-read path when the
+    # source doc doesn't have them.
+    *STEP1_SOURCE_FIELDS,
     "dept_send_auto_invoice_status",
     "is_cancelled",
     "cancellation_reason",
@@ -145,6 +146,13 @@ def projection_to_ai_record(
     # Fields not in the projection — explicit None for completeness.
     for field in _MISSING_FROM_PROJECTION:
         adapted[field] = None
+
+    # Internal (not part of the raw ai_line_items shape): the projection's
+    # own schema version, so the cohort loader can detect outdated
+    # projections and refresh them from the source. Missing → 0.
+    adapted["_projection_schema_version"] = projection.get(
+        "projection_schema_version", 0
+    )
 
     return adapted
 
@@ -241,10 +249,9 @@ _TRACE_PASSTHROUGH_FIELDS: tuple[str, ...] = (
     # Phase 10 new fields (v2 projections only; v1 returns None)
     "conversation_id",
     "thread_id_is_billable",
-    # Schema v3: step-1 level identification fields
-    "billing_level",
-    "level_identification_confidence",
-    "level_identification_low_confidence",
+    # Schema v3/v4: step-1 identification + intake evidence fields
+    # (fee_schedule.STEP1_SOURCE_FIELDS).
+    *STEP1_SOURCE_FIELDS,
 )
 
 # The projection stores line items under ``ai_line_items``; the trace
